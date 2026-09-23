@@ -5,9 +5,19 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: aegis_one_agent
+      - uses: actions/checkout@v4
+        with:
+          repository: aegisoneuem/aegis_one_proto
+          token: ${{ secrets.PROTO_PAT }}
+          path: aegis_one_proto
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
       - run: go build ./...
+        working-directory: aegis_one_agent
       - run: go vet ./...
+        working-directory: aegis_one_agent
       - run: go test ./...
+        working-directory: aegis_one_agent
