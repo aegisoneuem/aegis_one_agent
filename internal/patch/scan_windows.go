@@ -245,3 +245,9 @@ func scanOnce() ([]Update, error) {
 
 	return out, nil
 }
+// ResetForTesting exposes resetWUAService for manual verification only.
+// Not called by production code paths directly — ScanWindowsUpdates
+// calls the internal resetWUAService itself when Tier 1 genuinely fails.
+func ResetForTesting() error {
+	return resetWUAService()
+}
