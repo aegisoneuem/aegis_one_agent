@@ -4,7 +4,12 @@ package patch
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
+
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -17,37 +22,137 @@ type Update struct {
 	SizeMB   float64
 }
 
+// Tier-1 schedule: fast retries first (catch momentary glitches),
+// then widening minute-scale gaps (avoid hammering a genuinely busy
+// service). The overall 1-hour deadline in ScanWindowsUpdates caps
+// this automatically — a later gap that would exceed the deadline
+// is simply not used.
+var tier1Schedule = []time.Duration{
+	5 * time.Second,
+	10 * time.Second,
+	20 * time.Second,
+	5 * time.Minute,
+	10 * time.Minute,
+	15 * time.Minute,
+	20 * time.Minute,
+	30 * time.Minute,
+}
+
+// Tier-3 (post-reset) schedule: short and fast — the service was just
+// reset, so a quick confirmation retry is enough; no need to wait long.
+var tier3Schedule = []time.Duration{
+	5 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+}
+
 // ScanWindowsUpdates checks for missing OS-level security/cumulative updates.
-// Retries transient failures (e.g. WUA service busy with other work) instead
-// of requiring a reboot — matching how mature UEM tools behave in practice.
-// ScanWindowsUpdates checks for missing OS-level security/cumulative updates.
-// Retries transient failures (e.g. WUA service busy) for up to a total time
-// budget — not a fixed retry count — because the real question is "how long
-// is acceptable to wait," not "how many attempts."
+// Three-tier resilience, fully internal to the agent — never surfaced to
+// the end user, never requires a manual reboot:
+//   Tier 1: retry on a widening schedule, capped at 1 hour total
+//   Tier 2: reset WUA service+cache (Microsoft's own documented fix)
+//   Tier 3: short confirmation retry; if still failing, return a clear
+//           error for the server/console to flag — never a silent "0 missing"
 func ScanWindowsUpdates() ([]Update, error) {
-	const timeBudget = 2 * time.Minute
-	deadline := time.Now().Add(timeBudget)
+	updates, err := retryScan(tier1Schedule, 1*time.Hour)
+	if err == nil {
+		return updates, nil
+	}
 
+	resetErr := resetWUAService()
+	if resetErr != nil {
+		return nil, fmt.Errorf("scan failed (%v); WUA reset also failed (%v)", err, resetErr)
+	}
+
+	updates, err2 := retryScan(tier3Schedule, 2*time.Minute)
+	if err2 == nil {
+		return updates, nil
+	}
+
+	return nil, fmt.Errorf("scan failed after retry and WUA service reset — needs investigation: %v", err2)
+}
+
+// retryScan tries scanOnce, sleeping for schedule[i] between attempts.
+// Stops early if the next scheduled wait would exceed overallBudget —
+// this is what makes "1 hour max" an actual cap, not just a suggestion.
+func retryScan(schedule []time.Duration, overallBudget time.Duration) ([]Update, error) {
+	deadline := time.Now().Add(overallBudget)
 	var lastErr error
-	attempt := 0
 
-	for time.Now().Before(deadline) {
-		attempt++
+	for attempt := 0; ; attempt++ {
 		updates, err := scanOnce()
 		if err == nil {
 			return updates, nil
 		}
 		lastErr = err
 
-		backoff := time.Duration(attempt*attempt) * 2 * time.Second
-		if time.Now().Add(backoff).After(deadline) {
-			break // no point sleeping past the deadline
+		if attempt >= len(schedule) {
+			break // schedule exhausted, stop regardless of remaining budget
 		}
-		time.Sleep(backoff)
+		wait := schedule[attempt]
+		if time.Now().Add(wait).After(deadline) {
+			break // this wait would exceed the cap — stop here
+		}
+		time.Sleep(wait)
+	}
+	return nil, fmt.Errorf("failed after retries: %w", lastErr)
+}
+
+// resetWUAService performs Microsoft's own documented "reset Windows Update
+// Agent" fix via the native Service Control Manager API (no external
+// executables — consistent with avoiding PowerShell/net.exe dependencies
+// that locked-down environments may block).
+func resetWUAService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("could not connect to service manager: %w", err)
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService("wuauserv")
+	if err != nil {
+		return fmt.Errorf("could not open wuauserv: %w", err)
+	}
+	defer s.Close()
+
+	if _, err := s.Control(svc.Stop); err != nil {
+		return fmt.Errorf("could not stop wuauserv: %w", err)
+	}
+	if err := waitForState(s, svc.Stopped, 30*time.Second); err != nil {
+		return err
 	}
 
-	return nil, fmt.Errorf("scan failed after %d attempts over %s: %w",
-		attempt, timeBudget, lastErr)
+	sysRoot := os.Getenv("SystemRoot")
+	if sysRoot == "" {
+		sysRoot = `C:\Windows`
+	}
+	cacheDir := filepath.Join(sysRoot, "SoftwareDistribution")
+	backupDir := fmt.Sprintf("%s.bak-%d", cacheDir, time.Now().Unix())
+	if _, err := os.Stat(cacheDir); err == nil {
+		if err := os.Rename(cacheDir, backupDir); err != nil {
+			fmt.Println("warning: could not clear SoftwareDistribution cache:", err)
+		}
+	}
+
+	if err := s.Start(); err != nil {
+		return fmt.Errorf("could not start wuauserv: %w", err)
+	}
+	return waitForState(s, svc.Running, 30*time.Second)
+}
+
+func waitForState(s *mgr.Service, want svc.State, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := s.Query()
+		if err != nil {
+			return err
+		}
+		if status.State == want {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for wuauserv to reach state %v", want)
 }
 
 func scanOnce() ([]Update, error) {
