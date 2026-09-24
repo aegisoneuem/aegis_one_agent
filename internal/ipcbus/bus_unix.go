@@ -16,3 +16,8 @@ func NewListener() (Listener, error) {
 	}
 	return l, nil
 }
+
+func Dial() (net.Conn, error) {
+	sockPath := "/tmp/" + PipeName + ".sock"
+	return net.Dial("unix", sockPath)
+}

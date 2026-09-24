@@ -22,3 +22,8 @@ type winioListener struct {
 
 func (w *winioListener) Accept() (net.Conn, error) { return w.l.Accept() }
 func (w *winioListener) Close() error               { return w.l.Close() }
+
+func Dial() (net.Conn, error) {
+	pipePath := `\\.\pipe\` + PipeName
+	return winio.DialPipe(pipePath, nil)
+}
