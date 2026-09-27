@@ -10,6 +10,7 @@ import (
 type Config struct {
 	ServerAddress     string
 	LogLevel          string
+	LogFile           string
 	DeviceID          string
 	AgentVersion      string
 	Hostname          string
@@ -49,6 +50,7 @@ func Load() Config {
 	cfg := Config{
 		ServerAddress:     getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
 		LogLevel:          getenv("AEGIS_LOG_LEVEL", "info"),
+		LogFile:           getenv("AEGIS_LOG_FILE", ""),
 		DeviceID:          getenv("AEGIS_DEVICE_ID", "test-device-001"),
 		AgentVersion:      getenv("AEGIS_AGENT_VERSION", "0.0.1"),
 		Hostname:          getenv("AEGIS_HOSTNAME", "localhost"),
