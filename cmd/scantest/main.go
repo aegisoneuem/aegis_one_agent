@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
@@ -20,10 +21,26 @@ func main() {
 		defer logFile.Close()
 	}
 
-	slog.Info("scan-test starting", "log_level", cfg.LogLevel, "log_file", cfg.LogFile)
-	fmt.Println("Scanning for missing Windows updates...")
+	// Offline (reconciliation) mode when a wsusscn2.cab path is given as the
+	// first argument or via AEGIS_WSUS_SCAN_CAB; otherwise live online scan.
+	cab := ""
+	if len(os.Args) > 1 {
+		cab = os.Args[1]
+	}
+	if cab == "" {
+		cab = os.Getenv("AEGIS_WSUS_SCAN_CAB")
+	}
 
-	updates, err := patch.ScanWindowsUpdates()
+	slog.Info("scan-test starting", "log_level", cfg.LogLevel, "log_file", cfg.LogFile, "cab", cab)
+
+	var updates []patch.Update
+	if cab != "" {
+		fmt.Printf("Offline reconciliation scan using catalog: %s\n", cab)
+		updates, err = patch.ScanOffline(cab)
+	} else {
+		fmt.Println("Scanning for missing Windows updates (online)...")
+		updates, err = patch.ScanWindowsUpdates()
+	}
 	if err != nil {
 		// CRITICAL: never silently report "0 missing patches" on failure.
 		// A scan failure must be distinguishable from a genuinely clean device.
