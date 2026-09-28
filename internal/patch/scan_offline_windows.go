@@ -72,7 +72,10 @@ func ScanOffline(cabPath string) ([]Update, error) {
 	// does not actually read the cab (search returns 0 for everything).
 	svcRaw, err := oleutil.CallMethod(sm, "AddScanPackageService", "Aegis Offline Sync Service", cabPath)
 	if err != nil {
-		return nil, fmt.Errorf("AddScanPackageService(%q): %w", cabPath, err)
+		// This step requires Administrator. In production the agent runs as a
+		// LocalSystem service (elevated); a generic COM exception here almost
+		// always means the process is not elevated.
+		return nil, fmt.Errorf("AddScanPackageService(%q) failed — offline scan requires Administrator (the agent runs as a LocalSystem service in production): %w", cabPath, err)
 	}
 	svc := svcRaw.ToIDispatch()
 	defer svc.Release()
