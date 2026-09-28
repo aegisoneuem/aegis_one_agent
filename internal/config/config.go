@@ -20,6 +20,8 @@ type Config struct {
 	ReconnectBackoff  time.Duration
 	CommandTimeout    time.Duration
 	AllowedCommands   []string
+	WsusScanCab       string        // path to the server-provided wsusscn2.cab; empty disables local patch scan
+	PatchScanInterval time.Duration // how often the agent runs the local offline patch scan
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
@@ -60,6 +62,8 @@ func Load() Config {
 		ReconnectBackoff:  durationFromEnv("AEGIS_RECONNECT_BACKOFF", 10*time.Second),
 		CommandTimeout:    durationFromEnv("AEGIS_COMMAND_TIMEOUT", 10*time.Second),
 		AllowedCommands:   allowed,
+		WsusScanCab:       getenv("AEGIS_WSUS_SCAN_CAB", ""),
+		PatchScanInterval: durationFromEnv("AEGIS_PATCH_SCAN_INTERVAL", 6*time.Hour),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = "localhost"

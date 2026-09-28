@@ -6,13 +6,18 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"log/slog"
 	"math/rand"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
+	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -126,7 +131,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(cfg config.Config) error {
+func runAgent(cfg config.Config, buf buffer.Buffer) error {
 	for {
 		ctx, cancel := context.WithCancel(context.Background())
 		conn, err := grpc.NewClient(cfg.ServerAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -144,6 +149,9 @@ func runAgent(cfg config.Config) error {
 			time.Sleep(cfg.ReconnectBackoff)
 			continue
 		}
+
+		// On (re)connect, flush any patch scan results collected while offline.
+		drainPatchResults(stream, buf)
 
 		recvDone := make(chan error, 1)
 		go func() {
@@ -196,7 +204,10 @@ func runAgent(cfg config.Config) error {
 				if err := sendHeartbeat(stream, cfg); err != nil {
 					log.Printf("failed to send heartbeat: %v", err)
 					connected = false
+					break
 				}
+				// Send any patch scan results the detection goroutine buffered.
+				drainPatchResults(stream, buf)
 			}
 		}
 
@@ -209,11 +220,34 @@ func runAgent(cfg config.Config) error {
 
 func main() {
 	cfg := config.Load()
+
+	logFile, err := logging.Init(cfg.LogLevel, cfg.LogFile)
+	if err != nil {
+		fmt.Println("failed to initialize logging:", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
 	fmt.Println("Aegis One Agent - starting up")
 	fmt.Println("Server address:", cfg.ServerAddress)
 	fmt.Printf("Heartbeat interval: %s (jitter: %s)\n", cfg.HeartbeatInterval, cfg.HeartbeatJitter)
 
-	if err := runAgent(cfg); err != nil {
+	bufPath := filepath.Join(os.TempDir(), "aegis-patch-buffer.jsonl")
+	buf, err := buffer.NewFileBuffer(bufPath)
+	if err != nil {
+		log.Fatalf("failed to create offline buffer: %v", err)
+	}
+	slog.Info("agent starting",
+		"buffer", bufPath,
+		"cab", cfg.WsusScanCab,
+		"patch_scan_interval", cfg.PatchScanInterval.String())
+
+	// Detection runs independently and only writes to the buffer; the connect
+	// loop drains it and sends. This keeps the two off each other's stream.
+	go runPatchDetection(cfg, buf)
+
+	if err := runAgent(cfg, buf); err != nil {
 		log.Fatalf("agent failed: %v", err)
 	}
 }

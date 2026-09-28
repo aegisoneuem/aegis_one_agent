@@ -66,6 +66,14 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			fmt.Printf("Received command result -> command_id: %s, status: %s, message: %s\n",
 				result.CommandId, result.Status, result.Message)
 		}
+		if psr := msg.GetPatchScanResult(); psr != nil {
+			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d\n",
+				psr.DeviceId, psr.Build, psr.Architecture, psr.Source, len(psr.Missing))
+			for _, m := range psr.Missing {
+				fmt.Printf("    - [%s] %s (KB=%v, severity=%s, %.1fMB, reboot=%v, cves=%v)\n",
+					m.Classification, m.Title, m.KbArticleIds, m.MsrcSeverity, m.SizeMb, m.RebootRequired, m.CveIds)
+			}
+		}
 	}
 }
 
