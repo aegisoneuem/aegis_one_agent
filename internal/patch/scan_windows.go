@@ -95,6 +95,13 @@ var hangThreshold = 2
 var errScanTimeout = errors.New("scan attempt timed out")
 
 // ScanWindowsUpdates checks for missing OS-level security/cumulative updates.
+//
+// DEV/TEST ONLY — this performs a LIVE ONLINE Windows Update search, so it must
+// NOT be used on production endpoints: the no-internet rule forbids the endpoint
+// reaching the internet for detection. Production detection uses ScanOffline
+// (local Wsusscn2.cab) + CollectLocalState (registry). This function stays for
+// local development/verification only.
+//
 // Three-tier resilience, fully internal to the agent — never surfaced to
 // the end user, never requires a manual reboot:
 //   Tier 1: retry on a widening schedule, capped at 1 hour total

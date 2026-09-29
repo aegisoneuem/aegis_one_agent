@@ -30,7 +30,12 @@ func ScanOffline(cabPath string) ([]Update, error) {
 	}
 	info, err := os.Stat(absCab)
 	if err != nil {
-		return nil, fmt.Errorf("cab not accessible at %q: %w", absCab, err)
+		// HARD no-internet rule: if the local cab is missing/unreadable, report
+		// the reconciliation scan as unavailable. NEVER fall back to a live
+		// online Windows Update search — the endpoint must never reach the
+		// internet for detection. The cab is delivered to the endpoint via
+		// peer-cache; a missing cab is a delivery problem, not a reason to go online.
+		return nil, fmt.Errorf("reconciliation scan unavailable: cab file not present at %q: %w", absCab, err)
 	}
 	if info.IsDir() {
 		return nil, fmt.Errorf("cab path %q is a directory, not a file", absCab)
