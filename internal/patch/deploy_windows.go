@@ -4,7 +4,10 @@ package patch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -34,7 +37,12 @@ type DeployResult struct {
 //
 // DISM was chosen over wusa.exe as Microsoft's current, recommended offline
 // install path (handles .cab and .msu); revisit if Microsoft changes course.
-func InstallLocalPatch(path string) (*DeployResult, error) {
+//
+// expectedSHA256 (hex) is the file integrity check: when non-empty the file's
+// SHA-256 must match or the install is refused before DISM runs. In production
+// the server always supplies it (inside the Ed25519-signed install command);
+// an empty value skips the check and is for dev/test only.
+func InstallLocalPatch(path, expectedSHA256 string) (*DeployResult, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve patch path %q: %w", path, err)
@@ -43,6 +51,23 @@ func InstallLocalPatch(path string) (*DeployResult, error) {
 		// No internet fallback: a missing file is a delivery problem, not a
 		// reason to fetch anything.
 		return nil, fmt.Errorf("patch file not present at %q: %w", abs, err)
+	}
+
+	// Integrity: verify the delivered bytes before trusting them to DISM.
+	if expectedSHA256 != "" {
+		got, err := fileSHA256(abs)
+		if err != nil {
+			return nil, fmt.Errorf("hash patch file %q: %w", abs, err)
+		}
+		if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
+			slog.Error("deploy: patch integrity check FAILED — refusing to install",
+				"file", abs, "expected_sha256", expectedSHA256, "actual_sha256", got)
+			return &DeployResult{Path: abs, Success: false, Detail: "integrity check failed: SHA-256 mismatch"},
+				fmt.Errorf("integrity check failed for %q: SHA-256 mismatch", abs)
+		}
+		slog.Info("deploy: patch integrity verified (SHA-256 match)", "file", abs)
+	} else {
+		slog.Warn("deploy: no expected SHA-256 provided — skipping integrity check (dev/test only)", "file", abs)
 	}
 
 	slog.Info("deploy: installing local patch via DISM", "file", abs, "timeout", installTimeout.String())
@@ -89,6 +114,20 @@ func InstallLocalPatch(path string) (*DeployResult, error) {
 		slog.Error("deploy: install FAILED", "file", abs, "exit_code", exitCode, "detail", res.Detail)
 	}
 	return res, nil
+}
+
+// fileSHA256 returns the hex-encoded SHA-256 of the file at path.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // tail returns the last n characters of s (trimmed), prefixed with "..." when

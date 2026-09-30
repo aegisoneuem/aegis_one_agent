@@ -12,10 +12,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: deploytest <path-to-.msu-or-.cab>")
+		fmt.Println("Usage: deploytest <path-to-.msu-or-.cab> [expected-sha256]")
 		return
 	}
 	path := os.Args[1]
+	expectedSHA256 := ""
+	if len(os.Args) > 2 {
+		expectedSHA256 = os.Args[2]
+	}
 
 	cfg := config.Load()
 	logFile, err := logging.Init(cfg.LogLevel, cfg.LogFile)
@@ -29,7 +33,7 @@ func main() {
 	slog.Info("deploytest starting", "path", path)
 	fmt.Printf("Installing local patch: %s\n", path)
 
-	res, err := patch.InstallLocalPatch(path)
+	res, err := patch.InstallLocalPatch(path, expectedSHA256)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
