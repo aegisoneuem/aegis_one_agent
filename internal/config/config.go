@@ -65,7 +65,7 @@ func Load() Config {
 		AllowedCommands:   allowed,
 		WsusScanCab:       getenv("AEGIS_WSUS_SCAN_CAB", ""),
 		PatchScanInterval: durationFromEnv("AEGIS_PATCH_SCAN_INTERVAL", 6*time.Hour),
-		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\client\SKVC`),
+		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = "localhost"
