@@ -22,6 +22,7 @@ type Config struct {
 	AllowedCommands   []string
 	WsusScanCab       string        // path to the server-provided wsusscn2.cab; empty disables local patch scan
 	PatchScanInterval time.Duration // how often the agent runs the local offline patch scan
+	SecureDir         string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
@@ -64,6 +65,7 @@ func Load() Config {
 		AllowedCommands:   allowed,
 		WsusScanCab:       getenv("AEGIS_WSUS_SCAN_CAB", ""),
 		PatchScanInterval: durationFromEnv("AEGIS_PATCH_SCAN_INTERVAL", 6*time.Hour),
+		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\client\SKVC`),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = "localhost"

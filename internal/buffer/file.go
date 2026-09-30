@@ -5,37 +5,88 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 )
 
-// FileBuffer is a simple file-backed queue used until the encrypted-SQLite Local
-// Secure Buffer exists. It stores one JSON record per line.
+// FileBuffer is a file-backed FIFO queue storing one JSON record per line. When
+// constructed with a KeyProvider it encrypts each record's payload at rest with
+// AES-256-GCM (the "Local Secure Buffer"); without one it stores payloads in
+// plaintext (dev/test only).
 //
-// It is NOT encrypted — a deliberate placeholder that satisfies the Buffer
-// contract so offline routing can be built and tested now. Do not queue secrets
-// through it; patch state (build + KB numbers) is not sensitive. The
-// encrypted-SQLite implementation will replace this behind the same interface.
+// Only the payload is encrypted — the "kind" tag is non-sensitive routing
+// metadata and stays clear so the queue stays scannable.
 type FileBuffer struct {
 	path string
 	mu   sync.Mutex
+	keys secure.KeyProvider // nil => plaintext (dev/test)
 }
 
 type record struct {
 	Kind    string `json:"kind"`
-	Payload string `json:"payload"` // base64 of the raw payload
+	Payload string `json:"payload"` // base64 of the (optionally encrypted) payload
 }
 
-// NewFileBuffer returns a FileBuffer backed by the file at path, creating the
-// parent directory if needed.
+// NewFileBuffer returns a plaintext FileBuffer backed by the file at path,
+// creating the parent directory if needed. For production use
+// NewEncryptedFileBuffer so data is protected at rest.
 func NewFileBuffer(path string) (*FileBuffer, error) {
+	return newFileBuffer(path, nil)
+}
+
+// NewEncryptedFileBuffer returns a FileBuffer that seals each payload with
+// AES-256-GCM under the key from keys before writing it to disk.
+func NewEncryptedFileBuffer(path string, keys secure.KeyProvider) (*FileBuffer, error) {
+	if keys == nil {
+		return nil, fmt.Errorf("encrypted buffer requires a key provider")
+	}
+	return newFileBuffer(path, keys)
+}
+
+func newFileBuffer(path string, keys secure.KeyProvider) (*FileBuffer, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create buffer dir %q: %w", dir, err)
 		}
 	}
-	return &FileBuffer{path: path}, nil
+	return &FileBuffer{path: path, keys: keys}, nil
+}
+
+// encode turns a raw payload into the on-disk string form (encrypt if keyed,
+// then base64). decode reverses it.
+func (b *FileBuffer) encode(payload []byte) (string, error) {
+	stored := payload
+	if b.keys != nil {
+		key, err := b.keys.Key()
+		if err != nil {
+			return "", fmt.Errorf("get encryption key: %w", err)
+		}
+		sealed, err := secure.Seal(key, payload)
+		if err != nil {
+			return "", fmt.Errorf("encrypt payload: %w", err)
+		}
+		stored = sealed
+	}
+	return base64.StdEncoding.EncodeToString(stored), nil
+}
+
+func (b *FileBuffer) decode(s string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	if b.keys == nil {
+		return raw, nil
+	}
+	key, err := b.keys.Key()
+	if err != nil {
+		return nil, fmt.Errorf("get encryption key: %w", err)
+	}
+	return secure.Open(key, raw)
 }
 
 func (b *FileBuffer) Enqueue(kind string, payload []byte) error {
@@ -48,7 +99,11 @@ func (b *FileBuffer) Enqueue(kind string, payload []byte) error {
 	}
 	defer f.Close()
 
-	line, err := json.Marshal(record{Kind: kind, Payload: base64.StdEncoding.EncodeToString(payload)})
+	encoded, err := b.encode(payload)
+	if err != nil {
+		return err
+	}
+	line, err := json.Marshal(record{Kind: kind, Payload: encoded})
 	if err != nil {
 		return err
 	}
@@ -69,9 +124,12 @@ func (b *FileBuffer) Drain(handle func(kind string, payload []byte) error) (int,
 
 	drained := 0
 	for i, r := range records {
-		payload, err := base64.StdEncoding.DecodeString(r.Payload)
+		payload, err := b.decode(r.Payload)
 		if err != nil {
-			// Corrupt line — drop it rather than blocking the queue forever.
+			// Corrupt or (for an encrypted buffer) tampered/undecryptable record.
+			// Fail loud so tampering is visible, but drop it rather than blocking
+			// the queue forever behind one bad record.
+			slog.Warn("buffer: dropping undecodable record", "kind", r.Kind, "error", err.Error())
 			drained++
 			continue
 		}

@@ -8,7 +8,6 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -18,6 +17,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -259,12 +259,14 @@ func main() {
 	fmt.Println("Server address:", cfg.ServerAddress)
 	fmt.Printf("Heartbeat interval: %s (jitter: %s)\n", cfg.HeartbeatInterval, cfg.HeartbeatJitter)
 
-	bufPath := filepath.Join(os.TempDir(), "aegis-patch-buffer.jsonl")
-	buf, err := buffer.NewFileBuffer(bufPath)
+	keys := secure.NewKeyProvider(cfg.SecureDir)
+	bufPath := filepath.Join(cfg.SecureDir, "buffer", "patch-buffer.jsonl")
+	buf, err := buffer.NewEncryptedFileBuffer(bufPath, keys)
 	if err != nil {
-		log.Fatalf("failed to create offline buffer: %v", err)
+		log.Fatalf("failed to create secure offline buffer: %v", err)
 	}
 	slog.Info("agent starting",
+		"secure_dir", cfg.SecureDir,
 		"buffer", bufPath,
 		"cab", cfg.WsusScanCab,
 		"patch_scan_interval", cfg.PatchScanInterval.String())
