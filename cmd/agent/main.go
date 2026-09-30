@@ -21,6 +21,7 @@ import (
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 func buildHeartbeatMessage(deviceID, version, osName, hostname string, now time.Time) *pb.AgentMessage {
@@ -169,6 +170,31 @@ func runAgent(cfg config.Config, buf buffer.Buffer) error {
 						stream.Send(result)
 						continue
 					}
+
+					// install_patch carries a structured InstallPatchSpec payload
+					// and reports a rich InstallResult, unlike the simple string
+					// commands handled by executeCommand below.
+					if strings.EqualFold(strings.TrimSpace(cmd.Type), "install_patch") {
+						var spec pb.InstallPatchSpec
+						if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
+							slog.Error("install_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
+							stream.Send(buildCommandResultMessage(cmd.CommandId, "failed", "invalid install payload"))
+							continue
+						}
+						slog.Info("install_patch: command accepted", "command_id", cmd.CommandId, "kb", spec.Kb, "file", spec.FilePath)
+						ir := handleInstallPatch(&spec)
+						ir.CommandId = cmd.CommandId
+						out := &pb.AgentMessage{Payload: &pb.AgentMessage_InstallResult{InstallResult: ir}}
+						if err := stream.Send(out); err != nil {
+							log.Printf("failed to send install result: %v", err)
+							return
+						}
+						slog.Info("install_patch: result sent",
+							"command_id", cmd.CommandId, "success", ir.Success,
+							"reboot_required", ir.RebootRequired, "exit_code", ir.ExitCode)
+						continue
+					}
+
 					output, err := executeCommand(cfg, cmd.Type, string(cmd.Payload))
 					status := "success"
 					message := "command received and acknowledged"

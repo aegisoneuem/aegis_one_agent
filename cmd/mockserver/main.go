@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 const privateKeyB64 = "+KSVnrEXSXNsyCL0FVZ0TLOB28gKyL0L7KRxzjtUAXqyW5fNX8seQt4BH7WV2GUBn6EGh+QlaAKtUCRWJxgs+A=="
@@ -50,6 +52,39 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			return
 		}
 		fmt.Println("Sent command -> id: cmd-001, type: hostname (signed)")
+
+		// Optionally push a signed install_patch command. Set AEGIS_INSTALL_FILE
+		// (and optionally _KB / _HASH / _HASH_ALGO) to simulate the server
+		// delivering a patch file and telling the agent to install it. The file
+		// path is LOCAL to the agent machine — the server never streams bytes here.
+		if file := os.Getenv("AEGIS_INSTALL_FILE"); file != "" {
+			spec := &pb.InstallPatchSpec{
+				Kb:            os.Getenv("AEGIS_INSTALL_KB"),
+				FilePath:      file,
+				ExpectedHash:  os.Getenv("AEGIS_INSTALL_HASH"),
+				HashAlgorithm: os.Getenv("AEGIS_INSTALL_HASH_ALGO"),
+			}
+			specBytes, err := proto.Marshal(spec)
+			if err != nil {
+				log.Printf("failed to marshal install spec: %v", err)
+				return
+			}
+			installCmd := &pb.ServerMessage{
+				Payload: &pb.ServerMessage_Command{
+					Command: &pb.Command{
+						CommandId: "install-001",
+						Type:      "install_patch",
+						Payload:   specBytes,
+						Signature: signPayload(specBytes),
+					},
+				},
+			}
+			if err := stream.Send(installCmd); err != nil {
+				log.Printf("failed to send install command: %v", err)
+				return
+			}
+			fmt.Printf("Sent command -> id: install-001, type: install_patch, kb=%s, file=%s (signed)\n", spec.Kb, file)
+		}
 	}()
 
 	for {
@@ -65,6 +100,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		if result := msg.GetCommandResult(); result != nil {
 			fmt.Printf("Received command result -> command_id: %s, status: %s, message: %s\n",
 				result.CommandId, result.Status, result.Message)
+		}
+		if ir := msg.GetInstallResult(); ir != nil {
+			fmt.Printf("Received install result -> command_id: %s, kb: %s, success: %v, reboot_required: %v, exit_code: %d\n    detail: %s\n",
+				ir.CommandId, ir.Kb, ir.Success, ir.RebootRequired, ir.ExitCode, ir.Detail)
 		}
 		if psr := msg.GetPatchScanResult(); psr != nil {
 			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d\n",
