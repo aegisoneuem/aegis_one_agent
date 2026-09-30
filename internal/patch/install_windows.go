@@ -33,6 +33,11 @@ type InstallResult struct {
 // by its KB number. Matches it against currently-missing updates (from a
 // fresh search) rather than trusting a cached list — the update set can
 // change between scan and install.
+//
+// DEV/TEST ONLY — this DOWNLOADS from Windows Update over the internet, which
+// the no-internet rule forbids on production endpoints. Production remediation
+// uses InstallLocalPatch (DISM on a server-delivered local file). Kept for
+// local development/verification only.
 func InstallWindowsUpdate(kb string) (*InstallResult, error) {
 	kb = normalizeKB(kb)
 	slog.Info("patch install starting", "kb", kb)
