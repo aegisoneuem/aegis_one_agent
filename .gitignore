@@ -1,2 +1,13 @@
 build/
 *.exe
+
+# Never commit key material or secrets
+*key*.txt
+*.pem
+*.key
+private*.txt
+
+# Stray binaries built without -o (go build ./cmd/agent)
+/agent
+/mockserver
+/cachetest
