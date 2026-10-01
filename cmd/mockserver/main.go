@@ -101,9 +101,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			fmt.Printf("Received command result -> command_id: %s, status: %s, message: %s\n",
 				result.CommandId, result.Status, result.Message)
 		}
-		if ir := msg.GetInstallResult(); ir != nil {
-			fmt.Printf("Received install result -> command_id: %s, kb: %s, success: %v, reboot_required: %v, exit_code: %d\n    detail: %s\n",
-				ir.CommandId, ir.Kb, ir.Success, ir.RebootRequired, ir.ExitCode, ir.Detail)
+		if st := msg.GetInstallStatus(); st != nil {
+			fmt.Printf("Received install status -> command_id: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
+				st.CommandId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 		}
 		if psr := msg.GetPatchScanResult(); psr != nil {
 			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d\n",

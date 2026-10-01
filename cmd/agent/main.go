@@ -182,16 +182,16 @@ func runAgent(cfg config.Config, buf buffer.Buffer) error {
 							continue
 						}
 						slog.Info("install_patch: command accepted", "command_id", cmd.CommandId, "kb", spec.Kb, "file", spec.FilePath)
-						ir := handleInstallPatch(&spec)
-						ir.CommandId = cmd.CommandId
-						out := &pb.AgentMessage{Payload: &pb.AgentMessage_InstallResult{InstallResult: ir}}
+						st := handleInstallPatch(&spec)
+						st.CommandId = cmd.CommandId
+						out := &pb.AgentMessage{Payload: &pb.AgentMessage_InstallStatus{InstallStatus: st}}
 						if err := stream.Send(out); err != nil {
-							log.Printf("failed to send install result: %v", err)
+							log.Printf("failed to send install status: %v", err)
 							return
 						}
-						slog.Info("install_patch: result sent",
-							"command_id", cmd.CommandId, "success", ir.Success,
-							"reboot_required", ir.RebootRequired, "exit_code", ir.ExitCode)
+						slog.Info("install_patch: status sent",
+							"command_id", cmd.CommandId, "phase", st.Phase.String(),
+							"reboot_required", st.RebootRequired, "exit_code", st.ExitCode, "reason", st.Reason)
 						continue
 					}
 
