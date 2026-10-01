@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 // installTimeout bounds a single DISM install. Cumulative updates can take many
@@ -26,6 +28,7 @@ type DeployResult struct {
 	Success        bool
 	RebootRequired bool
 	ExitCode       int
+	Reason         string // concise, human failure cause (empty on success)
 	Detail         string // trailing DISM output (for logs/console)
 }
 
@@ -87,8 +90,22 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve patch path %q: %w", path, err)
 	}
-	if _, err := os.Stat(abs); err != nil {
+	info, err := os.Stat(abs)
+	if err != nil {
 		return nil, fmt.Errorf("patch file not present at %q: %w", abs, err)
+	}
+
+	// Disk-space pre-flight: DISM needs room to expand the package into the
+	// component store (well beyond the file size). Fail fast with a clear reason
+	// rather than burning minutes to discover the volume is full.
+	if free, derr := freeDiskBytes(abs); derr == nil {
+		if need := info.Size() * 3; free < need {
+			slog.Error("deploy: insufficient disk space for install",
+				"file", abs, "free_bytes", free, "need_bytes_estimate", need)
+			return &DeployResult{Path: abs, Success: false,
+				Reason: fmt.Sprintf("insufficient disk space: ~%d MB free, need ~%d MB", free>>20, need>>20),
+				Detail: "pre-flight disk space check failed"}, nil
+		}
 	}
 
 	slog.Info("deploy: installing local patch via DISM", "file", abs, "timeout", timeout.String())
@@ -131,11 +148,94 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	if res.Success {
 		slog.Info("deploy: install succeeded", "file", abs, "exit_code", exitCode, "reboot_required", res.RebootRequired)
 	} else {
-		// Fail loud with the DISM output tail so the failure is diagnosable.
-		slog.Error("deploy: install FAILED", "file", abs, "exit_code", exitCode, "detail", res.Detail)
+		res.Reason = classifyDISMFailure(exitCode, string(out))
+		// Fail loud with the concise reason + output tail so it is diagnosable.
+		slog.Error("deploy: install FAILED", "file", abs, "exit_code", exitCode, "reason", res.Reason, "detail", res.Detail)
 	}
 	return res, nil
 }
+
+// classifyDISMFailure turns a DISM exit code and its output into a concise,
+// human failure reason for troubleshooting. The full output stays in Detail
+// (verbose). Matching is best-effort on known HRESULTs/phrases; unknown
+// failures fall back to the exit code.
+func classifyDISMFailure(exitCode int, output string) string {
+	o := strings.ToLower(output)
+	switch {
+	case strings.Contains(o, "0x80070070") || strings.Contains(o, "not enough space") || strings.Contains(o, "disk is full"):
+		return "insufficient disk space on the target volume"
+	case strings.Contains(o, "0x800f081f") || strings.Contains(o, "source files could not be found"):
+		return "required source files missing (component store may be corrupt — run DISM /RestoreHealth)"
+	case strings.Contains(o, "0x800f0922"):
+		return "install rolled back — a pending operation or a failed servicing step (reboot and retry)"
+	case strings.Contains(o, "0x800f0923"):
+		return "package not applicable, or a reboot is pending from a previous update"
+	case strings.Contains(o, "0x80073701") || strings.Contains(o, "0x800f0831"):
+		return "component store corruption (run DISM /RestoreHealth or SFC /scannow)"
+	case strings.Contains(o, "0x8024") :
+		return "Windows Update servicing error (" + firstHRESULT(output) + ")"
+	case strings.Contains(o, "trustedinstaller") && (strings.Contains(o, "disabled") || strings.Contains(o, "cannot be started")):
+		return "Windows servicing service (TrustedInstaller) is disabled or cannot start"
+	case strings.Contains(o, "the system cannot find the file"):
+		return "a required file was not found"
+	case strings.Contains(o, "0x80070005") || strings.Contains(o, "access is denied"):
+		return "access denied — the agent must run elevated (LocalSystem) to install"
+	}
+	if h := firstHRESULT(output); h != "" {
+		return fmt.Sprintf("install failed (exit %d, %s)", exitCode, h)
+	}
+	return fmt.Sprintf("install failed (exit %d)", exitCode)
+}
+
+// firstHRESULT returns the first 0x######## token in s, or "".
+func firstHRESULT(s string) string {
+	i := strings.Index(strings.ToLower(s), "0x")
+	if i < 0 {
+		return ""
+	}
+	j := i + 2
+	for j < len(s) && j < i+10 && isHexDigit(s[j]) {
+		j++
+	}
+	if j <= i+2 {
+		return ""
+	}
+	return s[i:j]
+}
+
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+// freeDiskBytes returns the free bytes available on the volume that contains
+// path, using GetDiskFreeSpaceExW.
+func freeDiskBytes(path string) (int64, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return 0, err
+	}
+	vol := filepath.VolumeName(abs) + `\`
+	ptr, err := syscall.UTF16PtrFromString(vol)
+	if err != nil {
+		return 0, err
+	}
+	var freeAvail, total, totalFree uint64
+	r, _, e := procGetDiskFreeSpaceEx.Call(
+		uintptr(unsafe.Pointer(ptr)),
+		uintptr(unsafe.Pointer(&freeAvail)),
+		uintptr(unsafe.Pointer(&total)),
+		uintptr(unsafe.Pointer(&totalFree)),
+	)
+	if r == 0 {
+		return 0, e
+	}
+	return int64(freeAvail), nil
+}
+
+var (
+	modkernel32            = syscall.NewLazyDLL("kernel32.dll")
+	procGetDiskFreeSpaceEx = modkernel32.NewProc("GetDiskFreeSpaceExW")
+)
 
 // fileSHA256 returns the hex-encoded SHA-256 of the file at path.
 func fileSHA256(path string) (string, error) {

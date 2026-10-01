@@ -70,8 +70,10 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 		st.Phase = pb.InstallPhase_INSTALL_PHASE_SUCCESS
 	} else {
 		st.Phase = pb.InstallPhase_INSTALL_PHASE_FAILED
-		// B2b-3 will map exit codes / output into richer troubleshooting reasons.
-		st.Reason = fmt.Sprintf("install failed (exit %d)", res.ExitCode)
+		st.Reason = res.Reason // concise, classified failure cause
+		if st.Reason == "" {
+			st.Reason = fmt.Sprintf("install failed (exit %d)", res.ExitCode)
+		}
 	}
 	return st
 }
