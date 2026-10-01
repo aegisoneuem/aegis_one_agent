@@ -43,8 +43,10 @@ const (
 	StateInstalled State = "installed"
 )
 
-// DefaultMaxBytes is the baseline cache cap (1 GiB); admins raise it as needed.
-const DefaultMaxBytes int64 = 1 << 30
+// DefaultMaxBytes is the baseline cache cap (2 GiB); admins raise it as needed.
+// A single monthly cumulative update can approach this, so the active install
+// path must not be blocked by the cap (see B2b: JIT installs bypass the cap).
+const DefaultMaxBytes int64 = 2 << 30
 
 // DefaultTTL is how long an unused cached file is kept before TTL cleanup.
 const DefaultTTL = 24 * time.Hour
