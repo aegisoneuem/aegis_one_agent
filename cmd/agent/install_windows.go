@@ -4,11 +4,27 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/patch"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
+
+// alreadyInstalled reports whether the KB is already applied, so the worker can
+// skip a redundant install. Best-effort: on error it returns false (proceed).
+func alreadyInstalled(kb string) bool {
+	if strings.TrimSpace(kb) == "" {
+		return false
+	}
+	installed, err := patch.IsKBInstalled(kb)
+	if err != nil {
+		slog.Warn("install_patch: could not check installed state, proceeding", "kb", kb, "error", err.Error())
+		return false
+	}
+	return installed
+}
 
 // handleInstallPatch installs a server-delivered LOCAL patch file via DISM and
 // returns the terminal InstallStatus (SUCCESS or FAILED). The file was delivered
@@ -22,25 +38,26 @@ import (
 // spec.HashAlgorithm is part of the wire contract for future configurability;
 // the agent currently implements SHA-256 only, so a different algorithm is
 // rejected fail-loud rather than silently mismatching.
-func handleInstallPatch(spec *pb.InstallPatchSpec) *pb.InstallStatus {
+func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout time.Duration, emit phaseEmitter) *pb.InstallStatus {
 	algo := strings.ToLower(strings.TrimSpace(spec.HashAlgorithm))
 	if algo != "" && algo != "sha256" {
-		return &pb.InstallStatus{
-			Kb:     spec.Kb,
-			Phase:  pb.InstallPhase_INSTALL_PHASE_FAILED,
-			Reason: "unsupported hash_algorithm: " + spec.HashAlgorithm + " (agent supports sha256)",
-		}
+		return installFailed(spec.Kb, "unsupported hash_algorithm: "+spec.HashAlgorithm+" (agent supports sha256)")
 	}
 
-	res, err := patch.InstallLocalPatch(spec.FilePath, spec.ExpectedHash)
+	emit(pb.InstallPhase_INSTALL_PHASE_VERIFYING)
+	if err := patch.VerifyPatchFile(installPath, spec.ExpectedHash); err != nil {
+		return installFailed(spec.Kb, err.Error())
+	}
+
+	emit(pb.InstallPhase_INSTALL_PHASE_RUNNING)
+	res, err := patch.RunDISM(installPath, timeout)
 	if res == nil {
-		// A nil result means the install could not even start (bad path, DISM
-		// missing, hashing failure); report the error as a failure.
+		// Could not even start DISM (bad path, missing binary).
 		reason := "install failed"
 		if err != nil {
 			reason = err.Error()
 		}
-		return &pb.InstallStatus{Kb: spec.Kb, Phase: pb.InstallPhase_INSTALL_PHASE_FAILED, Reason: reason}
+		return installFailed(spec.Kb, reason)
 	}
 
 	st := &pb.InstallStatus{
@@ -53,7 +70,12 @@ func handleInstallPatch(spec *pb.InstallPatchSpec) *pb.InstallStatus {
 		st.Phase = pb.InstallPhase_INSTALL_PHASE_SUCCESS
 	} else {
 		st.Phase = pb.InstallPhase_INSTALL_PHASE_FAILED
+		// B2b-3 will map exit codes / output into richer troubleshooting reasons.
 		st.Reason = fmt.Sprintf("install failed (exit %d)", res.ExitCode)
 	}
 	return st
+}
+
+func installFailed(kb, reason string) *pb.InstallStatus {
+	return &pb.InstallStatus{Kb: kb, Phase: pb.InstallPhase_INSTALL_PHASE_FAILED, Reason: reason}
 }

@@ -54,6 +54,9 @@ func main() {
 		if len(os.Args) > 5 && os.Args[5] == "staged" {
 			state = patchcache.StateStaged
 		}
+		if c.Has(id) {
+			fmt.Printf("note: %q is already cached — replacing it\n", id)
+		}
 		if err := c.Put(id, file, state); err != nil {
 			fmt.Println("put failed:", err)
 			os.Exit(1)

@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
+	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
@@ -278,12 +280,29 @@ func main() {
 		"cab", cfg.WsusScanCab,
 		"patch_scan_interval", cfg.PatchScanInterval.String())
 
+	// Encrypted patch cache (staging store). The cache directory is created here
+	// and always kept, so an admin has a known location to inspect.
+	cacheDir := filepath.Join(cfg.SecureDir, "cache")
+	tmpDir := filepath.Join(cfg.SecureDir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		log.Fatalf("failed to create temp dir: %v", err)
+	}
+	cache, err := patchcache.New(cacheDir, keys, cfg.CacheMaxBytes, cfg.CacheTTL)
+	if err != nil {
+		log.Fatalf("failed to open patch cache: %v", err)
+	}
+	slog.Info("patch cache ready", "dir", cacheDir, "max_bytes", cfg.CacheMaxBytes, "ttl", cfg.CacheTTL.String())
+
 	// outbox serializes everything written to the stream; installJobs feeds the
 	// serial patch worker. Both are process-level so the worker (and its queued
 	// jobs) survive reconnects.
 	outbox := make(chan *pb.AgentMessage, 256)
 	installJobs := make(chan installJob, 32)
-	go patchWorker(installJobs, outbox)
+	inst := &patchInstaller{outbox: outbox, cache: cache, tmpDir: tmpDir, timeout: cfg.InstallTimeout}
+	go inst.patchWorker(installJobs)
+
+	// Cache janitor: periodic TTL/cap enforcement (infrequent, to stay light).
+	go cacheJanitor(cache, cfg.CacheJanitorInterval)
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.

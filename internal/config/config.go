@@ -20,9 +20,13 @@ type Config struct {
 	ReconnectBackoff  time.Duration
 	CommandTimeout    time.Duration
 	AllowedCommands   []string
-	WsusScanCab       string        // path to the server-provided wsusscn2.cab; empty disables local patch scan
-	PatchScanInterval time.Duration // how often the agent runs the local offline patch scan
-	SecureDir         string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
+	WsusScanCab          string        // path to the server-provided wsusscn2.cab; empty disables local patch scan
+	PatchScanInterval    time.Duration // how often the agent runs the local offline patch scan
+	SecureDir            string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
+	CacheMaxBytes        int64         // patch cache size cap (bytes); pre-cache/staging budget
+	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
+	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
+	InstallTimeout       time.Duration // max time for a single DISM install
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
@@ -42,6 +46,18 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func int64FromEnv(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 func Load() Config {
@@ -66,6 +82,10 @@ func Load() Config {
 		WsusScanCab:       getenv("AEGIS_WSUS_SCAN_CAB", ""),
 		PatchScanInterval: durationFromEnv("AEGIS_PATCH_SCAN_INTERVAL", 6*time.Hour),
 		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
+		CacheMaxBytes:        int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
+		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
+		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
+		InstallTimeout:       durationFromEnv("AEGIS_INSTALL_TIMEOUT", 30*time.Minute),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = "localhost"

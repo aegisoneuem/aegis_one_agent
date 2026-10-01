@@ -54,6 +54,7 @@ const DefaultTTL = 24 * time.Hour
 type entry struct {
 	ID         string `json:"id"`
 	File       string `json:"file"` // encrypted file name within the cache dir
+	Ext        string `json:"ext"`  // original extension (e.g. ".msu"/".cab") for decrypt-to-temp
 	Size       int64  `json:"size"` // on-disk (encrypted) size, for cap accounting
 	State      State  `json:"state"`
 	LastAccess int64  `json:"last_access"` // unix seconds
@@ -196,6 +197,7 @@ func (c *Cache) Put(id, srcPath string, state State) error {
 	c.entries[id] = &entry{
 		ID:         id,
 		File:       fname,
+		Ext:        filepath.Ext(srcPath),
 		Size:       encInfo.Size(),
 		State:      state,
 		LastAccess: now,
@@ -282,6 +284,17 @@ func (c *Cache) Has(id string) bool {
 	defer c.mu.Unlock()
 	_, ok := c.entries[id]
 	return ok
+}
+
+// Ext returns the original file extension stored for a cached entry (e.g.
+// ".msu"), so a decrypt-to-temp keeps the extension DISM expects.
+func (c *Cache) Ext(id string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[id]; ok {
+		return e.Ext
+	}
+	return ""
 }
 
 // Enforce runs TTL cleanup then LRU cap eviction. It returns ErrCacheFull if the

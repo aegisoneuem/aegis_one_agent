@@ -43,36 +43,57 @@ type DeployResult struct {
 // the server always supplies it (inside the Ed25519-signed install command);
 // an empty value skips the check and is for dev/test only.
 func InstallLocalPatch(path, expectedSHA256 string) (*DeployResult, error) {
+	if err := VerifyPatchFile(path, expectedSHA256); err != nil {
+		return &DeployResult{Path: path, Success: false, Detail: err.Error()}, err
+	}
+	return RunDISM(path, installTimeout)
+}
+
+// VerifyPatchFile checks that the file exists and (when expectedSHA256 is set)
+// that its SHA-256 matches, failing loud on mismatch. An empty expectedSHA256
+// skips the check with a warning (dev/test only). It never touches the network.
+func VerifyPatchFile(path, expectedSHA256 string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve patch path %q: %w", path, err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		// No internet fallback: a missing file is a delivery problem, not a
+		// reason to fetch anything.
+		return fmt.Errorf("patch file not present at %q: %w", abs, err)
+	}
+	if expectedSHA256 == "" {
+		slog.Warn("deploy: no expected SHA-256 provided — skipping integrity check (dev/test only)", "file", abs)
+		return nil
+	}
+	got, err := fileSHA256(abs)
+	if err != nil {
+		return fmt.Errorf("hash patch file %q: %w", abs, err)
+	}
+	if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
+		slog.Error("deploy: patch integrity check FAILED — refusing to install",
+			"file", abs, "expected_sha256", expectedSHA256, "actual_sha256", got)
+		return fmt.Errorf("integrity check failed for %q: SHA-256 mismatch", abs)
+	}
+	slog.Info("deploy: patch integrity verified (SHA-256 match)", "file", abs)
+	return nil
+}
+
+// RunDISM installs a LOCAL patch file (.msu/.cab) with DISM — no internet, no
+// PowerShell. The caller is responsible for integrity verification beforehand
+// (see VerifyPatchFile). timeout bounds the single DISM invocation.
+func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve patch path %q: %w", path, err)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		// No internet fallback: a missing file is a delivery problem, not a
-		// reason to fetch anything.
 		return nil, fmt.Errorf("patch file not present at %q: %w", abs, err)
 	}
 
-	// Integrity: verify the delivered bytes before trusting them to DISM.
-	if expectedSHA256 != "" {
-		got, err := fileSHA256(abs)
-		if err != nil {
-			return nil, fmt.Errorf("hash patch file %q: %w", abs, err)
-		}
-		if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
-			slog.Error("deploy: patch integrity check FAILED — refusing to install",
-				"file", abs, "expected_sha256", expectedSHA256, "actual_sha256", got)
-			return &DeployResult{Path: abs, Success: false, Detail: "integrity check failed: SHA-256 mismatch"},
-				fmt.Errorf("integrity check failed for %q: SHA-256 mismatch", abs)
-		}
-		slog.Info("deploy: patch integrity verified (SHA-256 match)", "file", abs)
-	} else {
-		slog.Warn("deploy: no expected SHA-256 provided — skipping integrity check (dev/test only)", "file", abs)
-	}
+	slog.Info("deploy: installing local patch via DISM", "file", abs, "timeout", timeout.String())
 
-	slog.Info("deploy: installing local patch via DISM", "file", abs, "timeout", installTimeout.String())
-
-	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "dism.exe",
@@ -85,8 +106,8 @@ func InstallLocalPatch(path, expectedSHA256 string) (*DeployResult, error) {
 	stop()
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return &DeployResult{Path: abs, Detail: fmt.Sprintf("DISM timed out after %s", installTimeout)},
-			fmt.Errorf("DISM install timed out after %s", installTimeout)
+		return &DeployResult{Path: abs, Detail: fmt.Sprintf("DISM timed out after %s", timeout)},
+			fmt.Errorf("DISM install timed out after %s", timeout)
 	}
 	if cmd.ProcessState == nil {
 		// DISM failed to even start (missing binary, etc.).

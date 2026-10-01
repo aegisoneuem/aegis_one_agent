@@ -63,6 +63,28 @@ func CollectLocalState() (*LocalState, error) {
 	return s, nil
 }
 
+// IsKBInstalled reports whether the given KB (with or without the "KB" prefix)
+// is already present in the CBS installed-package set. This is a best-effort
+// idempotency guard so the agent can skip re-installing a patch that is already
+// applied. The OS build is the authoritative cumulative-level signal, so a false
+// negative is safe — the install just proceeds, and DISM is itself idempotent.
+func IsKBInstalled(kb string) (bool, error) {
+	target := normalizeKB(kb)
+	if target == "" {
+		return false, nil
+	}
+	kbs, err := installedKBsFromCBS()
+	if err != nil {
+		return false, err
+	}
+	for _, k := range kbs {
+		if normalizeKB(k) == target {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // osArchitecture returns the OS architecture. PROCESSOR_ARCHITEW6432 is set when
 // a 32-bit process runs on 64-bit Windows (WOW64), so it reflects the true OS
 // arch; otherwise PROCESSOR_ARCHITECTURE does.
