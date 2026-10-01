@@ -132,115 +132,122 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(cfg config.Config, buf buffer.Buffer) error {
+func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob) error {
 	for {
-		ctx, cancel := context.WithCancel(context.Background())
 		conn, err := grpc.NewClient(cfg.ServerAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			log.Printf("failed to connect to %s: %v", cfg.ServerAddress, err)
 			time.Sleep(cfg.ReconnectBackoff)
 			continue
 		}
-
+		ctx, cancel := context.WithCancel(context.Background())
 		client := pb.NewAgentControlPlaneClient(conn)
 		stream, err := client.Connect(ctx)
 		if err != nil {
 			log.Printf("failed to open stream: %v", err)
+			cancel()
 			conn.Close()
 			time.Sleep(cfg.ReconnectBackoff)
 			continue
 		}
 
-		// On (re)connect, flush any patch scan results collected while offline.
-		drainPatchResults(stream, buf)
-
-		recvDone := make(chan error, 1)
+		// Sender: the ONLY goroutine that writes to the stream (gRPC Send is not
+		// safe for concurrent use). It drains the outbox (command results, install
+		// status), beats the heartbeat, and flushes buffered patch scan results.
 		go func() {
+			defer cancel()
+			interval := cfg.HeartbeatInterval
+			if cfg.HeartbeatJitter > 0 {
+				interval += time.Duration(rand.Int63n(int64(cfg.HeartbeatJitter)))
+			}
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+
+			drainPatchResults(stream, buf) // flush backlog on (re)connect
 			for {
-				msg, err := stream.Recv()
-				if err != nil {
-					recvDone <- err
+				select {
+				case <-ctx.Done():
 					return
-				}
-				if cmd := msg.GetCommand(); cmd != nil {
-					fmt.Printf("Received command -> id: %s, type: %s\n", cmd.CommandId, cmd.Type)
-					if !verifyCommand(cmd.Payload, cmd.Signature) {
-						fmt.Printf("Command %s SIGNATURE INVALID — rejecting!\n", cmd.CommandId)
-						result := buildCommandResultMessage(cmd.CommandId, "rejected", "signature verification failed")
-						stream.Send(result)
-						continue
-					}
-
-					// install_patch carries a structured InstallPatchSpec payload
-					// and reports a rich InstallResult, unlike the simple string
-					// commands handled by executeCommand below.
-					if strings.EqualFold(strings.TrimSpace(cmd.Type), "install_patch") {
-						var spec pb.InstallPatchSpec
-						if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
-							slog.Error("install_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
-							stream.Send(buildCommandResultMessage(cmd.CommandId, "failed", "invalid install payload"))
-							continue
-						}
-						slog.Info("install_patch: command accepted", "command_id", cmd.CommandId, "kb", spec.Kb, "file", spec.FilePath)
-						st := handleInstallPatch(&spec)
-						st.CommandId = cmd.CommandId
-						out := &pb.AgentMessage{Payload: &pb.AgentMessage_InstallStatus{InstallStatus: st}}
-						if err := stream.Send(out); err != nil {
-							log.Printf("failed to send install status: %v", err)
-							return
-						}
-						slog.Info("install_patch: status sent",
-							"command_id", cmd.CommandId, "phase", st.Phase.String(),
-							"reboot_required", st.RebootRequired, "exit_code", st.ExitCode, "reason", st.Reason)
-						continue
-					}
-
-					output, err := executeCommand(cfg, cmd.Type, string(cmd.Payload))
-					status := "success"
-					message := "command received and acknowledged"
-					if err != nil {
-						status = "failed"
-						message = err.Error()
-					} else if output != "" {
-						message = strings.TrimSpace(output)
-					}
-					result := buildCommandResultMessage(cmd.CommandId, status, message)
-					if err := stream.Send(result); err != nil {
-						log.Printf("failed to send command result: %v", err)
+				case msg := <-outbox:
+					if err := stream.Send(msg); err != nil {
+						log.Printf("send failed: %v", err)
 						return
 					}
-					fmt.Printf("Sent command result -> command_id: %s, status: %s, message: %s\n", cmd.CommandId, status, message)
+				case <-ticker.C:
+					if err := sendHeartbeat(stream, cfg); err != nil {
+						log.Printf("failed to send heartbeat: %v", err)
+						return
+					}
+					drainPatchResults(stream, buf)
 				}
 			}
 		}()
 
-		interval := cfg.HeartbeatInterval
-		if cfg.HeartbeatJitter > 0 {
-			interval += time.Duration(rand.Int63n(int64(cfg.HeartbeatJitter)))
-		}
-		ticker := time.NewTicker(interval)
-		connected := true
-
-		for connected {
-			select {
-			case err := <-recvDone:
-				log.Printf("server stream closed: %v", err)
-				connected = false
-			case <-ticker.C:
-				if err := sendHeartbeat(stream, cfg); err != nil {
-					log.Printf("failed to send heartbeat: %v", err)
-					connected = false
-					break
+		// Receiver: reads commands and dispatches them. It never writes to the
+		// stream — replies go through the outbox, and patch installs through the
+		// serial install queue.
+		go func() {
+			defer cancel()
+			for {
+				msg, err := stream.Recv()
+				if err != nil {
+					log.Printf("server stream closed: %v", err)
+					return
 				}
-				// Send any patch scan results the detection goroutine buffered.
-				drainPatchResults(stream, buf)
-			}
-		}
+				cmd := msg.GetCommand()
+				if cmd == nil {
+					continue
+				}
+				fmt.Printf("Received command -> id: %s, type: %s\n", cmd.CommandId, cmd.Type)
+				if !verifyCommand(cmd.Payload, cmd.Signature) {
+					slog.Warn("command signature invalid — rejecting", "command_id", cmd.CommandId)
+					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "rejected", "signature verification failed"))
+					continue
+				}
 
-		ticker.Stop()
-		cancel()
+				// install_patch runs on the serial patch worker and reports phased
+				// InstallStatus; it must not block the receiver (DISM takes minutes).
+				if strings.EqualFold(strings.TrimSpace(cmd.Type), "install_patch") {
+					var spec pb.InstallPatchSpec
+					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
+						slog.Error("install_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
+						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid install payload"))
+						continue
+					}
+					slog.Info("install_patch: accepted, queued", "command_id", cmd.CommandId, "kb", spec.Kb)
+					send(ctx, outbox, &pb.AgentMessage{Payload: &pb.AgentMessage_InstallStatus{
+						InstallStatus: &pb.InstallStatus{CommandId: cmd.CommandId, Kb: spec.Kb, Phase: pb.InstallPhase_INSTALL_PHASE_QUEUED}}})
+					select {
+					case installJobs <- installJob{commandID: cmd.CommandId, spec: &spec}:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+
+				output, execErr := executeCommand(cfg, cmd.Type, string(cmd.Payload))
+				status, message := "success", "command received and acknowledged"
+				if execErr != nil {
+					status, message = "failed", execErr.Error()
+				} else if output != "" {
+					message = strings.TrimSpace(output)
+				}
+				send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
+			}
+		}()
+
+		<-ctx.Done() // sender or receiver failed; tear the connection down and retry
 		conn.Close()
 		time.Sleep(cfg.ReconnectBackoff)
+	}
+}
+
+// send queues a message for the sender goroutine, unless the connection is
+// already tearing down.
+func send(ctx context.Context, outbox chan<- *pb.AgentMessage, msg *pb.AgentMessage) {
+	select {
+	case outbox <- msg:
+	case <-ctx.Done():
 	}
 }
 
@@ -271,11 +278,18 @@ func main() {
 		"cab", cfg.WsusScanCab,
 		"patch_scan_interval", cfg.PatchScanInterval.String())
 
-	// Detection runs independently and only writes to the buffer; the connect
-	// loop drains it and sends. This keeps the two off each other's stream.
+	// outbox serializes everything written to the stream; installJobs feeds the
+	// serial patch worker. Both are process-level so the worker (and its queued
+	// jobs) survive reconnects.
+	outbox := make(chan *pb.AgentMessage, 256)
+	installJobs := make(chan installJob, 32)
+	go patchWorker(installJobs, outbox)
+
+	// Detection runs independently and only writes to the buffer; the sender
+	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf)
 
-	if err := runAgent(cfg, buf); err != nil {
+	if err := runAgent(cfg, buf, outbox, installJobs); err != nil {
 		log.Fatalf("agent failed: %v", err)
 	}
 }
