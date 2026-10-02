@@ -7,12 +7,26 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
+
+// nth returns the i-th trimmed element of list. A single-element list applies to
+// all indices (so one KB/HASH can cover several files); otherwise out of range
+// returns "".
+func nth(list []string, i int) string {
+	if len(list) == 1 {
+		return strings.TrimSpace(list[0])
+	}
+	if i < len(list) {
+		return strings.TrimSpace(list[i])
+	}
+	return ""
+}
 
 const privateKeyB64 = "+KSVnrEXSXNsyCL0FVZ0TLOB28gKyL0L7KRxzjtUAXqyW5fNX8seQt4BH7WV2GUBn6EGh+QlaAKtUCRWJxgs+A=="
 
@@ -53,37 +67,49 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		}
 		fmt.Println("Sent command -> id: cmd-001, type: hostname (signed)")
 
-		// Optionally push a signed install_patch command. Set AEGIS_INSTALL_FILE
-		// (and optionally _KB / _HASH / _HASH_ALGO) to simulate the server
-		// delivering a patch file and telling the agent to install it. The file
-		// path is LOCAL to the agent machine — the server never streams bytes here.
-		if file := os.Getenv("AEGIS_INSTALL_FILE"); file != "" {
-			spec := &pb.InstallPatchSpec{
-				Kb:            os.Getenv("AEGIS_INSTALL_KB"),
-				FilePath:      file,
-				ExpectedHash:  os.Getenv("AEGIS_INSTALL_HASH"),
-				HashAlgorithm: os.Getenv("AEGIS_INSTALL_HASH_ALGO"),
-			}
-			specBytes, err := proto.Marshal(spec)
-			if err != nil {
-				log.Printf("failed to marshal install spec: %v", err)
-				return
-			}
-			installCmd := &pb.ServerMessage{
-				Payload: &pb.ServerMessage_Command{
-					Command: &pb.Command{
-						CommandId: "install-001",
-						Type:      "install_patch",
-						Payload:   specBytes,
-						Signature: signPayload(specBytes),
+		// Optionally push one or more signed install_patch commands. Set
+		// AEGIS_INSTALL_FILE (and optionally _KB / _HASH / _HASH_ALGO); each may be
+		// a COMMA-SEPARATED list (same index across lists) to simulate a multi-patch
+		// job — the agent queues them and installs one at a time. The file path is
+		// LOCAL to the agent machine; the server never streams bytes here.
+		if filesEnv := os.Getenv("AEGIS_INSTALL_FILE"); filesEnv != "" {
+			files := strings.Split(filesEnv, ",")
+			kbs := strings.Split(os.Getenv("AEGIS_INSTALL_KB"), ",")
+			hashes := strings.Split(os.Getenv("AEGIS_INSTALL_HASH"), ",")
+			algo := os.Getenv("AEGIS_INSTALL_HASH_ALGO")
+			for i, f := range files {
+				f = strings.TrimSpace(f)
+				if f == "" {
+					continue
+				}
+				spec := &pb.InstallPatchSpec{
+					Kb:            nth(kbs, i),
+					FilePath:      f,
+					ExpectedHash:  nth(hashes, i),
+					HashAlgorithm: algo,
+				}
+				specBytes, err := proto.Marshal(spec)
+				if err != nil {
+					log.Printf("failed to marshal install spec: %v", err)
+					continue
+				}
+				cmdID := fmt.Sprintf("install-%03d", i+1)
+				installCmd := &pb.ServerMessage{
+					Payload: &pb.ServerMessage_Command{
+						Command: &pb.Command{
+							CommandId: cmdID,
+							Type:      "install_patch",
+							Payload:   specBytes,
+							Signature: signPayload(specBytes),
+						},
 					},
-				},
+				}
+				if err := stream.Send(installCmd); err != nil {
+					log.Printf("failed to send install command: %v", err)
+					return
+				}
+				fmt.Printf("Sent command -> id: %s, type: install_patch, kb=%s, file=%s (signed)\n", cmdID, spec.Kb, f)
 			}
-			if err := stream.Send(installCmd); err != nil {
-				log.Printf("failed to send install command: %v", err)
-				return
-			}
-			fmt.Printf("Sent command -> id: install-001, type: install_patch, kb=%s, file=%s (signed)\n", spec.Kb, file)
 		}
 	}()
 
