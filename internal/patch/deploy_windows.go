@@ -5,8 +5,10 @@ package patch
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"os"
@@ -46,16 +48,18 @@ type DeployResult struct {
 // the server always supplies it (inside the Ed25519-signed install command);
 // an empty value skips the check and is for dev/test only.
 func InstallLocalPatch(path, expectedSHA256 string) (*DeployResult, error) {
-	if err := VerifyPatchFile(path, expectedSHA256); err != nil {
+	if err := VerifyPatchFile(path, expectedSHA256, "sha256"); err != nil {
 		return &DeployResult{Path: path, Success: false, Detail: err.Error()}, err
 	}
 	return RunDISM(path, installTimeout)
 }
 
-// VerifyPatchFile checks that the file exists and (when expectedSHA256 is set)
-// that its SHA-256 matches, failing loud on mismatch. An empty expectedSHA256
-// skips the check with a warning (dev/test only). It never touches the network.
-func VerifyPatchFile(path, expectedSHA256 string) error {
+// VerifyPatchFile checks that the file exists and (when expectedHash is set) that
+// its digest matches, failing loud on mismatch. algo selects the digest
+// ("sha256" default, or "sha512"); the patching operator chooses per their
+// policy. An empty expectedHash skips the check with a warning (dev/test only).
+// It never touches the network.
+func VerifyPatchFile(path, expectedHash, algo string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("resolve patch path %q: %w", path, err)
@@ -65,20 +69,21 @@ func VerifyPatchFile(path, expectedSHA256 string) error {
 		// reason to fetch anything.
 		return fmt.Errorf("patch file not present at %q: %w", abs, err)
 	}
-	if expectedSHA256 == "" {
-		slog.Warn("deploy: no expected SHA-256 provided — skipping integrity check (dev/test only)", "file", abs)
+	normAlgo := normalizeHashAlgo(algo)
+	if expectedHash == "" {
+		slog.Warn("deploy: no expected hash provided — skipping integrity check (dev/test only)", "file", abs)
 		return nil
 	}
-	got, err := fileSHA256(abs)
+	got, err := fileHash(abs, normAlgo)
 	if err != nil {
 		return fmt.Errorf("hash patch file %q: %w", abs, err)
 	}
-	if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
+	if !strings.EqualFold(got, strings.TrimSpace(expectedHash)) {
 		slog.Error("deploy: patch integrity check FAILED — refusing to install",
-			"file", abs, "expected_sha256", expectedSHA256, "actual_sha256", got)
-		return fmt.Errorf("integrity check failed for %q: SHA-256 mismatch", abs)
+			"file", abs, "algo", normAlgo, "expected", expectedHash, "actual", got)
+		return fmt.Errorf("integrity check failed for %q: %s mismatch", abs, normAlgo)
 	}
-	slog.Info("deploy: patch integrity verified (SHA-256 match)", "file", abs)
+	slog.Info("deploy: patch integrity verified", "file", abs, "algo", normAlgo)
 	return nil
 }
 
@@ -237,14 +242,34 @@ var (
 	procGetDiskFreeSpaceEx = modkernel32.NewProc("GetDiskFreeSpaceExW")
 )
 
-// fileSHA256 returns the hex-encoded SHA-256 of the file at path.
-func fileSHA256(path string) (string, error) {
+// normalizeHashAlgo canonicalizes an algorithm name ("SHA-256" → "sha256").
+// Empty defaults to sha256.
+func normalizeHashAlgo(algo string) string {
+	a := strings.ToLower(strings.TrimSpace(algo))
+	a = strings.ReplaceAll(a, "-", "")
+	if a == "" {
+		return "sha256"
+	}
+	return a
+}
+
+// fileHash returns the hex-encoded digest of the file at path using the given
+// algorithm ("sha256" or "sha512"). The operator chooses per their policy.
+func fileHash(path, algo string) (string, error) {
+	var h hash.Hash
+	switch normalizeHashAlgo(algo) {
+	case "sha256":
+		h = sha256.New()
+	case "sha512":
+		h = sha512.New()
+	default:
+		return "", fmt.Errorf("unsupported hash algorithm %q (supported: sha256, sha512)", algo)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}

@@ -39,13 +39,10 @@ func alreadyInstalled(kb string) bool {
 // the agent currently implements SHA-256 only, so a different algorithm is
 // rejected fail-loud rather than silently mismatching.
 func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout time.Duration, emit phaseEmitter) *pb.InstallStatus {
-	algo := strings.ToLower(strings.TrimSpace(spec.HashAlgorithm))
-	if algo != "" && algo != "sha256" {
-		return installFailed(spec.Kb, "unsupported hash_algorithm: "+spec.HashAlgorithm+" (agent supports sha256)")
-	}
-
 	emit(pb.InstallPhase_INSTALL_PHASE_VERIFYING)
-	if err := patch.VerifyPatchFile(installPath, spec.ExpectedHash); err != nil {
+	// hash_algorithm is the operator's choice (sha256 default, or sha512);
+	// VerifyPatchFile rejects an unsupported algorithm fail-loud.
+	if err := patch.VerifyPatchFile(installPath, spec.ExpectedHash, spec.HashAlgorithm); err != nil {
 		return installFailed(spec.Kb, err.Error())
 	}
 

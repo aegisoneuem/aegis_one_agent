@@ -2,7 +2,39 @@
 
 package patch
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestNormalizeHashAlgo(t *testing.T) {
+	cases := map[string]string{"": "sha256", "SHA256": "sha256", "sha-256": "sha256", "SHA-512": "sha512", "sha512": "sha512"}
+	for in, want := range cases {
+		if got := normalizeHashAlgo(in); got != want {
+			t.Errorf("normalizeHashAlgo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFileHash(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Known digests of "abc".
+	wantSHA256 := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	wantSHA512 := "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+	if got, _ := fileHash(p, "sha256"); got != wantSHA256 {
+		t.Errorf("sha256 = %q", got)
+	}
+	if got, _ := fileHash(p, "sha512"); got != wantSHA512 {
+		t.Errorf("sha512 = %q", got)
+	}
+	if _, err := fileHash(p, "md5"); err == nil {
+		t.Error("md5 should be unsupported")
+	}
+}
 
 func TestClassifyDISMFailure(t *testing.T) {
 	cases := []struct {
