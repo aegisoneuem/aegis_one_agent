@@ -18,6 +18,8 @@ type Config struct {
 	OS                string
 	HeartbeatInterval time.Duration
 	HeartbeatJitter   time.Duration
+	KeepaliveTime     time.Duration // gRPC HTTP/2 keepalive ping interval (dead-conn detection)
+	KeepaliveTimeout  time.Duration // how long to wait for a keepalive ping ack
 	ReconnectBackoff  time.Duration
 	CommandTimeout    time.Duration
 	AllowedCommands   []string
@@ -81,8 +83,10 @@ func Load() Config {
 		AgentVersion:      getenv("AEGIS_AGENT_VERSION", "0.0.1"),
 		Hostname:          getenv("AEGIS_HOSTNAME", "localhost"),
 		OS:                getenv("AEGIS_OS", "windows"),
-		HeartbeatInterval: durationFromEnv("AEGIS_HEARTBEAT_INTERVAL", 30*time.Second),
-		HeartbeatJitter:   durationFromEnv("AEGIS_HEARTBEAT_JITTER", 5*time.Second),
+		HeartbeatInterval: durationFromEnv("AEGIS_HEARTBEAT_INTERVAL", 5*time.Minute),
+		HeartbeatJitter:   durationFromEnv("AEGIS_HEARTBEAT_JITTER", 30*time.Second),
+		KeepaliveTime:     durationFromEnv("AEGIS_KEEPALIVE_TIME", 60*time.Second),
+		KeepaliveTimeout:  durationFromEnv("AEGIS_KEEPALIVE_TIMEOUT", 20*time.Second),
 		ReconnectBackoff:  durationFromEnv("AEGIS_RECONNECT_BACKOFF", 10*time.Second),
 		CommandTimeout:    durationFromEnv("AEGIS_COMMAND_TIMEOUT", 10*time.Second),
 		AllowedCommands:   allowed,

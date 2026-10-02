@@ -13,6 +13,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -159,7 +160,16 @@ func main() {
 		log.Fatalf("mTLS setup failed (run certgen first?): %v", err)
 	}
 
-	s := grpc.NewServer(grpc.Creds(creds))
+	// Allow the agent's keepalive pings (client pings ~60s; without a permissive
+	// policy the server would GOAWAY with "too_many_pings"). The real server needs
+	// an equivalent policy.
+	s := grpc.NewServer(
+		grpc.Creds(creds),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             20 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
 	pb.RegisterAgentControlPlaneServer(s, &server{})
 	fmt.Printf("Mock server listening on :50051 (mTLS: ca=%s server=%s)\n", caFile, certFile)
 	if err := s.Serve(lis); err != nil {

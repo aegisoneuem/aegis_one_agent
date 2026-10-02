@@ -22,6 +22,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -145,7 +146,14 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 
 	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	for {
-		conn, err := grpc.NewClient(cfg.ServerAddress, grpc.WithTransportCredentials(creds))
+		conn, err := grpc.NewClient(cfg.ServerAddress,
+			grpc.WithTransportCredentials(creds),
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                cfg.KeepaliveTime,
+				Timeout:             cfg.KeepaliveTimeout,
+				PermitWithoutStream: true, // keep the link alive across reconnect gaps
+			}),
+		)
 		if err != nil {
 			logReconnect(&connFail, cfg.ServerAddress, err)
 			time.Sleep(cfg.ReconnectBackoff)
