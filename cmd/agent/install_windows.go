@@ -8,9 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/patch"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
+
+// applyTuning pushes configurable tuning values into the patch package at
+// startup (Windows-only knobs).
+func applyTuning(cfg config.Config) {
+	patch.SetDiskMultiplier(cfg.InstallDiskMultiplier)
+}
 
 // alreadyInstalled reports whether the KB is already applied, so the worker can
 // skip a redundant install. Best-effort: on error it returns false (proceed).

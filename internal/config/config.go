@@ -35,6 +35,7 @@ type Config struct {
 	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
 	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
 	InstallTimeout       time.Duration // max time for a single DISM install
+	InstallDiskMultiplier int64        // require free disk >= this * patch size before install
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
@@ -102,6 +103,7 @@ func Load() Config {
 		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
 		InstallTimeout:       durationFromEnv("AEGIS_INSTALL_TIMEOUT", 30*time.Minute),
+		InstallDiskMultiplier: int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 3),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = "localhost"

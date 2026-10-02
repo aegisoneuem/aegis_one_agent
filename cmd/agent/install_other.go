@@ -5,8 +5,12 @@ package main
 import (
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
+
+// applyTuning is a no-op on non-Windows platforms (tuning knobs are Windows-only).
+func applyTuning(cfg config.Config) {}
 
 // alreadyInstalled is a no-op on non-Windows platforms (installs unsupported).
 func alreadyInstalled(kb string) bool { return false }

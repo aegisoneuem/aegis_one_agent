@@ -300,6 +300,8 @@ func main() {
 		defer logSink.Close()
 	}
 
+	applyTuning(cfg) // push configurable tuning knobs into the patch package
+
 	slog.Info("Aegis One Agent starting up",
 		"server", cfg.ServerAddress,
 		"heartbeat_interval", cfg.HeartbeatInterval.String(),

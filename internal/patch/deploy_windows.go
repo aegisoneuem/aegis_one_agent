@@ -26,6 +26,18 @@ import (
 // minutes to apply; generous but finite so a stuck install cannot hang forever.
 var installTimeout = 30 * time.Minute
 
+// diskSpaceMultiplier is how many times the patch file size must be free on the
+// target volume before install (DISM expands into the component store). Set from
+// config via SetDiskMultiplier; defaults to 3.
+var diskSpaceMultiplier int64 = 3
+
+// SetDiskMultiplier overrides the disk-space pre-flight multiplier (config).
+func SetDiskMultiplier(n int64) {
+	if n > 0 {
+		diskSpaceMultiplier = n
+	}
+}
+
 // DeployResult is the outcome of installing one local patch file.
 type DeployResult struct {
 	Path           string
@@ -107,7 +119,7 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	// component store (well beyond the file size). Fail fast with a clear reason
 	// rather than burning minutes to discover the volume is full.
 	if free, derr := freeDiskBytes(abs); derr == nil {
-		if need := info.Size() * 3; free < need {
+		if need := info.Size() * diskSpaceMultiplier; free < need {
 			slog.Error("deploy: insufficient disk space for install",
 				"file", abs, "free_bytes", free, "need_bytes_estimate", need)
 			return &DeployResult{Path: abs, Success: false,
