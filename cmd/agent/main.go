@@ -22,7 +22,6 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -135,8 +134,17 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 }
 
 func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob) error {
+	// mTLS is mandatory (security is not toggleable). Load the agent's client
+	// credentials once; fail loud if the certs are missing/unreadable rather than
+	// silently falling back to an insecure channel.
+	creds, err := secure.ClientCredentials(cfg.TLSCAFile, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSServerName)
+	if err != nil {
+		return fmt.Errorf("mTLS setup failed (certs required): %w", err)
+	}
+	slog.Info("mTLS enabled", "server_name", cfg.TLSServerName, "ca", cfg.TLSCAFile, "client_cert", cfg.TLSCertFile)
+
 	for {
-		conn, err := grpc.NewClient(cfg.ServerAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(cfg.ServerAddress, grpc.WithTransportCredentials(creds))
 		if err != nil {
 			log.Printf("failed to connect to %s: %v", cfg.ServerAddress, err)
 			time.Sleep(cfg.ReconnectBackoff)

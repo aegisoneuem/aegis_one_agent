@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -147,10 +148,28 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
-	s := grpc.NewServer()
+
+	// mTLS: require and verify a client cert. Cert paths via env (defaults suit a
+	// local `certs` dir created by cmd/certgen).
+	caFile := getenv("AEGIS_TLS_CA", "certs/ca.crt")
+	certFile := getenv("AEGIS_TLS_CERT", "certs/server.crt")
+	keyFile := getenv("AEGIS_TLS_KEY", "certs/server.key")
+	creds, err := secure.ServerCredentials(caFile, certFile, keyFile)
+	if err != nil {
+		log.Fatalf("mTLS setup failed (run certgen first?): %v", err)
+	}
+
+	s := grpc.NewServer(grpc.Creds(creds))
 	pb.RegisterAgentControlPlaneServer(s, &server{})
-	fmt.Println("Mock server listening on :50051")
+	fmt.Printf("Mock server listening on :50051 (mTLS: ca=%s server=%s)\n", caFile, certFile)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+}
+
+func getenv(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }

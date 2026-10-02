@@ -24,6 +24,10 @@ type Config struct {
 	PatchScanInterval    time.Duration // how often the agent runs the local offline patch scan
 	SecureDir            string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
 	DownloadDir          string        // where the server delivers runtime/adhoc patch files (distinct from the staging cache)
+	TLSCAFile            string        // CA bundle to verify the server (mTLS)
+	TLSCertFile          string        // agent client certificate (mTLS)
+	TLSKeyFile           string        // agent client private key (mTLS)
+	TLSServerName        string        // expected server certificate SAN
 	CacheMaxBytes        int64         // patch cache size cap (bytes); pre-cache/staging budget
 	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
 	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
@@ -84,6 +88,10 @@ func Load() Config {
 		PatchScanInterval: durationFromEnv("AEGIS_PATCH_SCAN_INTERVAL", 6*time.Hour),
 		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
 		DownloadDir:          getenv("AEGIS_DOWNLOAD_DIR", `C:\Program Files\AegisOne\Client\SKVC\download`),
+		TLSCAFile:            getenv("AEGIS_TLS_CA", `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`),
+		TLSCertFile:          getenv("AEGIS_TLS_CERT", `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`),
+		TLSKeyFile:           getenv("AEGIS_TLS_KEY", `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`),
+		TLSServerName:        getenv("AEGIS_TLS_SERVER_NAME", "localhost"),
 		CacheMaxBytes:        int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
 		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
