@@ -129,7 +129,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 		return err
 	}
 
-	fmt.Printf("Heartbeat sent successfully at %s\n", time.Now().Format(time.RFC3339))
+	slog.Debug("heartbeat sent") // frequent → debug so it does not flood info at scale
 	return nil
 }
 
@@ -213,7 +213,7 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 				if cmd == nil {
 					continue
 				}
-				fmt.Printf("Received command -> id: %s, type: %s\n", cmd.CommandId, cmd.Type)
+				slog.Info("command received", "command_id", cmd.CommandId, "type", cmd.Type)
 				if !verifyCommand(cmd.Payload, cmd.Signature) {
 					slog.Warn("command signature invalid — rejecting", "command_id", cmd.CommandId)
 					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "rejected", "signature verification failed"))
@@ -247,6 +247,7 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 				} else if output != "" {
 					message = strings.TrimSpace(output)
 				}
+				slog.Info("command executed", "command_id", cmd.CommandId, "type", cmd.Type, "status", status)
 				send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
 			}
 		}()
@@ -293,9 +294,10 @@ func main() {
 		defer logSink.Close()
 	}
 
-	fmt.Println("Aegis One Agent - starting up")
-	fmt.Println("Server address:", cfg.ServerAddress)
-	fmt.Printf("Heartbeat interval: %s (jitter: %s)\n", cfg.HeartbeatInterval, cfg.HeartbeatJitter)
+	slog.Info("Aegis One Agent starting up",
+		"server", cfg.ServerAddress,
+		"heartbeat_interval", cfg.HeartbeatInterval.String(),
+		"heartbeat_jitter", cfg.HeartbeatJitter.String())
 
 	keys := secure.NewKeyProvider(cfg.SecureDir)
 	bufPath := filepath.Join(cfg.SecureDir, "buffer", "patch-buffer.jsonl")
