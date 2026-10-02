@@ -17,8 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Custom levels extending slog's built-in DEBUG(-4)/INFO(0)/WARN(4)/ERROR(8).
@@ -28,15 +26,16 @@ const (
 )
 
 // Rotation holds log-file rotation settings (used only when a log file is set).
+// The agent rotates DAILY: a new date-stamped file per calendar day, keeping
+// MaxAgeDays of history.
 type Rotation struct {
-	MaxSizeMB  int // rotate after the file reaches this size
-	MaxAgeDays int // delete rotated files older than this (retention)
-	MaxBackups int // keep at most this many rotated files
+	MaxAgeDays int // retention: delete dated files older than this (default 10)
 }
 
 // Init configures the process-wide slog default logger. When file is non-empty,
-// logs are written to both stdout and a size/age-rotated file. It returns an
-// io.Closer for the file sink (nil when logging only to stdout).
+// logs are written to both stdout and a DAILY, date-stamped file (e.g.
+// agent-2026-10-02.log) that rolls over each day and keeps MaxAgeDays of history.
+// It returns an io.Closer for the file sink (nil when logging only to stdout).
 func Init(level, file string, rot Rotation) (io.Closer, error) {
 	var w io.Writer = os.Stdout
 	var closer io.Closer
@@ -47,15 +46,12 @@ func Init(level, file string, rot Rotation) (io.Closer, error) {
 				return nil, fmt.Errorf("could not create log directory %q: %w", dir, err)
 			}
 		}
-		lj := &lumberjack.Logger{
-			Filename:   file,
-			MaxSize:    maxOr(rot.MaxSizeMB, 20), // MB
-			MaxAge:     maxOr(rot.MaxAgeDays, 10), // days (retention)
-			MaxBackups: maxOr(rot.MaxBackups, 10),
-			Compress:   true,
+		dw, err := newDailyWriter(file, maxOr(rot.MaxAgeDays, 10))
+		if err != nil {
+			return nil, err
 		}
-		closer = lj
-		w = io.MultiWriter(os.Stdout, lj)
+		closer = dw
+		w = io.MultiWriter(os.Stdout, dw)
 	}
 
 	handler := slog.NewTextHandler(w, &slog.HandlerOptions{

@@ -283,9 +283,7 @@ func main() {
 	cfg := config.Load()
 
 	logSink, err := logging.Init(cfg.LogLevel, cfg.LogFile, logging.Rotation{
-		MaxSizeMB:  cfg.LogMaxSizeMB,
 		MaxAgeDays: cfg.LogMaxAgeDays,
-		MaxBackups: cfg.LogMaxBackups,
 	})
 	if err != nil {
 		fmt.Println("failed to initialize logging:", err)
