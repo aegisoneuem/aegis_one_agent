@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
 )
 
 // installTimeout bounds a single DISM install. Cumulative updates can take many
@@ -78,6 +80,7 @@ func VerifyPatchFile(path, expectedHash, algo string) error {
 	if err != nil {
 		return fmt.Errorf("hash patch file %q: %w", abs, err)
 	}
+	logging.Trace("deploy: computed file hash", "file", abs, "algo", normAlgo, "hash", got)
 	if !strings.EqualFold(got, strings.TrimSpace(expectedHash)) {
 		slog.Error("deploy: patch integrity check FAILED — refusing to install",
 			"file", abs, "algo", normAlgo, "expected", expectedHash, "actual", got)
@@ -123,9 +126,12 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 		"/packagepath:"+abs,
 		"/quiet", "/norestart")
 
+	logging.Trace("deploy: running DISM", "command", strings.Join(cmd.Args, " "))
 	stop := startHeartbeat("DISM install")
 	out, runErr := cmd.CombinedOutput()
 	stop()
+	// Verbose: the COMPLETE DISM output (not just the tail) for deep troubleshooting.
+	logging.Trace("deploy: DISM full output", "file", abs, "output", strings.TrimSpace(string(out)))
 
 	if ctx.Err() == context.DeadlineExceeded {
 		return &DeployResult{Path: abs, Detail: fmt.Sprintf("DISM timed out after %s", timeout)},

@@ -11,6 +11,9 @@ type Config struct {
 	ServerAddress     string
 	LogLevel          string
 	LogFile           string
+	LogMaxSizeMB      int // rotate the log file after this size
+	LogMaxAgeDays     int // retention: delete rotated logs older than this
+	LogMaxBackups     int // keep at most this many rotated logs
 	DeviceID          string
 	AgentVersion      string
 	Hostname          string
@@ -75,6 +78,9 @@ func Load() Config {
 		ServerAddress:     getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
 		LogLevel:          getenv("AEGIS_LOG_LEVEL", "info"),
 		LogFile:           getenv("AEGIS_LOG_FILE", ""),
+		LogMaxSizeMB:      int(int64FromEnv("AEGIS_LOG_MAX_SIZE_MB", 20)),
+		LogMaxAgeDays:     int(int64FromEnv("AEGIS_LOG_MAX_AGE_DAYS", 10)),
+		LogMaxBackups:     int(int64FromEnv("AEGIS_LOG_MAX_BACKUPS", 10)),
 		DeviceID:          getenv("AEGIS_DEVICE_ID", "test-device-001"),
 		AgentVersion:      getenv("AEGIS_AGENT_VERSION", "0.0.1"),
 		Hostname:          getenv("AEGIS_HOSTNAME", "localhost"),

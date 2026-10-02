@@ -12,7 +12,7 @@ import (
 
 func main() {
 	cfg := config.Load()
-	logFile, err := logging.Init(cfg.LogLevel, cfg.LogFile)
+	logFile, err := logging.Init(cfg.LogLevel, cfg.LogFile, logging.Rotation{})
 	if err != nil {
 		fmt.Println("failed to initialize logging:", err)
 	}

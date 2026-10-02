@@ -143,10 +143,11 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 	}
 	slog.Info("mTLS enabled", "server_name", cfg.TLSServerName, "ca", cfg.TLSCAFile, "client_cert", cfg.TLSCertFile)
 
+	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	for {
 		conn, err := grpc.NewClient(cfg.ServerAddress, grpc.WithTransportCredentials(creds))
 		if err != nil {
-			log.Printf("failed to connect to %s: %v", cfg.ServerAddress, err)
+			logReconnect(&connFail, cfg.ServerAddress, err)
 			time.Sleep(cfg.ReconnectBackoff)
 			continue
 		}
@@ -154,11 +155,15 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 		client := pb.NewAgentControlPlaneClient(conn)
 		stream, err := client.Connect(ctx)
 		if err != nil {
-			log.Printf("failed to open stream: %v", err)
+			logReconnect(&connFail, cfg.ServerAddress, err)
 			cancel()
 			conn.Close()
 			time.Sleep(cfg.ReconnectBackoff)
 			continue
+		}
+		if connFail > 0 {
+			slog.Info("connected to server", "after_failed_attempts", connFail)
+			connFail = 0
 		}
 
 		// Sender: the ONLY goroutine that writes to the stream (gRPC Send is not
@@ -180,12 +185,12 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 					return
 				case msg := <-outbox:
 					if err := stream.Send(msg); err != nil {
-						log.Printf("send failed: %v", err)
+						slog.Warn("send failed, connection dropping", "error", err.Error())
 						return
 					}
 				case <-ticker.C:
 					if err := sendHeartbeat(stream, cfg); err != nil {
-						log.Printf("failed to send heartbeat: %v", err)
+						slog.Warn("heartbeat failed, connection dropping", "error", err.Error())
 						return
 					}
 					drainPatchResults(stream, buf)
@@ -201,7 +206,7 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 			for {
 				msg, err := stream.Recv()
 				if err != nil {
-					log.Printf("server stream closed: %v", err)
+					slog.Warn("server stream closed", "error", err.Error())
 					return
 				}
 				cmd := msg.GetCommand()
@@ -252,6 +257,18 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 	}
 }
 
+// logReconnect throttles noisy reconnect logging: the first failure is a WARN,
+// subsequent consecutive failures drop to DEBUG so a long server outage does not
+// flood the log (important at 50k-device scale).
+func logReconnect(count *int, server string, err error) {
+	*count++
+	if *count == 1 {
+		slog.Warn("cannot reach server, will keep retrying", "server", server, "error", err.Error())
+	} else {
+		slog.Debug("still cannot reach server", "server", server, "attempts", *count, "error", err.Error())
+	}
+}
+
 // send queues a message for the sender goroutine, unless the connection is
 // already tearing down.
 func send(ctx context.Context, outbox chan<- *pb.AgentMessage, msg *pb.AgentMessage) {
@@ -264,12 +281,16 @@ func send(ctx context.Context, outbox chan<- *pb.AgentMessage, msg *pb.AgentMess
 func main() {
 	cfg := config.Load()
 
-	logFile, err := logging.Init(cfg.LogLevel, cfg.LogFile)
+	logSink, err := logging.Init(cfg.LogLevel, cfg.LogFile, logging.Rotation{
+		MaxSizeMB:  cfg.LogMaxSizeMB,
+		MaxAgeDays: cfg.LogMaxAgeDays,
+		MaxBackups: cfg.LogMaxBackups,
+	})
 	if err != nil {
 		fmt.Println("failed to initialize logging:", err)
 	}
-	if logFile != nil {
-		defer logFile.Close()
+	if logSink != nil {
+		defer logSink.Close()
 	}
 
 	fmt.Println("Aegis One Agent - starting up")
