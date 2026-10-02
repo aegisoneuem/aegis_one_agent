@@ -287,6 +287,12 @@ func main() {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		log.Fatalf("failed to create temp dir: %v", err)
 	}
+	// Download dir: where the server delivers runtime/adhoc patch files (distinct
+	// from the staging cache). Always kept so admins have a known drop location.
+	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
+		log.Fatalf("failed to create download dir: %v", err)
+	}
+	slog.Info("download dir ready", "dir", cfg.DownloadDir)
 	cache, err := patchcache.New(cacheDir, keys, cfg.CacheMaxBytes, cfg.CacheTTL)
 	if err != nil {
 		log.Fatalf("failed to open patch cache: %v", err)
