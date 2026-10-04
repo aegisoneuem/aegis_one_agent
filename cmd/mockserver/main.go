@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,6 +144,29 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				return
 			}
 			fmt.Printf("Sent cab manifest -> version=%s\n", ver)
+		}
+
+		// Parallel-run demo: while a (long) install runs on the agent's serial
+		// worker, fire periodic commands that execute on the receiver — proving the
+		// agent handles a concurrent task alongside a patch install. Set
+		// AEGIS_PARALLEL_PINGS=N to send N hostname commands at ~8s intervals.
+		if n := os.Getenv("AEGIS_PARALLEL_PINGS"); n != "" {
+			count, _ := strconv.Atoi(n)
+			for i := 1; i <= count; i++ {
+				time.Sleep(8 * time.Second)
+				payload := []byte("")
+				ping := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+					CommandId: fmt.Sprintf("ping-%03d", i),
+					Type:      "hostname",
+					Payload:   payload,
+					Signature: signPayload(payload),
+				}}}
+				if err := stream.Send(ping); err != nil {
+					log.Printf("failed to send parallel ping: %v", err)
+					return
+				}
+				fmt.Printf("Sent parallel ping -> id: ping-%03d, type: hostname (while install may be running)\n", i)
+			}
 		}
 	}()
 
