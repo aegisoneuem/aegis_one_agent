@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strconv"
@@ -28,12 +29,14 @@ var (
 	fileLoadedPath string
 	fileLoaded     bool
 	fileLoadedKeys int
+	fileLoadErr    error
 )
 
-// LoadedFrom reports the config file path, whether it was loaded, and how many
-// keys it set — so startup can log config visibility.
-func LoadedFrom() (path string, loaded bool, keys int) {
-	return fileLoadedPath, fileLoaded, fileLoadedKeys
+// LoadedFrom reports the config file path, whether it was loaded, how many keys
+// it set, and any error (e.g. a file that exists but failed to parse) — so
+// startup can log config visibility clearly.
+func LoadedFrom() (path string, loaded bool, keys int, err error) {
+	return fileLoadedPath, fileLoaded, fileLoadedKeys, fileLoadErr
 }
 
 func loadFileConfig(path string) map[string]string {
@@ -41,12 +44,20 @@ func loadFileConfig(path string) map[string]string {
 	m := map[string]string{}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			fileLoadErr = err // exists but unreadable
+		}
 		return m // no file → env/defaults only
 	}
-	if json.Unmarshal(data, &m) == nil { // best-effort; malformed file → empty
-		fileLoaded = true
-		fileLoadedKeys = len(m)
+	// Strip a UTF-8 BOM — PowerShell's Set-Content -Encoding utf8 adds one, and
+	// Go's JSON parser rejects it.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	if jerr := json.Unmarshal(data, &m); jerr != nil {
+		fileLoadErr = jerr // file present but invalid JSON
+		return map[string]string{}
 	}
+	fileLoaded = true
+	fileLoadedKeys = len(m)
 	return m
 }
 

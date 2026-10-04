@@ -381,8 +381,10 @@ func runProcess(ctx context.Context) {
 	applyTuning(cfg) // push configurable tuning knobs into the patch package
 
 	// Make config visibility explicit (a service has no console to debug from).
-	if path, loaded, keys := config.LoadedFrom(); loaded {
+	if path, loaded, keys, cerr := config.LoadedFrom(); loaded {
 		slog.Info("config file loaded", "path", path, "keys", keys)
+	} else if cerr != nil {
+		slog.Error("config file present but INVALID — using env/defaults; fix it", "path", path, "error", cerr.Error())
 	} else {
 		slog.Info("no config file found — using env vars / defaults", "looked_at", path)
 	}
