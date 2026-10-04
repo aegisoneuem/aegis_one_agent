@@ -8,30 +8,49 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const kindPatchScanResult = "patch_scan_result"
+const (
+	kindPatchScanResult = "patch_scan_result" // Layer 4 (weekly): missing updates from the cab scan
+	kindDeviceState     = "device_state"      // Layer 1 (frequent): installed-KBs + build
+)
 
-// drainPatchResults sends any buffered patch scan results over the stream. Only
-// the main connect loop calls this, so there is no concurrent Send on the stream
-// (the detection goroutine only ever writes to the buffer). A send failure keeps
-// the item buffered for the next attempt.
-func drainPatchResults(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) {
+// drainReports sends buffered detection reports (Layer 1 device-state and Layer 4
+// scan results) over the stream. Only the sender goroutine calls this, so there
+// is no concurrent Send (detection goroutines only write to the buffer). A send
+// failure keeps the item buffered for the next attempt.
+func drainReports(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) {
 	_, err := buf.Drain(func(kind string, payload []byte) error {
-		if kind != kindPatchScanResult {
+		switch kind {
+		case kindDeviceState:
+			var rep pb.DeviceStateReport
+			if err := proto.Unmarshal(payload, &rep); err != nil {
+				slog.Warn("drain: skipping corrupt device-state report", "error", err.Error())
+				return nil
+			}
+			msg := &pb.AgentMessage{Payload: &pb.AgentMessage_DeviceState{DeviceState: &rep}}
+			if err := stream.Send(msg); err != nil {
+				return err // keep for retry
+			}
+			slog.Info("sent device-state report to server", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
 			return nil
+
+		case kindPatchScanResult:
+			var result pb.PatchScanResult
+			if err := proto.Unmarshal(payload, &result); err != nil {
+				slog.Warn("drain: skipping corrupt patch scan result", "error", err.Error())
+				return nil
+			}
+			msg := &pb.AgentMessage{Payload: &pb.AgentMessage_PatchScanResult{PatchScanResult: &result}}
+			if err := stream.Send(msg); err != nil {
+				return err
+			}
+			slog.Info("sent reconciliation scan result to server", "build", result.Build, "missing", len(result.Missing))
+			return nil
+
+		default:
+			return nil // unknown kind — drop
 		}
-		var result pb.PatchScanResult
-		if err := proto.Unmarshal(payload, &result); err != nil {
-			slog.Warn("drain: skipping corrupt patch scan result", "error", err.Error())
-			return nil // drop corrupt record
-		}
-		msg := &pb.AgentMessage{Payload: &pb.AgentMessage_PatchScanResult{PatchScanResult: &result}}
-		if err := stream.Send(msg); err != nil {
-			return err // keep for retry
-		}
-		slog.Info("sent patch scan result to server", "build", result.Build, "missing", len(result.Missing))
-		return nil
 	})
 	if err != nil {
-		slog.Warn("drain: sending buffered patch results failed, will retry on next tick", "error", err.Error())
+		slog.Warn("drain: sending buffered reports failed, will retry on next tick", "error", err.Error())
 	}
 }

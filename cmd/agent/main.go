@@ -186,7 +186,7 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 
-			drainPatchResults(stream, buf) // flush backlog on (re)connect
+			drainReports(stream, buf) // flush backlog on (re)connect
 			for {
 				select {
 				case <-ctx.Done():
@@ -201,7 +201,7 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 						slog.Warn("heartbeat failed, connection dropping", "error", err.Error())
 						return
 					}
-					drainPatchResults(stream, buf)
+					drainReports(stream, buf)
 				}
 			}
 		}()
@@ -317,7 +317,8 @@ func main() {
 		"secure_dir", cfg.SecureDir,
 		"buffer", bufPath,
 		"cab", cfg.WsusScanCab,
-		"patch_scan_interval", cfg.PatchScanInterval.String())
+		"device_state_interval", cfg.DeviceStateInterval.String(),
+		"recon_scan_interval", cfg.ReconScanInterval.String())
 
 	// Encrypted patch cache (staging store). The cache directory is created here
 	// and always kept, so an admin has a known location to inspect.

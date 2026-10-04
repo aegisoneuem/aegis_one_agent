@@ -23,8 +23,9 @@ type Config struct {
 	ReconnectBackoff  time.Duration
 	CommandTimeout    time.Duration
 	AllowedCommands   []string
-	WsusScanCab          string        // path to the server-provided wsusscn2.cab; empty disables local patch scan
-	PatchScanInterval    time.Duration // how often the agent runs the local offline patch scan
+	WsusScanCab          string        // path to the server-provided wsusscn2.cab; empty disables the Layer 4 reconciliation scan
+	DeviceStateInterval  time.Duration // Layer 1: how often to check local installed-KB/build state (sent on change)
+	ReconScanInterval    time.Duration // Layer 4: how often to run the heavier offline cab reconciliation scan (weekly)
 	SecureDir            string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
 	DownloadDir          string        // where the server delivers runtime/adhoc patch files (distinct from the staging cache)
 	TLSCAFile            string        // CA bundle to verify the server (mTLS)
@@ -91,8 +92,9 @@ func Load() Config {
 		ReconnectBackoff:  durationFromEnv("AEGIS_RECONNECT_BACKOFF", 10*time.Second),
 		CommandTimeout:    durationFromEnv("AEGIS_COMMAND_TIMEOUT", 10*time.Second),
 		AllowedCommands:   allowed,
-		WsusScanCab:       getenv("AEGIS_WSUS_SCAN_CAB", ""),
-		PatchScanInterval: durationFromEnv("AEGIS_PATCH_SCAN_INTERVAL", 6*time.Hour),
+		WsusScanCab:         getenv("AEGIS_WSUS_SCAN_CAB", ""),
+		DeviceStateInterval: durationFromEnv("AEGIS_DEVICE_STATE_INTERVAL", 5*time.Minute),
+		ReconScanInterval:   durationFromEnv("AEGIS_RECON_SCAN_INTERVAL", 7*24*time.Hour),
 		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
 		DownloadDir:          getenv("AEGIS_DOWNLOAD_DIR", `C:\Program Files\AegisOne\Client\SKVC\download`),
 		TLSCAFile:            getenv("AEGIS_TLS_CA", `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`),

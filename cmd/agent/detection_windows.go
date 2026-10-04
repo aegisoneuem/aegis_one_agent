@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"time"
 
@@ -13,39 +15,110 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// runPatchDetection runs the local offline patch scan on an interval and writes
-// each result to the buffer — never touching the network. The connect loop
-// drains the buffer and sends when connected to the server. Disabled when no cab
-// is configured (the server provides the cab).
+// runPatchDetection launches the two detection layers; both only ever write to
+// the buffer (the sender goroutine drains it), never the network.
+//   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
+//   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
 func runPatchDetection(cfg config.Config, buf buffer.Buffer) {
+	go runDeviceStateReport(cfg, buf)
 	if cfg.WsusScanCab == "" {
-		slog.Info("patch detection disabled (no AEGIS_WSUS_SCAN_CAB configured)")
+		slog.Info("reconciliation scan (Layer 4) disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
 	}
+	go runReconciliationScan(cfg, buf)
+}
 
+// runDeviceStateReport is Layer 1: read installed KBs + build locally (registry
+// only, milliseconds, no COM/WUA, no network) and buffer a lean report — but only
+// when it CHANGED since the last send (the installed set rarely changes, so
+// sending every cycle would be wasteful at fleet scale). The agent reports
+// installed facts only; the server computes "missing".
+func runDeviceStateReport(cfg config.Config, buf buffer.Buffer) {
+	var lastFingerprint string
+	report := func() {
+		state, err := patch.CollectLocalState()
+		if err != nil {
+			// Fail loud: unknown local state is not "nothing installed".
+			slog.Error("device-state (Layer 1): could not read local state", "error", err.Error())
+			return
+		}
+		rep := &pb.DeviceStateReport{
+			DeviceId:       cfg.DeviceID,
+			ProductName:    state.ProductName,
+			DisplayVersion: state.DisplayVersion,
+			Build:          state.FullBuild,
+			Architecture:   state.Architecture,
+			CollectedAt:    time.Now().Unix(),
+			InstalledKbs:   state.InstalledKBs,
+		}
+		fp := deviceStateFingerprint(rep)
+		if fp == lastFingerprint {
+			slog.Debug("device-state (Layer 1): unchanged, skipping send", "build", rep.Build)
+			return
+		}
+		payload, err := proto.Marshal(rep)
+		if err != nil {
+			slog.Error("device-state (Layer 1): marshal failed", "error", err.Error())
+			return
+		}
+		if err := buf.Enqueue(kindDeviceState, payload); err != nil {
+			slog.Error("device-state (Layer 1): could not buffer report", "error", err.Error())
+			return
+		}
+		lastFingerprint = fp
+		slog.Info("device-state (Layer 1): buffered for sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
+	}
+
+	report() // once at startup, then on the interval (sends only on change)
+	ticker := time.NewTicker(cfg.DeviceStateInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		report()
+	}
+}
+
+// deviceStateFingerprint is a stable hash of the fields that matter for change
+// detection (build + architecture + the installed-KB set, which is already sorted).
+func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
+	h := sha256.New()
+	h.Write([]byte(rep.Build))
+	h.Write([]byte{'|'})
+	h.Write([]byte(rep.Architecture))
+	h.Write([]byte{'|'})
+	for _, kb := range rep.InstalledKbs {
+		h.Write([]byte(kb))
+		h.Write([]byte{','})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// runReconciliationScan is Layer 4: the occasional (weekly) heavier offline cab
+// scan that reports MISSING updates directly, as a cross-check against the
+// server's Layer 1 diff. Uses only the local cab on disk — never the internet.
+func runReconciliationScan(cfg config.Config, buf buffer.Buffer) {
 	scan := func() {
-		slog.Info("patch detection: starting local offline scan", "cab", cfg.WsusScanCab)
+		slog.Info("reconciliation (Layer 4): starting offline cab scan", "cab", cfg.WsusScanCab)
 		updates, err := patch.ScanOffline(cfg.WsusScanCab)
 		if err != nil {
 			// Fail loud: an errored scan is UNKNOWN, never silently "compliant".
-			slog.Error("patch detection: scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
+			slog.Error("reconciliation (Layer 4): scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
 			return
 		}
 		result := buildScanResult(cfg, updates)
 		payload, err := proto.Marshal(result)
 		if err != nil {
-			slog.Error("patch detection: marshal failed", "error", err.Error())
+			slog.Error("reconciliation (Layer 4): marshal failed", "error", err.Error())
 			return
 		}
 		if err := buf.Enqueue(kindPatchScanResult, payload); err != nil {
-			slog.Error("patch detection: could not buffer result", "error", err.Error())
+			slog.Error("reconciliation (Layer 4): could not buffer result", "error", err.Error())
 			return
 		}
-		slog.Info("patch detection: result buffered for sending", "missing", len(result.Missing))
+		slog.Info("reconciliation (Layer 4): result buffered for sending", "missing", len(result.Missing))
 	}
 
-	scan() // run once at startup, then on the interval
-	ticker := time.NewTicker(cfg.PatchScanInterval)
+	scan() // once at startup, then on the (weekly) interval
+	ticker := time.NewTicker(cfg.ReconScanInterval)
 	defer ticker.Stop()
 	for range ticker.C {
 		scan()
@@ -55,7 +128,7 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer) {
 func buildScanResult(cfg config.Config, updates []patch.Update) *pb.PatchScanResult {
 	state, err := patch.CollectLocalState()
 	if err != nil {
-		slog.Warn("patch detection: could not read local state for report", "error", err.Error())
+		slog.Warn("reconciliation (Layer 4): could not read local state for report", "error", err.Error())
 		state = &patch.LocalState{}
 	}
 
