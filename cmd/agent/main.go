@@ -333,7 +333,13 @@ func main() {
 func runProcess(ctx context.Context) {
 	cfg := config.Load()
 
-	logSink, err := logging.Init(cfg.LogLevel, cfg.LogFile, logging.Rotation{
+	// The agent always logs to a file (a service has no console). Default to
+	// SKVC\logs\agent.log when AEGIS_LOG_FILE is not set; stdout is also written.
+	logFile := cfg.LogFile
+	if logFile == "" {
+		logFile = filepath.Join(cfg.SecureDir, "logs", "agent.log")
+	}
+	logSink, err := logging.Init(cfg.LogLevel, logFile, logging.Rotation{
 		MaxAgeDays: cfg.LogMaxAgeDays,
 	})
 	if err != nil {
