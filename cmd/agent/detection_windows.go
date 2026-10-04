@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
@@ -35,6 +36,7 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineS
 // installed facts only; the server computes "missing".
 func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore) {
 	var lastFingerprint string
+	var lastSelfDiffKey string
 	report := func() {
 		state, err := patch.CollectLocalState()
 		if err != nil {
@@ -43,8 +45,18 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			return
 		}
 
-		// Best-effort offline self-diff against the server's cached baseline.
-		offlineSelfDiff(baseline, state)
+		// Best-effort offline self-diff against the server's cached baseline —
+		// logged only when the likely-missing set CHANGES (avoids per-cycle noise).
+		likely := offlineSelfDiff(baseline, state)
+		if key := strings.Join(likely, ","); key != lastSelfDiffKey {
+			if len(likely) > 0 {
+				slog.Warn("offline self-diff: likely missing update(s) vs cached baseline (best-effort; server confirms on reconnect)",
+					"count", len(likely), "kbs", likely)
+			} else {
+				slog.Info("offline self-diff: device now appears current vs cached baseline")
+			}
+			lastSelfDiffKey = key
+		}
 		rep := &pb.DeviceStateReport{
 			DeviceId:       cfg.DeviceID,
 			ProductName:    state.ProductName,
@@ -80,23 +92,24 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 	}
 }
 
-// offlineSelfDiff compares installed KBs against the server's cached baseline to
-// locally flag "likely missing" updates — a best-effort hint (most useful while
-// offline); the authoritative diff is server-side on reconnect. Silent when no
-// baseline is cached or it is for a different build.
-func offlineSelfDiff(baseline *baselineStore, state *patch.LocalState) {
+// offlineSelfDiff compares installed KBs against the server's cached baseline and
+// returns the "likely missing" KBs — a best-effort hint (most useful while
+// offline); the authoritative diff is server-side on reconnect. Returns nil when
+// no baseline is cached, it is for a different build, or nothing is missing. The
+// caller logs (deduped) so this stays side-effect free.
+func offlineSelfDiff(baseline *baselineStore, state *patch.LocalState) []string {
 	bl, err := baseline.load()
 	if err != nil {
 		slog.Debug("offline self-diff: could not read cached baseline", "error", err.Error())
-		return
+		return nil
 	}
 	if bl == nil {
-		return // no baseline cached yet
+		return nil // no baseline cached yet
 	}
 	if bl.Build == "" || bl.Build != state.FullBuild {
 		slog.Debug("offline self-diff: baseline is for a different build, skipping",
 			"baseline_build", bl.Build, "device_build", state.FullBuild)
-		return
+		return nil
 	}
 	installed := make(map[string]bool, len(state.InstalledKBs))
 	for _, kb := range state.InstalledKBs {
@@ -108,12 +121,7 @@ func offlineSelfDiff(baseline *baselineStore, state *patch.LocalState) {
 			likelyMissing = append(likelyMissing, kb)
 		}
 	}
-	if len(likelyMissing) > 0 {
-		slog.Warn("offline self-diff: likely missing update(s) vs cached baseline (best-effort; server confirms on reconnect)",
-			"count", len(likelyMissing), "kbs", likelyMissing)
-	} else {
-		slog.Debug("offline self-diff: device appears current vs cached baseline", "build", state.FullBuild)
-	}
+	return likelyMissing
 }
 
 // deviceStateFingerprint is a stable hash of the fields that matter for change
