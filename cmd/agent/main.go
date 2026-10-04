@@ -134,7 +134,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore, cabs *cabManifestHandler, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore, cabs *cabManifestHandler, drainSignal <-chan struct{}) error {
 	// mTLS is mandatory (security is not toggleable). Load the agent's client
 	// credentials once; fail loud if the certs are missing/unreadable rather than
 	// silently falling back to an insecure channel.
@@ -146,6 +146,9 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 
 	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	for {
+		if rootCtx.Err() != nil {
+			return nil // graceful shutdown requested
+		}
 		conn, err := grpc.NewClient(cfg.ServerAddress,
 			grpc.WithTransportCredentials(creds),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -156,17 +159,17 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 		)
 		if err != nil {
 			logReconnect(&connFail, cfg.ServerAddress, err)
-			time.Sleep(cfg.ReconnectBackoff)
+			sleepOrDone(rootCtx, cfg.ReconnectBackoff)
 			continue
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(rootCtx) // per-connection ctx derived from the root
 		client := pb.NewAgentControlPlaneClient(conn)
 		stream, err := client.Connect(ctx)
 		if err != nil {
 			logReconnect(&connFail, cfg.ServerAddress, err)
 			cancel()
 			conn.Close()
-			time.Sleep(cfg.ReconnectBackoff)
+			sleepOrDone(rootCtx, cfg.ReconnectBackoff)
 			continue
 		}
 		if connFail > 0 {
@@ -278,9 +281,17 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 			}
 		}()
 
-		<-ctx.Done() // sender or receiver failed; tear the connection down and retry
+		<-ctx.Done() // sender or receiver failed (or shutdown); tear down and retry
 		conn.Close()
-		time.Sleep(cfg.ReconnectBackoff)
+		sleepOrDone(rootCtx, cfg.ReconnectBackoff)
+	}
+}
+
+// sleepOrDone waits for d, or returns early if ctx is cancelled (shutdown).
+func sleepOrDone(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
 	}
 }
 
@@ -306,6 +317,20 @@ func send(ctx context.Context, outbox chan<- *pb.AgentMessage, msg *pb.AgentMess
 }
 
 func main() {
+	// Control subcommands (install/uninstall/start/stop) are handled first; on
+	// non-Windows they are no-ops and fall through to running the agent.
+	if len(os.Args) > 1 && runControlCommand(os.Args[1]) {
+		return
+	}
+	// Run as a Windows service when launched by the SCM; otherwise run in the
+	// console (dev). Platform-split in service_windows.go / service_other.go.
+	runAgentEntry()
+}
+
+// runProcess is the agent's actual work: set up everything and run the connect
+// loop until ctx is cancelled (graceful shutdown, e.g. a service Stop). Both the
+// console and Windows-service entrypoints call this.
+func runProcess(ctx context.Context) {
 	cfg := config.Load()
 
 	logSink, err := logging.Init(cfg.LogLevel, cfg.LogFile, logging.Rotation{
@@ -380,7 +405,8 @@ func main() {
 	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf, baseline, drainSignal)
 
-	if err := runAgent(cfg, buf, outbox, installJobs, baseline, cabs, drainSignal); err != nil {
-		log.Fatalf("agent failed: %v", err)
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, baseline, cabs, drainSignal); err != nil {
+		slog.Error("agent exited with error", "error", err.Error())
 	}
+	slog.Info("agent stopped")
 }
