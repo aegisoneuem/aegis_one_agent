@@ -134,7 +134,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob) error {
+func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore) error {
 	// mTLS is mandatory (security is not toggleable). Load the agent's client
 	// credentials once; fail loud if the certs are missing/unreadable rather than
 	// silently falling back to an insecure channel.
@@ -216,6 +216,15 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 				if err != nil {
 					slog.Warn("server stream closed", "error", err.Error())
 					return
+				}
+				// Server-pushed patch baseline for the offline self-diff.
+				if bl := msg.GetPatchBaseline(); bl != nil {
+					if err := baseline.save(bl); err != nil {
+						slog.Warn("could not cache patch baseline", "error", err.Error())
+					} else {
+						slog.Info("patch baseline cached", "build", bl.Build, "latest_kbs", len(bl.LatestKbs))
+					}
+					continue
 				}
 				cmd := msg.GetCommand()
 				if cmd == nil {
@@ -350,11 +359,14 @@ func main() {
 	// Cache janitor: periodic TTL/cap enforcement (infrequent, to stay light).
 	go cacheJanitor(cache, cfg.CacheJanitorInterval)
 
+	// Baseline cache for the offline self-diff (server pushes it; Layer 1 uses it).
+	baseline := newBaselineStore(cfg.SecureDir)
+
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
-	go runPatchDetection(cfg, buf)
+	go runPatchDetection(cfg, buf, baseline)
 
-	if err := runAgent(cfg, buf, outbox, installJobs); err != nil {
+	if err := runAgent(cfg, buf, outbox, installJobs, baseline); err != nil {
 		log.Fatalf("agent failed: %v", err)
 	}
 }

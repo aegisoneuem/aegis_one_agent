@@ -19,8 +19,8 @@ import (
 // the buffer (the sender goroutine drains it), never the network.
 //   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
 //   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
-func runPatchDetection(cfg config.Config, buf buffer.Buffer) {
-	go runDeviceStateReport(cfg, buf)
+func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore) {
+	go runDeviceStateReport(cfg, buf, baseline)
 	if cfg.WsusScanCab == "" {
 		slog.Info("reconciliation scan (Layer 4) disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
@@ -33,7 +33,7 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer) {
 // when it CHANGED since the last send (the installed set rarely changes, so
 // sending every cycle would be wasteful at fleet scale). The agent reports
 // installed facts only; the server computes "missing".
-func runDeviceStateReport(cfg config.Config, buf buffer.Buffer) {
+func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore) {
 	var lastFingerprint string
 	report := func() {
 		state, err := patch.CollectLocalState()
@@ -42,6 +42,9 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer) {
 			slog.Error("device-state (Layer 1): could not read local state", "error", err.Error())
 			return
 		}
+
+		// Best-effort offline self-diff against the server's cached baseline.
+		offlineSelfDiff(baseline, state)
 		rep := &pb.DeviceStateReport{
 			DeviceId:       cfg.DeviceID,
 			ProductName:    state.ProductName,
@@ -74,6 +77,42 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer) {
 	defer ticker.Stop()
 	for range ticker.C {
 		report()
+	}
+}
+
+// offlineSelfDiff compares installed KBs against the server's cached baseline to
+// locally flag "likely missing" updates — a best-effort hint (most useful while
+// offline); the authoritative diff is server-side on reconnect. Silent when no
+// baseline is cached or it is for a different build.
+func offlineSelfDiff(baseline *baselineStore, state *patch.LocalState) {
+	bl, err := baseline.load()
+	if err != nil {
+		slog.Debug("offline self-diff: could not read cached baseline", "error", err.Error())
+		return
+	}
+	if bl == nil {
+		return // no baseline cached yet
+	}
+	if bl.Build == "" || bl.Build != state.FullBuild {
+		slog.Debug("offline self-diff: baseline is for a different build, skipping",
+			"baseline_build", bl.Build, "device_build", state.FullBuild)
+		return
+	}
+	installed := make(map[string]bool, len(state.InstalledKBs))
+	for _, kb := range state.InstalledKBs {
+		installed[normalizeKB(kb)] = true
+	}
+	var likelyMissing []string
+	for _, kb := range bl.LatestKBs {
+		if !installed[normalizeKB(kb)] {
+			likelyMissing = append(likelyMissing, kb)
+		}
+	}
+	if len(likelyMissing) > 0 {
+		slog.Warn("offline self-diff: likely missing update(s) vs cached baseline (best-effort; server confirms on reconnect)",
+			"count", len(likelyMissing), "kbs", likelyMissing)
+	} else {
+		slog.Debug("offline self-diff: device appears current vs cached baseline", "build", state.FullBuild)
 	}
 }
 

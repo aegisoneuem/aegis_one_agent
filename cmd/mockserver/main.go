@@ -113,6 +113,24 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				fmt.Printf("Sent command -> id: %s, type: install_patch, kb=%s, file=%s (signed)\n", cmdID, spec.Kb, f)
 			}
 		}
+
+		// Optionally push a patch baseline for the agent's offline self-diff. Set
+		// AEGIS_BASELINE_BUILD (the device build) and AEGIS_BASELINE_KBS
+		// (comma-separated expected KBs) to simulate the server's snapshot.
+		if build := os.Getenv("AEGIS_BASELINE_BUILD"); build != "" {
+			kbs := strings.Split(os.Getenv("AEGIS_BASELINE_KBS"), ",")
+			for i := range kbs {
+				kbs[i] = strings.TrimSpace(kbs[i])
+			}
+			bl := &pb.ServerMessage{Payload: &pb.ServerMessage_PatchBaseline{
+				PatchBaseline: &pb.PatchBaseline{Build: build, LatestKbs: kbs, IssuedAt: time.Now().Unix()},
+			}}
+			if err := stream.Send(bl); err != nil {
+				log.Printf("failed to send baseline: %v", err)
+				return
+			}
+			fmt.Printf("Sent patch baseline -> build=%s, latest_kbs=%v\n", build, kbs)
+		}
 	}()
 
 	for {
