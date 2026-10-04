@@ -20,16 +20,33 @@ func FilePath() string {
 	if v := strings.TrimSpace(os.Getenv("AEGIS_CONFIG_FILE")); v != "" {
 		return v
 	}
-	return `C:\Program Files\AegisOne\Client\config.json`
+	// Everything the agent owns lives under SKVC, so the config file does too.
+	return `C:\Program Files\AegisOne\Client\SKVC\config.json`
+}
+
+var (
+	fileLoadedPath string
+	fileLoaded     bool
+	fileLoadedKeys int
+)
+
+// LoadedFrom reports the config file path, whether it was loaded, and how many
+// keys it set — so startup can log config visibility.
+func LoadedFrom() (path string, loaded bool, keys int) {
+	return fileLoadedPath, fileLoaded, fileLoadedKeys
 }
 
 func loadFileConfig(path string) map[string]string {
+	fileLoadedPath = path
 	m := map[string]string{}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return m // no file → env/defaults only
 	}
-	_ = json.Unmarshal(data, &m) // best-effort; malformed file → treated as empty
+	if json.Unmarshal(data, &m) == nil { // best-effort; malformed file → empty
+		fileLoaded = true
+		fileLoadedKeys = len(m)
+	}
 	return m
 }
 
