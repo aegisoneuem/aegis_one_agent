@@ -271,6 +271,23 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 					continue
 				}
 
+				// reboot / cancel_reboot: server-driven (signed) system reboot.
+				if strings.EqualFold(strings.TrimSpace(cmd.Type), "reboot") {
+					var spec pb.RebootSpec
+					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
+						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid reboot payload"))
+						continue
+					}
+					status, message := handleReboot(&spec)
+					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
+					continue
+				}
+				if strings.EqualFold(strings.TrimSpace(cmd.Type), "cancel_reboot") {
+					status, message := handleCancelReboot()
+					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
+					continue
+				}
+
 				output, execErr := executeCommand(cfg, cmd.Type, string(cmd.Payload))
 				status, message := "success", "command received and acknowledged"
 				if execErr != nil {

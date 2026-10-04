@@ -146,6 +146,23 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			fmt.Printf("Sent cab manifest -> version=%s\n", ver)
 		}
 
+		// Optionally send a signed reboot command. Set AEGIS_REBOOT_DELAY (seconds)
+		// to schedule a reboot (use a large value + then test cancel_reboot, or
+		// revert the VM snapshot).
+		if rd := os.Getenv("AEGIS_REBOOT_DELAY"); rd != "" {
+			delay, _ := strconv.Atoi(rd)
+			spec := &pb.RebootSpec{DelaySeconds: int32(delay), Message: "Aegis One: scheduled reboot for patching"}
+			b, _ := proto.Marshal(spec)
+			reboot := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+				CommandId: "reboot-001", Type: "reboot", Payload: b, Signature: signPayload(b),
+			}}}
+			if err := stream.Send(reboot); err != nil {
+				log.Printf("failed to send reboot command: %v", err)
+				return
+			}
+			fmt.Printf("Sent command -> id: reboot-001, type: reboot, delay=%ds (signed)\n", delay)
+		}
+
 		// Parallel-run demo: while a (long) install runs on the agent's serial
 		// worker, fire periodic commands that execute on the receiver — proving the
 		// agent handles a concurrent task alongside a patch install. Set
