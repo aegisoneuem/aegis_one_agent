@@ -317,6 +317,16 @@ func send(ctx context.Context, outbox chan<- *pb.AgentMessage, msg *pb.AgentMess
 }
 
 func main() {
+	// `config` writes a config.json template for an admin to edit (cross-platform).
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		path := config.FilePath()
+		if err := config.WriteTemplate(path); err != nil {
+			fmt.Fprintf(os.Stderr, "config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("wrote config template to", path)
+		return
+	}
 	// Control subcommands (install/uninstall/start/stop) are handled first; on
 	// non-Windows they are no-ops and fall through to running the agent.
 	if len(os.Args) > 1 && runControlCommand(os.Args[1]) {

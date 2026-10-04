@@ -1,11 +1,49 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// fileCfg holds settings loaded from the config file (keys are the same env-var
+// names). Precedence: environment variable > config file > built-in default.
+// Loaded once at the start of Load().
+var fileCfg map[string]string
+
+// FilePath is where the agent reads its config file (AEGIS_CONFIG_FILE, else the
+// default next to the install dir). A Windows service cannot see a user's cmd
+// environment, so the file is how it gets non-default settings.
+func FilePath() string {
+	if v := strings.TrimSpace(os.Getenv("AEGIS_CONFIG_FILE")); v != "" {
+		return v
+	}
+	return `C:\Program Files\AegisOne\Client\config.json`
+}
+
+func loadFileConfig(path string) map[string]string {
+	m := map[string]string{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return m // no file → env/defaults only
+	}
+	_ = json.Unmarshal(data, &m) // best-effort; malformed file → treated as empty
+	return m
+}
+
+// resolve returns the value for key from the environment (highest priority) then
+// the config file; "" means neither set it (caller uses its default).
+func resolve(key string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	if v, ok := fileCfg[key]; ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
 
 type Config struct {
 	ServerAddress     string
@@ -39,8 +77,49 @@ type Config struct {
 	InstallDiskMultiplier int64        // require free disk >= this * patch size before install
 }
 
+// WriteTemplate writes a config.json template (keys = env-var names) with the
+// current defaults, for an admin to edit. Durations/sizes are in seconds/bytes.
+func WriteTemplate(path string) error {
+	tmpl := map[string]string{
+		"AEGIS_SERVER_ADDRESS":        "127.0.0.1:50051",
+		"AEGIS_LOG_LEVEL":             "info",
+		"AEGIS_LOG_MAX_AGE_DAYS":      "10",
+		"AEGIS_DEVICE_ID":             "",
+		"AEGIS_WSUS_SCAN_CAB":         `C:\Program Files\AegisOne\Client\wsusscn2.cab`,
+		"AEGIS_DEVICE_STATE_INTERVAL": "300",
+		"AEGIS_RECON_SCAN_INTERVAL":   "604800",
+		"AEGIS_SECURE_DIR":            `C:\Program Files\AegisOne\Client\SKVC`,
+		"AEGIS_DOWNLOAD_DIR":          `C:\Program Files\AegisOne\Client\SKVC\download`,
+		"AEGIS_TLS_CA":                `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`,
+		"AEGIS_TLS_CERT":              `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`,
+		"AEGIS_TLS_KEY":               `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`,
+		"AEGIS_TLS_SERVER_NAME":       "aegis-server",
+		"AEGIS_HEARTBEAT_INTERVAL":    "300",
+		"AEGIS_KEEPALIVE_TIME":        "60",
+		"AEGIS_CACHE_MAX_BYTES":       "2147483648",
+		"AEGIS_CACHE_TTL":             "86400",
+		"AEGIS_INSTALL_TIMEOUT":       "1800",
+	}
+	data, err := json.MarshalIndent(tmpl, "", "  ")
+	if err != nil {
+		return err
+	}
+	if dir := pathDir(path); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func pathDir(p string) string {
+	i := strings.LastIndexAny(p, `\/`)
+	if i < 0 {
+		return ""
+	}
+	return p[:i]
+}
+
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
-	value := strings.TrimSpace(os.Getenv(key))
+	value := resolve(key)
 	if value == "" {
 		return fallback
 	}
@@ -52,14 +131,14 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 }
 
 func getenv(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+	if value := resolve(key); value != "" {
 		return value
 	}
 	return fallback
 }
 
 func int64FromEnv(key string, fallback int64) int64 {
-	value := strings.TrimSpace(os.Getenv(key))
+	value := resolve(key)
 	if value == "" {
 		return fallback
 	}
@@ -71,6 +150,8 @@ func int64FromEnv(key string, fallback int64) int64 {
 }
 
 func Load() Config {
+	fileCfg = loadFileConfig(FilePath()) // env > file > default
+
 	allowed := strings.Split(getenv("AEGIS_ALLOWED_COMMANDS", "hostname,whoami,echo"), ",")
 	for i := range allowed {
 		allowed[i] = strings.TrimSpace(strings.ToLower(allowed[i]))
