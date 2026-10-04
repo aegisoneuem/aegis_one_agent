@@ -134,7 +134,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore) error {
+func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore, cabs *cabManifestHandler) error {
 	// mTLS is mandatory (security is not toggleable). Load the agent's client
 	// credentials once; fail loud if the certs are missing/unreadable rather than
 	// silently falling back to an insecure channel.
@@ -224,6 +224,11 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 					} else {
 						slog.Info("patch baseline cached", "build", bl.Build, "latest_kbs", len(bl.LatestKbs))
 					}
+					continue
+				}
+				// Server-reported cab version — fetch a newer cab if ours is stale.
+				if cm := msg.GetCabManifest(); cm != nil {
+					cabs.onManifest(cm.Version, cm.Sha256)
 					continue
 				}
 				cmd := msg.GetCommand()
@@ -361,12 +366,14 @@ func main() {
 
 	// Baseline cache for the offline self-diff (server pushes it; Layer 1 uses it).
 	baseline := newBaselineStore(cfg.SecureDir)
+	// Cab version handler (server reports version; agent fetches if stale).
+	cabs := newCabManifestHandler(cfg.SecureDir)
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf, baseline)
 
-	if err := runAgent(cfg, buf, outbox, installJobs, baseline); err != nil {
+	if err := runAgent(cfg, buf, outbox, installJobs, baseline, cabs); err != nil {
 		log.Fatalf("agent failed: %v", err)
 	}
 }

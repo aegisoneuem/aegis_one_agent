@@ -131,6 +131,19 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 			fmt.Printf("Sent patch baseline -> build=%s, latest_kbs=%v\n", build, kbs)
 		}
+
+		// Optionally push the current cab version. Set AEGIS_CAB_VERSION (and
+		// optionally AEGIS_CAB_SHA256) to simulate the server advertising a cab.
+		if ver := os.Getenv("AEGIS_CAB_VERSION"); ver != "" {
+			cm := &pb.ServerMessage{Payload: &pb.ServerMessage_CabManifest{
+				CabManifest: &pb.CabManifest{Version: ver, Sha256: os.Getenv("AEGIS_CAB_SHA256")},
+			}}
+			if err := stream.Send(cm); err != nil {
+				log.Printf("failed to send cab manifest: %v", err)
+				return
+			}
+			fmt.Printf("Sent cab manifest -> version=%s\n", ver)
+		}
 	}()
 
 	for {
