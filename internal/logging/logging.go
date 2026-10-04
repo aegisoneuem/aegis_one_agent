@@ -37,7 +37,10 @@ type Rotation struct {
 // agent-2026-10-02.log) that rolls over each day and keeps MaxAgeDays of history.
 // It returns an io.Closer for the file sink (nil when logging only to stdout).
 func Init(level, file string, rot Rotation) (io.Closer, error) {
-	var w io.Writer = os.Stdout
+	// stdout is wrapped so a failed console write (e.g. a Windows service has no
+	// console) is swallowed — otherwise io.MultiWriter would abort on the stdout
+	// error and never reach the log file.
+	var w io.Writer = tolerant{os.Stdout}
 	var closer io.Closer
 
 	if strings.TrimSpace(file) != "" {
@@ -51,7 +54,8 @@ func Init(level, file string, rot Rotation) (io.Closer, error) {
 			return nil, err
 		}
 		closer = dw
-		w = io.MultiWriter(os.Stdout, dw)
+		// Daily file first (the source of truth), then best-effort stdout.
+		w = io.MultiWriter(dw, tolerant{os.Stdout})
 	}
 
 	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
@@ -60,6 +64,16 @@ func Init(level, file string, rot Rotation) (io.Closer, error) {
 	})
 	slog.SetDefault(slog.New(handler))
 	return closer, nil
+}
+
+// tolerant wraps a writer (stdout) so write errors are swallowed and never
+// returned — a MultiWriter aborts on the first error, which would starve the log
+// file when stdout is unavailable (e.g. a service with no console).
+type tolerant struct{ w io.Writer }
+
+func (t tolerant) Write(p []byte) (int, error) {
+	_, _ = t.w.Write(p) // best-effort
+	return len(p), nil
 }
 
 func maxOr(v, fallback int) int {
