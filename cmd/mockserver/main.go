@@ -163,6 +163,19 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			fmt.Printf("Sent command -> id: reboot-001, type: reboot, delay=%ds (signed)\n", delay)
 		}
 
+		// Optionally send a signed cancel_reboot command (set AEGIS_CANCEL_REBOOT=1).
+		if os.Getenv("AEGIS_CANCEL_REBOOT") != "" {
+			payload := []byte("")
+			cancel := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+				CommandId: "cancel-reboot-001", Type: "cancel_reboot", Payload: payload, Signature: signPayload(payload),
+			}}}
+			if err := stream.Send(cancel); err != nil {
+				log.Printf("failed to send cancel_reboot: %v", err)
+				return
+			}
+			fmt.Println("Sent command -> id: cancel-reboot-001, type: cancel_reboot (signed)")
+		}
+
 		// Parallel-run demo: while a (long) install runs on the agent's serial
 		// worker, fire periodic commands that execute on the receiver — proving the
 		// agent handles a concurrent task alongside a patch install. Set
