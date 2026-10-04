@@ -336,23 +336,28 @@ func send(ctx context.Context, outbox chan<- *pb.AgentMessage, msg *pb.AgentMess
 }
 
 func main() {
-	// `config` writes a config.json template for an admin to edit (cross-platform).
-	if len(os.Args) > 1 && os.Args[1] == "config" {
-		path := config.FilePath()
-		if err := config.WriteTemplate(path); err != nil {
-			fmt.Fprintf(os.Stderr, "config: %v\n", err)
-			os.Exit(1)
+	// A subcommand, if given, must be recognized — otherwise error instead of
+	// silently running the agent (a typo like "instal" must not start it).
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+		if arg == "config" {
+			path := config.FilePath()
+			if err := config.WriteTemplate(path); err != nil {
+				fmt.Fprintf(os.Stderr, "config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("wrote config template to", path)
+			return
 		}
-		fmt.Println("wrote config template to", path)
-		return
+		if runControlCommand(arg) { // install/uninstall/start/stop (Windows)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: %s [config|install|uninstall|start|stop]\n(no argument runs the agent)\n",
+			arg, filepath.Base(os.Args[0]))
+		os.Exit(2)
 	}
-	// Control subcommands (install/uninstall/start/stop) are handled first; on
-	// non-Windows they are no-ops and fall through to running the agent.
-	if len(os.Args) > 1 && runControlCommand(os.Args[1]) {
-		return
-	}
-	// Run as a Windows service when launched by the SCM; otherwise run in the
-	// console (dev). Platform-split in service_windows.go / service_other.go.
+	// No args: run as a Windows service when launched by the SCM; otherwise run
+	// in the console (dev). Platform-split in service_windows.go / service_other.go.
 	runAgentEntry()
 }
 
