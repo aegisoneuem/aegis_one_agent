@@ -20,13 +20,13 @@ import (
 // the buffer (the sender goroutine drains it), never the network.
 //   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
 //   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
-func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore) {
-	go runDeviceStateReport(cfg, buf, baseline)
+func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, drainSignal chan<- struct{}) {
+	go runDeviceStateReport(cfg, buf, baseline, drainSignal)
 	if cfg.WsusScanCab == "" {
 		slog.Info("reconciliation scan (Layer 4) disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
 	}
-	go runReconciliationScan(cfg, buf)
+	go runReconciliationScan(cfg, buf, drainSignal)
 }
 
 // runDeviceStateReport is Layer 1: read installed KBs + build locally (registry
@@ -34,7 +34,7 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineS
 // when it CHANGED since the last send (the installed set rarely changes, so
 // sending every cycle would be wasteful at fleet scale). The agent reports
 // installed facts only; the server computes "missing".
-func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore) {
+func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, drainSignal chan<- struct{}) {
 	var lastFingerprint string
 	var lastSelfDiffKey string
 	report := func() {
@@ -82,6 +82,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		}
 		lastFingerprint = fp
 		slog.Info("device-state (Layer 1): buffered for sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
+		signalDrain(drainSignal)
 	}
 
 	report() // once at startup, then on the interval (sends only on change)
@@ -144,7 +145,7 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 // runReconciliationScan is Layer 4: the occasional (weekly) heavier offline cab
 // scan that reports MISSING updates directly, as a cross-check against the
 // server's Layer 1 diff. Uses only the local cab on disk — never the internet.
-func runReconciliationScan(cfg config.Config, buf buffer.Buffer) {
+func runReconciliationScan(cfg config.Config, buf buffer.Buffer, drainSignal chan<- struct{}) {
 	scan := func() {
 		slog.Info("reconciliation (Layer 4): starting offline cab scan", "cab", cfg.WsusScanCab)
 		updates, err := patch.ScanOffline(cfg.WsusScanCab)
@@ -164,6 +165,7 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer) {
 			return
 		}
 		slog.Info("reconciliation (Layer 4): result buffered for sending", "missing", len(result.Missing))
+		signalDrain(drainSignal)
 	}
 
 	scan() // once at startup, then on the (weekly) interval

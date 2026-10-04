@@ -134,7 +134,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore, cabs *cabManifestHandler) error {
+func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore, cabs *cabManifestHandler, drainSignal <-chan struct{}) error {
 	// mTLS is mandatory (security is not toggleable). Load the agent's client
 	// credentials once; fail loud if the certs are missing/unreadable rather than
 	// silently falling back to an insecure channel.
@@ -196,6 +196,10 @@ func runAgent(cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage
 						slog.Warn("send failed, connection dropping", "error", err.Error())
 						return
 					}
+				case <-drainSignal:
+					// A detection goroutine buffered a report — flush promptly
+					// instead of waiting for the next heartbeat.
+					drainReports(stream, buf)
 				case <-ticker.C:
 					if err := sendHeartbeat(stream, cfg); err != nil {
 						slog.Warn("heartbeat failed, connection dropping", "error", err.Error())
@@ -368,12 +372,15 @@ func main() {
 	baseline := newBaselineStore(cfg.SecureDir)
 	// Cab version handler (server reports version; agent fetches if stale).
 	cabs := newCabManifestHandler(cfg.SecureDir)
+	// drainSignal lets detection wake the sender to flush the buffer promptly
+	// (otherwise a report buffered after connect waits for the next heartbeat).
+	drainSignal := make(chan struct{}, 1)
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
-	go runPatchDetection(cfg, buf, baseline)
+	go runPatchDetection(cfg, buf, baseline, drainSignal)
 
-	if err := runAgent(cfg, buf, outbox, installJobs, baseline, cabs); err != nil {
+	if err := runAgent(cfg, buf, outbox, installJobs, baseline, cabs, drainSignal); err != nil {
 		log.Fatalf("agent failed: %v", err)
 	}
 }

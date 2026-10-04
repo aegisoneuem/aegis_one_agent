@@ -13,6 +13,18 @@ const (
 	kindDeviceState     = "device_state"      // Layer 1 (frequent): installed-KBs + build
 )
 
+// signalDrain wakes the sender to flush the buffer promptly (non-blocking +
+// coalescing) so a freshly-buffered report does not wait for the next heartbeat.
+func signalDrain(sig chan<- struct{}) {
+	if sig == nil {
+		return
+	}
+	select {
+	case sig <- struct{}{}:
+	default: // a wake is already pending; one is enough
+	}
+}
+
 // drainReports sends buffered detection reports (Layer 1 device-state and Layer 4
 // scan results) over the stream. Only the sender goroutine calls this, so there
 // is no concurrent Send (detection goroutines only write to the buffer). A send
