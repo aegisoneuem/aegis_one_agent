@@ -23,10 +23,12 @@ type phaseEmitter func(pb.InstallPhase)
 
 // patchInstaller carries everything the serial worker needs across installs.
 type patchInstaller struct {
-	outbox  chan<- *pb.AgentMessage
-	cache   *patchcache.Cache
-	tmpDir  string
-	timeout time.Duration
+	outbox       chan<- *pb.AgentMessage
+	cache        *patchcache.Cache
+	tmpDir       string
+	timeout      time.Duration
+	maxAttempts  int
+	retryBackoff time.Duration
 }
 
 // patchWorker runs patch installs ONE AT A TIME. The Windows servicing stack
@@ -112,7 +114,7 @@ func (p *patchInstaller) runInstall(job installJob) {
 	}
 
 	slog.Info("install_patch: running", "command_id", cmdID, "kb", kb, "from_cache", fromCache)
-	st := handleInstallPatch(job.spec, installPath, p.timeout, emit)
+	st := handleInstallPatch(job.spec, installPath, p.timeout, p.maxAttempts, p.retryBackoff, emit)
 	st.CommandId = cmdID
 
 	// Cleanup. The decrypted temp is always removed (it is transient plaintext).

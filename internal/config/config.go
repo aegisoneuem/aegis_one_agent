@@ -75,6 +75,8 @@ type Config struct {
 	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
 	InstallTimeout       time.Duration // max time for a single DISM install
 	InstallDiskMultiplier int64        // require free disk >= this * patch size before install
+	InstallMaxAttempts   int           // total DISM attempts on a transient failure
+	InstallRetryBackoff  time.Duration // wait between transient-failure retries
 }
 
 // WriteTemplate writes a config.json template (keys = env-var names) with the
@@ -187,6 +189,8 @@ func Load() Config {
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
 		InstallTimeout:       durationFromEnv("AEGIS_INSTALL_TIMEOUT", 30*time.Minute),
 		InstallDiskMultiplier: int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 3),
+		InstallMaxAttempts:   int(int64FromEnv("AEGIS_INSTALL_MAX_ATTEMPTS", 2)),
+		InstallRetryBackoff:  durationFromEnv("AEGIS_INSTALL_RETRY_BACKOFF", 30*time.Second),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = "localhost"

@@ -405,7 +405,10 @@ func runProcess(ctx context.Context) {
 	// jobs) survive reconnects.
 	outbox := make(chan *pb.AgentMessage, 256)
 	installJobs := make(chan installJob, 32)
-	inst := &patchInstaller{outbox: outbox, cache: cache, tmpDir: tmpDir, timeout: cfg.InstallTimeout}
+	inst := &patchInstaller{
+		outbox: outbox, cache: cache, tmpDir: tmpDir, timeout: cfg.InstallTimeout,
+		maxAttempts: cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
+	}
 	go inst.patchWorker(installJobs)
 
 	// Cache janitor: periodic TTL/cap enforcement (infrequent, to stay light).

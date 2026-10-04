@@ -45,23 +45,38 @@ func alreadyInstalled(kb string) bool {
 // spec.HashAlgorithm is part of the wire contract for future configurability;
 // the agent currently implements SHA-256 only, so a different algorithm is
 // rejected fail-loud rather than silently mismatching.
-func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout time.Duration, emit phaseEmitter) *pb.InstallStatus {
+func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout time.Duration, maxAttempts int, retryBackoff time.Duration, emit phaseEmitter) *pb.InstallStatus {
 	emit(pb.InstallPhase_INSTALL_PHASE_VERIFYING)
 	// hash_algorithm is the operator's choice (sha256 default, or sha512);
-	// VerifyPatchFile rejects an unsupported algorithm fail-loud.
+	// VerifyPatchFile rejects an unsupported algorithm fail-loud. Verify once; the
+	// bytes don't change between DISM retries.
 	if err := patch.VerifyPatchFile(installPath, spec.ExpectedHash, spec.HashAlgorithm); err != nil {
 		return installFailed(spec.Kb, err.Error())
 	}
 
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
 	emit(pb.InstallPhase_INSTALL_PHASE_RUNNING)
-	res, err := patch.RunDISM(installPath, timeout)
-	if res == nil {
-		// Could not even start DISM (bad path, missing binary).
-		reason := "install failed"
-		if err != nil {
-			reason = err.Error()
+
+	var res *patch.DeployResult
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		res, err = patch.RunDISM(installPath, timeout)
+		if res == nil {
+			// Could not even start DISM (bad path, missing binary) — not retryable.
+			reason := "install failed"
+			if err != nil {
+				reason = err.Error()
+			}
+			return installFailed(spec.Kb, reason)
 		}
-		return installFailed(spec.Kb, reason)
+		if res.Success || !res.Transient || attempt == maxAttempts {
+			break
+		}
+		slog.Warn("install_patch: attempt failed (transient), retrying",
+			"kb", spec.Kb, "attempt", attempt, "of", maxAttempts, "reason", res.Reason, "backoff", retryBackoff.String())
+		time.Sleep(retryBackoff)
 	}
 
 	st := &pb.InstallStatus{

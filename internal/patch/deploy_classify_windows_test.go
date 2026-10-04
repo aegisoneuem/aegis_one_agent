@@ -46,25 +46,42 @@ func TestClassifyDISMFailure(t *testing.T) {
 		{"disk space hresult", 1, "Error: 0x80070070 ...", "insufficient disk space on the target volume"},
 		{"disk space phrase", 112, "There is not enough space on the disk.", "insufficient disk space on the target volume"},
 		{"source missing", 1, "0x800f081f source files could not be found", "required source files missing (component store may be corrupt — run DISM /RestoreHealth)"},
-		{"rolled back", 1, "operation failed 0x800f0922", "install rolled back — a pending operation or a failed servicing step (reboot and retry)"},
+		{"rolled back", 1, "operation failed 0x800f0922", "install rolled back — a pending operation or a failed servicing step (retry may help)"},
 		{"not applicable/reboot", 1, "0x800f0923", "package not applicable, or a reboot is pending from a previous update"},
 		{"corruption", 1, "0x80073701 ERROR_SXS_ASSEMBLY_MISSING", "component store corruption (run DISM /RestoreHealth or SFC /scannow)"},
 		{"access denied", 5, "Access is denied.", "access denied — the agent must run elevated (LocalSystem) to install"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := classifyDISMFailure(c.exit, c.output); got != c.want {
+			if got, _ := classifyDISMFailure(c.exit, c.output); got != c.want {
 				t.Errorf("classifyDISMFailure(%d, %q) = %q, want %q", c.exit, c.output, got, c.want)
 			}
 		})
 	}
 }
 
+func TestClassifyDISMFailureTransient(t *testing.T) {
+	// Permanent (do not retry).
+	if _, tr := classifyDISMFailure(1, "0x80070070 disk"); tr {
+		t.Error("disk space should not be transient")
+	}
+	if _, tr := classifyDISMFailure(5, "access is denied"); tr {
+		t.Error("access denied should not be transient")
+	}
+	// Transient (retry).
+	if _, tr := classifyDISMFailure(1, "another installation is already in progress"); !tr {
+		t.Error("busy should be transient")
+	}
+	if _, tr := classifyDISMFailure(1, "some unknown failure"); !tr {
+		t.Error("unknown should be transient (one retry)")
+	}
+}
+
 func TestClassifyDISMFailureFallback(t *testing.T) {
-	if got := classifyDISMFailure(42, "some generic failure with no known code"); got != "install failed (exit 42)" {
+	if got, _ := classifyDISMFailure(42, "some generic failure with no known code"); got != "install failed (exit 42)" {
 		t.Errorf("fallback = %q", got)
 	}
-	if got := classifyDISMFailure(42, "weird 0xDEADBEEF thing"); got != "install failed (exit 42, 0xDEADBEEF)" {
+	if got, _ := classifyDISMFailure(42, "weird 0xDEADBEEF thing"); got != "install failed (exit 42, 0xDEADBEEF)" {
 		t.Errorf("hresult fallback = %q", got)
 	}
 }

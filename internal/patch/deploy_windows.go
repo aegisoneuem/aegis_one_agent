@@ -45,6 +45,7 @@ type DeployResult struct {
 	RebootRequired bool
 	ExitCode       int
 	Reason         string // concise, human failure cause (empty on success)
+	Transient      bool   // failure looks transient → safe to retry
 	Detail         string // trailing DISM output (for logs/console)
 }
 
@@ -171,9 +172,9 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	if res.Success {
 		slog.Info("deploy: install succeeded", "file", abs, "exit_code", exitCode, "reboot_required", res.RebootRequired)
 	} else {
-		res.Reason = classifyDISMFailure(exitCode, string(out))
+		res.Reason, res.Transient = classifyDISMFailure(exitCode, string(out))
 		// Fail loud with the concise reason + output tail so it is diagnosable.
-		slog.Error("deploy: install FAILED", "file", abs, "exit_code", exitCode, "reason", res.Reason, "detail", res.Detail)
+		slog.Error("deploy: install FAILED", "file", abs, "exit_code", exitCode, "reason", res.Reason, "transient", res.Transient, "detail", res.Detail)
 	}
 	return res, nil
 }
@@ -182,32 +183,38 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 // human failure reason for troubleshooting. The full output stays in Detail
 // (verbose). Matching is best-effort on known HRESULTs/phrases; unknown
 // failures fall back to the exit code.
-func classifyDISMFailure(exitCode int, output string) string {
+// classifyDISMFailure returns a concise human reason and whether the failure
+// looks transient (safe to retry). Permanent causes (disk space, corruption,
+// not-applicable, access-denied, reboot-pending) are NOT retried; busy/sharing/
+// WU-service hiccups and unknown failures are.
+func classifyDISMFailure(exitCode int, output string) (reason string, transient bool) {
 	o := strings.ToLower(output)
 	switch {
 	case strings.Contains(o, "0x80070070") || strings.Contains(o, "not enough space") || strings.Contains(o, "disk is full"):
-		return "insufficient disk space on the target volume"
+		return "insufficient disk space on the target volume", false
 	case strings.Contains(o, "0x800f081f") || strings.Contains(o, "source files could not be found"):
-		return "required source files missing (component store may be corrupt — run DISM /RestoreHealth)"
-	case strings.Contains(o, "0x800f0922"):
-		return "install rolled back — a pending operation or a failed servicing step (reboot and retry)"
+		return "required source files missing (component store may be corrupt — run DISM /RestoreHealth)", false
 	case strings.Contains(o, "0x800f0923"):
-		return "package not applicable, or a reboot is pending from a previous update"
+		return "package not applicable, or a reboot is pending from a previous update", false
 	case strings.Contains(o, "0x80073701") || strings.Contains(o, "0x800f0831"):
-		return "component store corruption (run DISM /RestoreHealth or SFC /scannow)"
-	case strings.Contains(o, "0x8024") :
-		return "Windows Update servicing error (" + firstHRESULT(output) + ")"
+		return "component store corruption (run DISM /RestoreHealth or SFC /scannow)", false
 	case strings.Contains(o, "trustedinstaller") && (strings.Contains(o, "disabled") || strings.Contains(o, "cannot be started")):
-		return "Windows servicing service (TrustedInstaller) is disabled or cannot start"
+		return "Windows servicing service (TrustedInstaller) is disabled or cannot start", false
 	case strings.Contains(o, "the system cannot find the file"):
-		return "a required file was not found"
+		return "a required file was not found", false
 	case strings.Contains(o, "0x80070005") || strings.Contains(o, "access is denied"):
-		return "access denied — the agent must run elevated (LocalSystem) to install"
+		return "access denied — the agent must run elevated (LocalSystem) to install", false
+	case strings.Contains(o, "0x800f0922"):
+		return "install rolled back — a pending operation or a failed servicing step (retry may help)", true
+	case strings.Contains(o, "0x80070020") || strings.Contains(o, "being used by another process") || strings.Contains(o, "another installation is") || strings.Contains(o, "in progress"):
+		return "servicing stack busy / another operation in progress (retry)", true
+	case strings.Contains(o, "0x8024"):
+		return "Windows Update servicing error (" + firstHRESULT(output) + ")", true
 	}
 	if h := firstHRESULT(output); h != "" {
-		return fmt.Sprintf("install failed (exit %d, %s)", exitCode, h)
+		return fmt.Sprintf("install failed (exit %d, %s)", exitCode, h), true
 	}
-	return fmt.Sprintf("install failed (exit %d)", exitCode)
+	return fmt.Sprintf("install failed (exit %d)", exitCode), true
 }
 
 // firstHRESULT returns the first 0x######## token in s, or "".
