@@ -85,11 +85,11 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		signalDrain(drainSignal)
 	}
 
-	report() // once at startup, then on the interval (sends only on change)
+	safeRun("layer1-device-state", report) // once at startup, then on the interval
 	ticker := time.NewTicker(cfg.DeviceStateInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		report()
+		safeRun("layer1-device-state", report)
 	}
 }
 
@@ -168,11 +168,11 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, drainSignal cha
 		signalDrain(drainSignal)
 	}
 
-	scan() // once at startup, then on the (weekly) interval
+	safeRun("layer4-recon-scan", scan) // once at startup, then on the (weekly) interval
 	ticker := time.NewTicker(cfg.ReconScanInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		scan()
+		safeRun("layer4-recon-scan", scan)
 	}
 }
 

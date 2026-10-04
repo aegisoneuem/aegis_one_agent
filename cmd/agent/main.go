@@ -182,6 +182,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 		// status), beats the heartbeat, and flushes buffered patch scan results.
 		go func() {
 			defer cancel()
+			defer recoverLog("sender") // runs before cancel (LIFO): catch panic, then tear down
 			interval := cfg.HeartbeatInterval
 			if cfg.HeartbeatJitter > 0 {
 				interval += time.Duration(rand.Int63n(int64(cfg.HeartbeatJitter)))
@@ -218,6 +219,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 		// serial install queue.
 		go func() {
 			defer cancel()
+			defer recoverLog("receiver") // catch a panic, then tear down (reconnect)
 			for {
 				msg, err := stream.Recv()
 				if err != nil {

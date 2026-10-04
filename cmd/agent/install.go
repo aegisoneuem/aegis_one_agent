@@ -39,7 +39,10 @@ type patchInstaller struct {
 // stack and are free to run concurrently.
 func (p *patchInstaller) patchWorker(jobs <-chan installJob) {
 	for job := range jobs {
-		p.runInstall(job)
+		job := job
+		// Isolate each install: a panic in one must not kill the worker (which
+		// would stop ALL future installs) — recover and move to the next job.
+		safeRun("patch-install", func() { p.runInstall(job) })
 	}
 }
 
@@ -50,11 +53,13 @@ func cacheJanitor(cache *patchcache.Cache, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if err := cache.Enforce(); err != nil {
-			slog.Warn("cache janitor: enforcement reported an issue", "error", err.Error())
-		} else {
-			slog.Debug("cache janitor: enforcement ran")
-		}
+		safeRun("cache-janitor", func() {
+			if err := cache.Enforce(); err != nil {
+				slog.Warn("cache janitor: enforcement reported an issue", "error", err.Error())
+			} else {
+				slog.Debug("cache janitor: enforcement ran")
+			}
+		})
 	}
 }
 
