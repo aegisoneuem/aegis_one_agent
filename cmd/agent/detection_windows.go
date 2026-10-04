@@ -106,7 +106,9 @@ func offlineSelfDiff(baseline *baselineStore, state *patch.LocalState) []string 
 	if bl == nil {
 		return nil // no baseline cached yet
 	}
-	if bl.Build == "" || bl.Build != state.FullBuild {
+	// Trim defensively — don't trust the server/env to send a perfectly
+	// formatted build string (stray whitespace must not break the match).
+	if strings.TrimSpace(bl.Build) == "" || strings.TrimSpace(bl.Build) != strings.TrimSpace(state.FullBuild) {
 		slog.Debug("offline self-diff: baseline is for a different build, skipping",
 			"baseline_build", bl.Build, "device_build", state.FullBuild)
 		return nil

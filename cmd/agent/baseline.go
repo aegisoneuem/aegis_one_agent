@@ -31,9 +31,15 @@ func newBaselineStore(dir string) *baselineStore {
 func (b *baselineStore) save(bl *pb.PatchBaseline) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	kbs := make([]string, 0, len(bl.LatestKbs))
+	for _, kb := range bl.LatestKbs {
+		if k := strings.TrimSpace(kb); k != "" {
+			kbs = append(kbs, k)
+		}
+	}
 	data, err := json.MarshalIndent(cachedBaseline{
-		Build:     bl.Build,
-		LatestKBs: bl.LatestKbs,
+		Build:     strings.TrimSpace(bl.Build),
+		LatestKBs: kbs,
 		IssuedAt:  bl.IssuedAt,
 	}, "", "  ")
 	if err != nil {
