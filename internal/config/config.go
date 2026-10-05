@@ -98,6 +98,8 @@ type Config struct {
 	TLSCertFile          string        // agent client certificate (mTLS)
 	TLSKeyFile           string        // agent client private key (mTLS)
 	TLSServerName        string        // expected server certificate SAN
+	CmdVerifyKey         string        // base64 Ed25519 public key for verifying signed commands
+	CmdVerifyKeyFile     string        // path to a file holding the base64 Ed25519 public key (alt to CmdVerifyKey)
 	CacheMaxBytes        int64         // patch cache size cap (bytes); pre-cache/staging budget
 	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
 	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
@@ -212,6 +214,8 @@ func Load() Config {
 		TLSCertFile:          getenv("AEGIS_TLS_CERT", `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`),
 		TLSKeyFile:           getenv("AEGIS_TLS_KEY", `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`),
 		TLSServerName:        getenv("AEGIS_TLS_SERVER_NAME", "localhost"),
+		CmdVerifyKey:         getenv("AEGIS_CMD_VERIFY_KEY", ""),
+		CmdVerifyKeyFile:     getenv("AEGIS_CMD_VERIFY_KEY_FILE", ""),
 		CacheMaxBytes:        int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
 		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),

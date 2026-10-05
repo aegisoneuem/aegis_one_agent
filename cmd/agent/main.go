@@ -61,15 +61,58 @@ func isAllowedCommand(cfg config.Config, commandType string) bool {
 	return false
 }
 
-const publicKeyB64 = "sluXzV/LHkLeAR+1ldhlAZ+hBofkJWgCrVAkVicYLPg="
+// devPublicKeyB64 is the BUILT-IN dev/test command-signing public key. A public
+// key is not a secret, but every deployment hard-wired to one key is wrong — so
+// production must override it via AEGIS_CMD_VERIFY_KEY(_FILE). It is only the
+// fallback for local/dev runs, and its use is logged loud at startup.
+const devPublicKeyB64 = "sluXzV/LHkLeAR+1ldhlAZ+hBofkJWgCrVAkVicYLPg="
+
+// cmdVerifyKey is the Ed25519 public key used to verify signed server commands.
+// It is loaded once at startup (loadCommandVerifyKey) and read-only thereafter.
+var cmdVerifyKey ed25519.PublicKey
+
+// loadCommandVerifyKey resolves the command-signing public key from config
+// (AEGIS_CMD_VERIFY_KEY base64, or AEGIS_CMD_VERIFY_KEY_FILE), falling back to the
+// built-in dev key with a loud warning. A configured-but-invalid key is fatal
+// (fail-loud: without a valid key the agent cannot trust any command).
+func loadCommandVerifyKey(cfg config.Config) error {
+	b64 := strings.TrimSpace(cfg.CmdVerifyKey)
+	source := "config (AEGIS_CMD_VERIFY_KEY)"
+	if b64 == "" && strings.TrimSpace(cfg.CmdVerifyKeyFile) != "" {
+		data, err := os.ReadFile(cfg.CmdVerifyKeyFile)
+		if err != nil {
+			return fmt.Errorf("read command verify key file %q: %w", cfg.CmdVerifyKeyFile, err)
+		}
+		b64 = strings.TrimSpace(string(data))
+		source = "file (" + cfg.CmdVerifyKeyFile + ")"
+	}
+	usingDev := false
+	if b64 == "" {
+		b64 = devPublicKeyB64
+		source = "built-in dev key"
+		usingDev = true
+	}
+	pub, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return fmt.Errorf("decode command verify key: %w", err)
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("command verify key must be %d bytes, got %d", ed25519.PublicKeySize, len(pub))
+	}
+	cmdVerifyKey = ed25519.PublicKey(pub)
+	if usingDev {
+		slog.Warn("command signatures verified with the BUILT-IN DEV key — set AEGIS_CMD_VERIFY_KEY (or _FILE) for production")
+	} else {
+		slog.Info("command verify key loaded", "source", source)
+	}
+	return nil
+}
 
 func verifyCommand(payload, signature []byte) bool {
-	pubBytes, err := base64.StdEncoding.DecodeString(publicKeyB64)
-	if err != nil {
-		return false
+	if len(cmdVerifyKey) != ed25519.PublicKeySize {
+		return false // no key loaded → trust nothing (fail-loud)
 	}
-	pub := ed25519.PublicKey(pubBytes)
-	return ed25519.Verify(pub, payload, signature)
+	return ed25519.Verify(cmdVerifyKey, payload, signature)
 }
 
 func executeCommand(cfg config.Config, commandType string, payload string) (string, error) {
@@ -134,11 +177,12 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, drainSignal <-chan struct{}) error {
 	// mTLS is mandatory (security is not toggleable). Load the agent's client
 	// credentials once; fail loud if the certs are missing/unreadable rather than
-	// silently falling back to an insecure channel.
-	creds, err := secure.ClientCredentials(cfg.TLSCAFile, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSServerName)
+	// silently falling back to an insecure channel. keys protects the private key
+	// at rest (DPAPI-sealed) — see secure.ClientCredentials.
+	creds, err := secure.ClientCredentials(cfg.TLSCAFile, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSServerName, keys)
 	if err != nil {
 		return fmt.Errorf("mTLS setup failed (certs required): %w", err)
 	}
@@ -414,6 +458,13 @@ func runProcess(ctx context.Context) {
 		"heartbeat_interval", cfg.HeartbeatInterval.String(),
 		"heartbeat_jitter", cfg.HeartbeatJitter.String())
 
+	// Load the command-signing public key before anything can accept a command.
+	// Fail loud if it is configured but invalid — the agent must never run unable
+	// to verify server commands.
+	if err := loadCommandVerifyKey(cfg); err != nil {
+		log.Fatalf("command verify key: %v", err)
+	}
+
 	keys := secure.NewKeyProvider(cfg.SecureDir)
 	bufPath := filepath.Join(cfg.SecureDir, "buffer", "patch-buffer.jsonl")
 	buf, err := buffer.NewEncryptedFileBuffer(bufPath, keys)
@@ -476,7 +527,7 @@ func runProcess(ctx context.Context) {
 	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf, baseline, drainSignal)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, keys, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")
