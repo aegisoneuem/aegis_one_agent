@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -45,6 +46,47 @@ func signPayload(payload []byte) []byte {
 
 type server struct {
 	pb.UnimplementedAgentControlPlaneServer
+}
+
+// FetchContent streams a file to the agent (simulated peer-cache delivery). The
+// file to serve comes from AEGIS_SERVE_CAB (kind=cab) or AEGIS_SERVE_PATCH
+// (kind=patch). This is the server contract the real peer-cache must implement.
+func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlane_FetchContentServer) error {
+	var path string
+	switch req.Kind {
+	case "cab":
+		path = os.Getenv("AEGIS_SERVE_CAB")
+	case "patch":
+		path = os.Getenv("AEGIS_SERVE_PATCH")
+	}
+	if path == "" {
+		return fmt.Errorf("no file configured to serve for kind %q (set AEGIS_SERVE_CAB/_PATCH)", req.Kind)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fmt.Printf("FetchContent: serving %s (kind=%s, id=%s)\n", path, req.Kind, req.Id)
+	buf := make([]byte, 64*1024)
+	var total int64
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			if serr := stream.Send(&pb.ContentChunk{Data: buf[:n]}); serr != nil {
+				return serr
+			}
+			total += int64(n)
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+	fmt.Printf("FetchContent: done (%d bytes)\n", total)
+	return nil
 }
 
 func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {

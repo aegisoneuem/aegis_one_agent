@@ -237,7 +237,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 				}
 				// Server-reported cab version — fetch a newer cab if ours is stale.
 				if cm := msg.GetCabManifest(); cm != nil {
-					cabs.onManifest(cm.Version, cm.Sha256)
+					cabs.onManifest(ctx, client, cm.Version, cm.Sha256)
 					continue
 				}
 				cmd := msg.GetCommand()
@@ -448,7 +448,7 @@ func runProcess(ctx context.Context) {
 	// Baseline cache for the offline self-diff (server pushes it; Layer 1 uses it).
 	baseline := newBaselineStore(cfg.SecureDir)
 	// Cab version handler (server reports version; agent fetches if stale).
-	cabs := newCabManifestHandler(cfg.SecureDir)
+	cabs := newCabManifestHandler(cfg.SecureDir, cfg.WsusScanCab)
 	// drainSignal lets detection wake the sender to flush the buffer promptly
 	// (otherwise a report buffered after connect waits for the next heartbeat).
 	drainSignal := make(chan struct{}, 1)
