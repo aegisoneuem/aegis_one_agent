@@ -134,7 +134,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, baseline *baselineStore, cabs *cabManifestHandler, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, drainSignal <-chan struct{}) error {
 	// mTLS is mandatory (security is not toggleable). Load the agent's client
 	// credentials once; fail loud if the certs are missing/unreadable rather than
 	// silently falling back to an insecure channel.
@@ -268,6 +268,21 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 					case <-ctx.Done():
 						return
 					}
+					continue
+				}
+
+				// stage_patch: pre-cache a patch (encrypted, StateStaged) ahead of a
+				// scheduled install. Fetched via peer-cache; runs in the background so
+				// it does not block the receiver.
+				if strings.EqualFold(strings.TrimSpace(cmd.Type), "stage_patch") {
+					var spec pb.InstallPatchSpec
+					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
+						slog.Error("stage_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
+						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid stage payload"))
+						continue
+					}
+					slog.Info("stage_patch: accepted", "command_id", cmd.CommandId, "kb", spec.Kb)
+					stg.stage(ctx, client, cmd.CommandId, &spec)
 					continue
 				}
 
@@ -442,6 +457,10 @@ func runProcess(ctx context.Context) {
 	}
 	go inst.patchWorker(installJobs)
 
+	// Stager: server-driven pre-caching of patches (stage_patch) ahead of a
+	// scheduled install. Fetches via peer-cache and stores encrypted as staged.
+	stg := newStager(outbox, cache, tmpDir, cfg.DeviceID)
+
 	// Cache janitor: periodic TTL/cap enforcement (infrequent, to stay light).
 	go cacheJanitor(cache, cfg.CacheJanitorInterval)
 
@@ -457,7 +476,7 @@ func runProcess(ctx context.Context) {
 	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf, baseline, drainSignal)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, baseline, cabs, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")

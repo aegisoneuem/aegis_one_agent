@@ -157,6 +157,47 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// Optionally push one or more signed stage_patch commands (pre-cache ahead
+		// of a scheduled install). Set AEGIS_STAGE_KB (and optionally _HASH /
+		// _HASH_ALGO / _FILE as a filename hint for the extension); comma-separated
+		// for multiple. The agent FETCHES the bytes via FetchContent, so the server
+		// must also serve them: set AEGIS_SERVE_PATCH to the file to stream.
+		if kbEnv := os.Getenv("AEGIS_STAGE_KB"); kbEnv != "" {
+			kbs := strings.Split(kbEnv, ",")
+			hashes := strings.Split(os.Getenv("AEGIS_STAGE_HASH"), ",")
+			files := strings.Split(os.Getenv("AEGIS_STAGE_FILE"), ",")
+			algo := os.Getenv("AEGIS_STAGE_HASH_ALGO")
+			for i, kb := range kbs {
+				kb = strings.TrimSpace(kb)
+				if kb == "" {
+					continue
+				}
+				spec := &pb.InstallPatchSpec{
+					Kb:            kb,
+					FilePath:      nth(files, i), // filename hint only (for the .msu/.cab extension)
+					ExpectedHash:  nth(hashes, i),
+					HashAlgorithm: algo,
+				}
+				specBytes, err := proto.Marshal(spec)
+				if err != nil {
+					log.Printf("failed to marshal stage spec: %v", err)
+					continue
+				}
+				cmdID := fmt.Sprintf("stage-%03d", i+1)
+				stageCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+					CommandId: cmdID,
+					Type:      "stage_patch",
+					Payload:   specBytes,
+					Signature: signPayload(specBytes),
+				}}}
+				if err := stream.Send(stageCmd); err != nil {
+					log.Printf("failed to send stage command: %v", err)
+					return
+				}
+				fmt.Printf("Sent command -> id: %s, type: stage_patch, kb=%s (signed)\n", cmdID, kb)
+			}
+		}
+
 		// Optionally push a patch baseline for the agent's offline self-diff. Set
 		// AEGIS_BASELINE_BUILD (the device build) and AEGIS_BASELINE_KBS
 		// (comma-separated expected KBs) to simulate the server's snapshot.
@@ -263,6 +304,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		if ds := msg.GetDeviceState(); ds != nil {
 			fmt.Printf("Received device-state (Layer 1) -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d\n",
 				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs))
+		}
+		if cf := msg.GetCacheFull(); cf != nil {
+			fmt.Printf("Received CACHE-FULL report -> device: %s, pending: %s, needed: %d, cap: %d, in_use: %d, msg: %s\n",
+				cf.DeviceId, cf.PendingId, cf.NeededBytes, cf.CapBytes, cf.InUseBytes, cf.Message)
 		}
 		if psr := msg.GetPatchScanResult(); psr != nil {
 			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d\n",

@@ -278,6 +278,14 @@ func (c *Cache) List() []EntryInfo {
 	return out
 }
 
+// Usage returns the bytes currently cached and the configured cap, for
+// cache-full reporting and diagnostics.
+func (c *Cache) Usage() (inUse, max int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totalBytes(), c.maxBytes
+}
+
 // Has reports whether an id is cached.
 func (c *Cache) Has(id string) bool {
 	c.mu.Lock()
