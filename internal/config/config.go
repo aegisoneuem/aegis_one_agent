@@ -194,7 +194,7 @@ func Load() Config {
 		LogLevel:          getenv("AEGIS_LOG_LEVEL", "info"),
 		LogFile:           getenv("AEGIS_LOG_FILE", ""),
 		LogMaxAgeDays:     int(int64FromEnv("AEGIS_LOG_MAX_AGE_DAYS", 10)),
-		DeviceID:          getenv("AEGIS_DEVICE_ID", "test-device-001"),
+		DeviceID:          getenv("AEGIS_DEVICE_ID", ""), // empty → agent generates + persists a stable UUID
 		AgentVersion:      getenv("AEGIS_AGENT_VERSION", "0.0.1"),
 		Hostname:          getenv("AEGIS_HOSTNAME", "localhost"),
 		OS:                getenv("AEGIS_OS", "windows"),

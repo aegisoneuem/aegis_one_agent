@@ -453,6 +453,17 @@ func runProcess(ctx context.Context) {
 		slog.Info("no config file found — using env vars / defaults", "looked_at", path)
 	}
 
+	// Resolve this device's stable unique identity. The hardware fingerprint lets
+	// us detect a clone/reimage (id baked into a template, machine changed) and
+	// issue a fresh id instead of colliding.
+	fingerprint := hardwareFingerprint()
+	deviceID, idSource, err := resolveDeviceID(cfg.DeviceID, cfg.SecureDir, fingerprint)
+	if err != nil {
+		log.Fatalf("device identity: %v", err)
+	}
+	cfg.DeviceID = deviceID
+	slog.Info("device identity resolved", "device_id", deviceID, "source", idSource, "fingerprint", fingerprint)
+
 	slog.Info("Aegis One Agent starting up",
 		"server", cfg.ServerAddress,
 		"heartbeat_interval", cfg.HeartbeatInterval.String(),
