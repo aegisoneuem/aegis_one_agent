@@ -46,10 +46,16 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 		slog.Info("enrollment: client cert already present, skipping")
 		return nil
 	}
-	if cfg.EnrollAddress == "" || cfg.EnrollToken == "" {
-		return fmt.Errorf("no client cert and enrollment not configured (set AEGIS_ENROLL_ADDRESS + AEGIS_ENROLL_TOKEN)")
+	if cfg.EnrollToken == "" {
+		return fmt.Errorf("no client cert and no enrollment token (set AEGIS_ENROLL_TOKEN)")
 	}
-	slog.Info("enrollment: no client cert — enrolling", "enroll_address", cfg.EnrollAddress, "device_id", deviceID)
+	// Enroll over the same control-plane port by default (single-port design);
+	// AEGIS_ENROLL_ADDRESS overrides only if enrollment is on a separate endpoint.
+	enrollAddr := cfg.EnrollAddress
+	if enrollAddr == "" {
+		enrollAddr = cfg.ServerAddress
+	}
+	slog.Info("enrollment: no client cert — enrolling", "enroll_address", enrollAddr, "device_id", deviceID)
 
 	// 1. Generate keypair + CSR (CN = device_id). The private key stays on-device.
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -69,7 +75,7 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 	if err != nil {
 		return fmt.Errorf("enroll TLS setup: %w", err)
 	}
-	conn, err := grpc.NewClient(cfg.EnrollAddress, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(enrollAddr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return fmt.Errorf("dial enroll endpoint: %w", err)
 	}

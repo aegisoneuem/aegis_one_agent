@@ -169,6 +169,28 @@ func ServerTLSServerAuthOnly(certPath, keyPath string) (credentials.TransportCre
 	}), nil
 }
 
+// ServerCredentialsVerifyIfGiven builds server TLS that presents the server cert
+// and VERIFIES a client cert against the CA when one is presented, but does not
+// require it. This lets a single port serve both enrollment (no client cert yet,
+// token-gated at the app layer) and the strict control plane (the app layer then
+// requires a verified client cert for non-Enroll RPCs). TLS 1.3 enforced.
+func ServerCredentialsVerifyIfGiven(caPath, certPath, keyPath string) (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load server cert/key: %w", err)
+	}
+	pool, err := loadCAPool(caPath)
+	if err != nil {
+		return nil, err
+	}
+	return credentials.NewTLS(&tls.Config{
+		MinVersion:   minTLS,
+		Certificates: []tls.Certificate{cert},
+		ClientCAs:    pool,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+	}), nil
+}
+
 // ServerCredentials builds mTLS credentials for the server: it presents the
 // server cert/key and REQUIRES + verifies a client cert against the CA.
 func ServerCredentials(caPath, certPath, keyPath string) (credentials.TransportCredentials, error) {

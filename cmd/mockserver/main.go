@@ -20,7 +20,11 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -145,7 +149,25 @@ func parsePrivateKey(der []byte) (any, error) {
 // FetchContent streams a file to the agent (simulated peer-cache delivery). The
 // file to serve comes from AEGIS_SERVE_CAB (kind=cab) or AEGIS_SERVE_PATCH
 // (kind=patch). This is the server contract the real peer-cache must implement.
+// clientVerified reports whether the peer presented a client cert that verified
+// against the CA. On the single port, Enroll is allowed without one (token-gated)
+// but all other RPCs require a verified client cert.
+func clientVerified(ctx context.Context) bool {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return false
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return false
+	}
+	return len(tlsInfo.State.VerifiedChains) > 0
+}
+
 func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlane_FetchContentServer) error {
+	if !clientVerified(stream.Context()) {
+		return status.Error(codes.Unauthenticated, "client certificate required")
+	}
 	var path string
 	switch req.Kind {
 	case "cab":
@@ -184,6 +206,10 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 }
 
 func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
+	if !clientVerified(stream.Context()) {
+		fmt.Println("Connect REJECTED -> no verified client certificate (must enroll first)")
+		return status.Error(codes.Unauthenticated, "client certificate required")
+	}
 	fmt.Println("Agent connected!")
 
 	go func() {
@@ -425,9 +451,12 @@ func main() {
 	caFile := getenv("AEGIS_TLS_CA", "certs/ca.crt")
 	certFile := getenv("AEGIS_TLS_CERT", "certs/server.crt")
 	keyFile := getenv("AEGIS_TLS_KEY", "certs/server.key")
-	creds, err := secure.ServerCredentials(caFile, certFile, keyFile)
+	// Single port: verify a client cert WHEN presented (ops) but allow none
+	// (enrollment, token-gated). Non-Enroll RPCs require a verified cert at the
+	// app layer (see Connect / FetchContent).
+	creds, err := secure.ServerCredentialsVerifyIfGiven(caFile, certFile, keyFile)
 	if err != nil {
-		log.Fatalf("mTLS setup failed (run certgen first?): %v", err)
+		log.Fatalf("TLS setup failed (run certgen first?): %v", err)
 	}
 
 	// Allow the agent's keepalive pings (client pings ~60s; without a permissive
@@ -441,26 +470,6 @@ func main() {
 	}
 	srv := &server{caCert: caCert, caKey: caKey, caCertPEM: caCertPEM}
 
-	// Enrollment listener: SERVER-AUTH TLS only (agent has no client cert yet),
-	// on a separate port so the main control plane stays strict mTLS.
-	enrollAddr := getenv("AEGIS_ENROLL_ADDRESS", ":50052")
-	go func() {
-		elis, err := net.Listen("tcp", enrollAddr)
-		if err != nil {
-			log.Fatalf("enroll listen failed: %v", err)
-		}
-		enrollCreds, err := secure.ServerTLSServerAuthOnly(certFile, keyFile)
-		if err != nil {
-			log.Fatalf("enroll TLS setup failed: %v", err)
-		}
-		es := grpc.NewServer(grpc.Creds(enrollCreds))
-		pb.RegisterAgentControlPlaneServer(es, srv)
-		fmt.Printf("Enrollment endpoint listening on %s (server-auth TLS; token=%s)\n", enrollAddr, maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
-		if err := es.Serve(elis); err != nil {
-			log.Fatalf("enroll serve failed: %v", err)
-		}
-	}()
-
 	s := grpc.NewServer(
 		grpc.Creds(creds),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
@@ -469,7 +478,7 @@ func main() {
 		}),
 	)
 	pb.RegisterAgentControlPlaneServer(s, srv)
-	fmt.Printf("Mock server listening on :50051 (mTLS: ca=%s server=%s)\n", caFile, certFile)
+	fmt.Printf("Mock server listening on :50051 (single port: mTLS ops + enrollment; token=%s)\n", maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}

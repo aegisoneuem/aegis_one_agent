@@ -121,17 +121,25 @@ The server stores `system_uuid`/`machine_guid` as the **reconciliation keys** an
 Flow (the mockserver `Enroll` handler is the executable reference the real vault
 must match):
 
+**Single port.** Enrollment and the control plane share one TCP port (default
+`:50051`). The server TLS uses **VerifyClientCertIfGiven**: a client cert is
+verified against the CA when presented, but a connection without one is allowed so
+a not-yet-enrolled agent can call `Enroll`. **All non-`Enroll` RPCs require a
+verified client cert at the application layer** (reject `Unauthenticated`
+otherwise). This keeps one firewall rule (agent → server, outbound from the
+endpoint — no inbound port on the endpoint).
+
 1. Agent starts with **no client cert** → generates an ECDSA P-256 keypair
    **locally** (private key never leaves the device) and a CSR (`CN = device_id`).
-2. Agent calls `Enroll` over a **separate SERVER-AUTH-TLS endpoint**
-   (`AEGIS_ENROLL_ADDRESS`, mock default `:50052`) — it has no client cert yet, so
-   the main strict-mTLS port cannot be used. The call is authenticated by the
-   **per-tenant `enroll_token`**.
+2. Agent calls `Enroll` on the **same server port** over server-auth TLS (no client
+   cert yet), authenticated by the **per-tenant `enroll_token`**. (`AEGIS_ENROLL_ADDRESS`
+   can override only if a separate endpoint is ever desired; default = server address.)
 3. Server (vault) MUST: validate the token, **enforce licensing + reconcile the
    device** (§4.1), then sign the CSR with the tenant CA → return
    `client_cert_pem` (+ optional `ca_chain_pem`, `assigned_device_id`).
-4. Agent writes the cert + key, then connects normally over **strict mTLS**
-   (`:50051`). The private key is sealed at rest (DPAPI) on load.
+4. Agent writes the cert + key, then connects over **mTLS on the same port**;
+   the server now requires + verifies the client cert for `Connect`/`FetchContent`.
+   The private key is sealed at rest (DPAPI) on load.
 
 `EnrollResponse.error` (non-empty) rejects enrollment (bad token, over license,
 revoked, etc.). The mockserver reference currently validates the token and signs;
