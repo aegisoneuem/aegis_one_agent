@@ -164,6 +164,17 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// defaultHostname returns the real OS hostname (the device's display label), used
+// when AEGIS_HOSTNAME is not set. Falls back to "localhost" if it can't be read.
+func defaultHostname() string {
+	if h, err := os.Hostname(); err == nil {
+		if h = strings.TrimSpace(h); h != "" {
+			return h
+		}
+	}
+	return "localhost"
+}
+
 func getenv(key, fallback string) string {
 	if value := resolve(key); value != "" {
 		return value
@@ -198,7 +209,7 @@ func Load() Config {
 		LogMaxAgeDays:     int(int64FromEnv("AEGIS_LOG_MAX_AGE_DAYS", 10)),
 		DeviceID:          getenv("AEGIS_DEVICE_ID", ""), // empty → agent generates + persists a stable UUID
 		AgentVersion:      getenv("AEGIS_AGENT_VERSION", "0.0.1"),
-		Hostname:          getenv("AEGIS_HOSTNAME", "localhost"),
+		Hostname:          getenv("AEGIS_HOSTNAME", defaultHostname()),
 		OS:                getenv("AEGIS_OS", "windows"),
 		HeartbeatInterval: durationFromEnv("AEGIS_HEARTBEAT_INTERVAL", 5*time.Minute),
 		HeartbeatJitter:   durationFromEnv("AEGIS_HEARTBEAT_JITTER", 30*time.Second),
@@ -229,7 +240,7 @@ func Load() Config {
 		InstallRetryBackoff:  durationFromEnv("AEGIS_INSTALL_RETRY_BACKOFF", 30*time.Second),
 	}
 	if cfg.Hostname == "" {
-		cfg.Hostname = "localhost"
+		cfg.Hostname = defaultHostname()
 	}
 	if cfg.OS == "" {
 		cfg.OS = "windows"
