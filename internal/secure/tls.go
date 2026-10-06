@@ -139,6 +139,36 @@ func loadClientKeyPEM(keys KeyProvider, keyPath string) ([]byte, error) {
 	return pem, nil
 }
 
+// ClientTLSServerAuth builds SERVER-AUTH-ONLY TLS credentials (verify the server
+// via the CA, present no client cert). Used for the one-time enrollment call,
+// where the agent does not yet have a client certificate.
+func ClientTLSServerAuth(caPath, serverName string) (credentials.TransportCredentials, error) {
+	pool, err := loadCAPool(caPath)
+	if err != nil {
+		return nil, err
+	}
+	return credentials.NewTLS(&tls.Config{
+		MinVersion: minTLS,
+		RootCAs:    pool,
+		ServerName: serverName,
+	}), nil
+}
+
+// ServerTLSServerAuthOnly builds server-side TLS that presents the server cert
+// but does NOT require a client cert — for the enrollment endpoint, where the
+// agent has no client cert yet. (The main control-plane stays strict mTLS.)
+func ServerTLSServerAuthOnly(certPath, keyPath string) (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load server cert/key: %w", err)
+	}
+	return credentials.NewTLS(&tls.Config{
+		MinVersion:   minTLS,
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.NoClientCert,
+	}), nil
+}
+
 // ServerCredentials builds mTLS credentials for the server: it presents the
 // server cert/key and REQUIRES + verifies a client cert against the CA.
 func ServerCredentials(caPath, certPath, keyPath string) (credentials.TransportCredentials, error) {

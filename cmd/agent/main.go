@@ -464,6 +464,15 @@ func runProcess(ctx context.Context) {
 	cfg.DeviceID = deviceID
 	slog.Info("device identity resolved", "device_id", deviceID, "source", idSource, "fingerprint", fingerprint)
 
+	// Enrollment (Option B): if no client cert is provisioned, enroll with the
+	// server (keypair+CSR → token-authenticated Enroll → signed per-device cert)
+	// before mTLS. No-op when a cert already exists. Fail loud if it cannot proceed
+	// (SCM restarts the service and retries).
+	sysUUID, machGUID := hardwareIDs()
+	if err := ensureEnrolled(ctx, cfg, cfg.DeviceID, sysUUID, machGUID); err != nil {
+		log.Fatalf("enrollment: %v", err)
+	}
+
 	slog.Info("Aegis One Agent starting up",
 		"server", cfg.ServerAddress,
 		"heartbeat_interval", cfg.HeartbeatInterval.String(),

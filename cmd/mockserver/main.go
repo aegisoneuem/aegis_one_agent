@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"os"
 	"strconv"
@@ -46,6 +51,95 @@ func signPayload(payload []byte) []byte {
 
 type server struct {
 	pb.UnimplementedAgentControlPlaneServer
+	caCert    *x509.Certificate // CA used to sign enrolled client certs (the "tiny vault")
+	caKey     any               // CA private key (ecdsa/ed25519/rsa)
+	caCertPEM []byte            // CA cert PEM returned in the enroll response chain
+}
+
+// Enroll is the tiny-vault reference: it validates the bootstrap token, signs the
+// agent's CSR with the CA, and returns a per-device client cert. The real server
+// also enforces licensing + device reconciliation here (see
+// docs/device-identity-and-lifecycle.md).
+func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollResponse, error) {
+	want := strings.TrimSpace(os.Getenv("AEGIS_ENROLL_TOKEN"))
+	if want == "" || req.EnrollToken != want {
+		fmt.Printf("Enroll REJECTED -> device_id=%s (bad/missing token)\n", req.DeviceId)
+		return &pb.EnrollResponse{Error: "invalid enrollment token"}, nil
+	}
+	block, _ := pem.Decode([]byte(req.CsrPem))
+	if block == nil {
+		return &pb.EnrollResponse{Error: "bad CSR PEM"}, nil
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return &pb.EnrollResponse{Error: "parse CSR: " + err.Error()}, nil
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return &pb.EnrollResponse{Error: "CSR signature invalid"}, nil
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return &pb.EnrollResponse{Error: "serial: " + err.Error()}, nil
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      csr.Subject,
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().AddDate(1, 0, 0), // 1-year cert (real server rotates)
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, s.caCert, csr.PublicKey, s.caKey)
+	if err != nil {
+		return &pb.EnrollResponse{Error: "sign cert: " + err.Error()}, nil
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	fmt.Printf("Enroll OK -> device_id=%s cn=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)\n",
+		req.DeviceId, csr.Subject.CommonName, req.SystemUuid, req.MachineGuid, req.Hostname, req.Os)
+	return &pb.EnrollResponse{
+		ClientCertPem:    string(certPEM),
+		CaChainPem:       string(s.caCertPEM),
+		AssignedDeviceId: req.DeviceId,
+	}, nil
+}
+
+// loadCA loads the CA cert + private key the vault signs enrollments with.
+func loadCA(certPath, keyPath string) (*x509.Certificate, any, []byte, error) {
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read CA cert: %w", err)
+	}
+	cblock, _ := pem.Decode(certPEM)
+	if cblock == nil {
+		return nil, nil, nil, fmt.Errorf("bad CA cert PEM")
+	}
+	caCert, err := x509.ParseCertificate(cblock.Bytes)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse CA cert: %w", err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read CA key: %w", err)
+	}
+	kblock, _ := pem.Decode(keyPEM)
+	if kblock == nil {
+		return nil, nil, nil, fmt.Errorf("bad CA key PEM")
+	}
+	key, err := parsePrivateKey(kblock.Bytes)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse CA key: %w", err)
+	}
+	return caCert, key, certPEM, nil
+}
+
+func parsePrivateKey(der []byte) (any, error) {
+	if k, err := x509.ParseECPrivateKey(der); err == nil {
+		return k, nil
+	}
+	if k, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return k, nil
+	}
+	return x509.ParsePKCS1PrivateKey(der)
 }
 
 // FetchContent streams a file to the agent (simulated peer-cache delivery). The
@@ -339,6 +433,34 @@ func main() {
 	// Allow the agent's keepalive pings (client pings ~60s; without a permissive
 	// policy the server would GOAWAY with "too_many_pings"). The real server needs
 	// an equivalent policy.
+	// The tiny-vault reference: load the CA so Enroll can sign agent CSRs.
+	caKeyFile := getenv("AEGIS_CA_KEY", "certs/ca.key")
+	caCert, caKey, caCertPEM, err := loadCA(caFile, caKeyFile)
+	if err != nil {
+		log.Fatalf("CA load failed (needed for enrollment): %v", err)
+	}
+	srv := &server{caCert: caCert, caKey: caKey, caCertPEM: caCertPEM}
+
+	// Enrollment listener: SERVER-AUTH TLS only (agent has no client cert yet),
+	// on a separate port so the main control plane stays strict mTLS.
+	enrollAddr := getenv("AEGIS_ENROLL_ADDRESS", ":50052")
+	go func() {
+		elis, err := net.Listen("tcp", enrollAddr)
+		if err != nil {
+			log.Fatalf("enroll listen failed: %v", err)
+		}
+		enrollCreds, err := secure.ServerTLSServerAuthOnly(certFile, keyFile)
+		if err != nil {
+			log.Fatalf("enroll TLS setup failed: %v", err)
+		}
+		es := grpc.NewServer(grpc.Creds(enrollCreds))
+		pb.RegisterAgentControlPlaneServer(es, srv)
+		fmt.Printf("Enrollment endpoint listening on %s (server-auth TLS; token=%s)\n", enrollAddr, maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
+		if err := es.Serve(elis); err != nil {
+			log.Fatalf("enroll serve failed: %v", err)
+		}
+	}()
+
 	s := grpc.NewServer(
 		grpc.Creds(creds),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
@@ -346,11 +468,22 @@ func main() {
 			PermitWithoutStream: true,
 		}),
 	)
-	pb.RegisterAgentControlPlaneServer(s, &server{})
+	pb.RegisterAgentControlPlaneServer(s, srv)
 	fmt.Printf("Mock server listening on :50051 (mTLS: ca=%s server=%s)\n", caFile, certFile)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+}
+
+func maskToken(t string) string {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return "<unset — enrollment will reject>"
+	}
+	if len(t) <= 4 {
+		return "****"
+	}
+	return t[:2] + "****" + t[len(t)-2:]
 }
 
 func getenv(key, fallback string) string {

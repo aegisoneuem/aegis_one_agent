@@ -114,6 +114,29 @@ agent_version    string
 The server stores `system_uuid`/`machine_guid` as the **reconciliation keys** and
 `hostname` as a mutable attribute.
 
+### 6.1 Enrollment RPC (Option B) — IMPLEMENTED (agent + mockserver reference)
+
+`rpc Enroll(EnrollRequest) returns (EnrollResponse)` on `AgentControlPlane`.
+
+Flow (the mockserver `Enroll` handler is the executable reference the real vault
+must match):
+
+1. Agent starts with **no client cert** → generates an ECDSA P-256 keypair
+   **locally** (private key never leaves the device) and a CSR (`CN = device_id`).
+2. Agent calls `Enroll` over a **separate SERVER-AUTH-TLS endpoint**
+   (`AEGIS_ENROLL_ADDRESS`, mock default `:50052`) — it has no client cert yet, so
+   the main strict-mTLS port cannot be used. The call is authenticated by the
+   **per-tenant `enroll_token`**.
+3. Server (vault) MUST: validate the token, **enforce licensing + reconcile the
+   device** (§4.1), then sign the CSR with the tenant CA → return
+   `client_cert_pem` (+ optional `ca_chain_pem`, `assigned_device_id`).
+4. Agent writes the cert + key, then connects normally over **strict mTLS**
+   (`:50051`). The private key is sealed at rest (DPAPI) on load.
+
+`EnrollResponse.error` (non-empty) rejects enrollment (bad token, over license,
+revoked, etc.). The mockserver reference currently validates the token and signs;
+**licensing + reconciliation is the real server's job to add here.**
+
 ---
 
 ## 7. Template / golden-image best practice (to document for customers)

@@ -100,6 +100,8 @@ type Config struct {
 	TLSServerName        string        // expected server certificate SAN
 	CmdVerifyKey         string        // base64 Ed25519 public key for verifying signed commands
 	CmdVerifyKeyFile     string        // path to a file holding the base64 Ed25519 public key (alt to CmdVerifyKey)
+	EnrollAddress        string        // enrollment endpoint (server-auth TLS); used only when no client cert exists
+	EnrollToken          string        // per-tenant bootstrap enrollment token
 	CacheMaxBytes        int64         // patch cache size cap (bytes); pre-cache/staging budget
 	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
 	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
@@ -216,6 +218,8 @@ func Load() Config {
 		TLSServerName:        getenv("AEGIS_TLS_SERVER_NAME", "localhost"),
 		CmdVerifyKey:         getenv("AEGIS_CMD_VERIFY_KEY", ""),
 		CmdVerifyKeyFile:     getenv("AEGIS_CMD_VERIFY_KEY_FILE", ""),
+		EnrollAddress:        getenv("AEGIS_ENROLL_ADDRESS", ""),
+		EnrollToken:          getenv("AEGIS_ENROLL_TOKEN", ""),
 		CacheMaxBytes:        int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
 		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),

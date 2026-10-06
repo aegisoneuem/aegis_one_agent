@@ -17,21 +17,28 @@ var (
 	procGetSystemFirmware = fpKernel32.NewProc("GetSystemFirmwareTable")
 )
 
+// hardwareIDs returns the raw hardware identifiers (SMBIOS System UUID, registry
+// MachineGuid) sent to the server at enrollment for de-duplication. Either may be
+// "" if unreadable.
+func hardwareIDs() (systemUUID, machineGUID string) {
+	return systemUUIDValue(), machineGUIDValue()
+}
+
 // hardwareFingerprint returns a stable per-machine fingerprint for clone/reimage
 // detection (and, later, server-side dedup). It prefers the SMBIOS System UUID
 // (unique per physical/virtual machine, survives OS reinstall, differs across VM
 // clones) and falls back to the registry MachineGuid; "" if neither is readable.
 func hardwareFingerprint() string {
-	if u := systemUUID(); u != "" {
+	if u := systemUUIDValue(); u != "" {
 		return "smbios:" + u
 	}
-	if g := machineGUID(); g != "" {
+	if g := machineGUIDValue(); g != "" {
 		return "machineguid:" + g
 	}
 	return ""
 }
 
-func machineGUID() string {
+func machineGUIDValue() string {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	if err != nil {
 		return ""
@@ -44,9 +51,9 @@ func machineGUID() string {
 	return strings.TrimSpace(v)
 }
 
-// systemUUID reads the SMBIOS System Information (Type 1) UUID via
+// systemUUIDValue reads the SMBIOS System Information (Type 1) UUID via
 // GetSystemFirmwareTable('RSMB'). Returns "" if unavailable or unset.
-func systemUUID() string {
+func systemUUIDValue() string {
 	const rsmb = 0x52534D42 // 'RSMB' provider signature
 	size, _, _ := procGetSystemFirmware.Call(uintptr(rsmb), 0, 0, 0)
 	if size == 0 {
