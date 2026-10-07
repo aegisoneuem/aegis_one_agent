@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
@@ -58,6 +60,52 @@ type server struct {
 	caCert    *x509.Certificate // CA used to sign enrolled client certs (the "tiny vault")
 	caKey     any               // CA private key (ecdsa/ed25519/rsa)
 	caCertPEM []byte            // CA cert PEM returned in the enroll response chain
+
+	mu        sync.Mutex
+	byID      map[string]*deviceRecord // device registry keyed by assigned device_id
+	bySysUUID map[string]*deviceRecord // secondary index for dedup (reinstall/reimage)
+}
+
+// deviceRecord is one registered device (the real server persists this in a DB;
+// the mock keeps it in memory). hostname is a mutable attribute, never the key.
+type deviceRecord struct {
+	DeviceID    string
+	SystemUUID  string
+	MachineGUID string
+	Hostname    string
+	LastSeen    time.Time
+}
+
+// reconcile resolves an enrollment to a single logical device, de-duplicating by
+// device_id then by SMBIOS system_uuid (so a reinstall/reimage with a fresh
+// device_id maps back to the existing record). Returns the assigned device_id and
+// whether this was a dedup (reconciled to a different id than requested).
+func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch {
+	case req.DeviceId != "" && s.byID[req.DeviceId] != nil:
+		assigned = req.DeviceId // known device_id → same record
+	case req.SystemUuid != "" && s.bySysUUID[req.SystemUuid] != nil:
+		assigned = s.bySysUUID[req.SystemUuid].DeviceID // same hardware, new id → dedup
+		deduped = assigned != req.DeviceId
+	default:
+		assigned = req.DeviceId // brand-new device
+	}
+
+	rec := &deviceRecord{
+		DeviceID:    assigned,
+		SystemUUID:  req.SystemUuid,
+		MachineGUID: req.MachineGuid,
+		Hostname:    req.Hostname,
+		LastSeen:    time.Now(),
+	}
+	s.byID[assigned] = rec
+	if req.SystemUuid != "" {
+		s.bySysUUID[req.SystemUuid] = rec
+	}
+	return assigned, deduped
 }
 
 // Enroll is the tiny-vault reference: it validates the bootstrap token, signs the
@@ -81,13 +129,18 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 	if err := csr.CheckSignature(); err != nil {
 		return &pb.EnrollResponse{Error: "CSR signature invalid"}, nil
 	}
+	// Reconcile to a single logical device (dedup by device_id then system_uuid).
+	assigned, deduped := s.reconcile(req)
+
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return &pb.EnrollResponse{Error: "serial: " + err.Error()}, nil
 	}
+	// The cert identity is the ASSIGNED id (not the CSR's CN) — so a reconciled
+	// device gets a cert bound to its canonical id.
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      csr.Subject,
+		Subject:      pkixName(assigned),
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().AddDate(1, 0, 0), // 1-year cert (real server rotates)
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -98,14 +151,21 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 		return &pb.EnrollResponse{Error: "sign cert: " + err.Error()}, nil
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	fmt.Printf("Enroll OK -> device_id=%s cn=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)\n",
-		req.DeviceId, csr.Subject.CommonName, req.SystemUuid, req.MachineGuid, req.Hostname, req.Os)
+	if deduped {
+		fmt.Printf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s system_uuid=%s hostname=%s (same hardware → existing device)\n",
+			req.DeviceId, assigned, req.SystemUuid, req.Hostname)
+	} else {
+		fmt.Printf("Enroll OK -> device_id=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)\n",
+			assigned, req.SystemUuid, req.MachineGuid, req.Hostname, req.Os)
+	}
 	return &pb.EnrollResponse{
 		ClientCertPem:    string(certPEM),
 		CaChainPem:       string(s.caCertPEM),
-		AssignedDeviceId: req.DeviceId,
+		AssignedDeviceId: assigned,
 	}, nil
 }
+
+func pkixName(cn string) pkix.Name { return pkix.Name{CommonName: cn} }
 
 // loadCA loads the CA cert + private key the vault signs enrollments with.
 func loadCA(certPath, keyPath string) (*x509.Certificate, any, []byte, error) {
@@ -468,7 +528,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("CA load failed (needed for enrollment): %v", err)
 	}
-	srv := &server{caCert: caCert, caKey: caKey, caCertPEM: caCertPEM}
+	srv := &server{
+		caCert: caCert, caKey: caKey, caCertPEM: caCertPEM,
+		byID:      make(map[string]*deviceRecord),
+		bySysUUID: make(map[string]*deviceRecord),
+	}
 
 	s := grpc.NewServer(
 		grpc.Creds(creds),

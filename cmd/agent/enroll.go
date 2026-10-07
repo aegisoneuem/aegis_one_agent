@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
@@ -41,13 +42,13 @@ func hasClientCert(cfg config.Config) bool {
 // Enroll RPC over SERVER-AUTH TLS authenticated by the bootstrap token, and writes
 // the signed cert + key so normal mTLS can proceed. The at-rest protection then
 // seals the key on the next load (see secure.ClientCredentials).
-func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID, machineGUID string) error {
+func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID, machineGUID, fingerprint string) (string, error) {
 	if hasClientCert(cfg) {
 		slog.Info("enrollment: client cert already present, skipping")
-		return nil
+		return deviceID, nil
 	}
 	if cfg.EnrollToken == "" {
-		return fmt.Errorf("no client cert and no enrollment token (set AEGIS_ENROLL_TOKEN)")
+		return deviceID, fmt.Errorf("no client cert and no enrollment token (set AEGIS_ENROLL_TOKEN)")
 	}
 	// Enroll over the same control-plane port by default (single-port design);
 	// AEGIS_ENROLL_ADDRESS overrides only if enrollment is on a separate endpoint.
@@ -60,12 +61,12 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 	// 1. Generate keypair + CSR (CN = device_id). The private key stays on-device.
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return fmt.Errorf("generate key: %w", err)
+		return deviceID, fmt.Errorf("generate key: %w", err)
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader,
 		&x509.CertificateRequest{Subject: pkix.Name{CommonName: deviceID}}, key)
 	if err != nil {
-		return fmt.Errorf("create CSR: %w", err)
+		return deviceID, fmt.Errorf("create CSR: %w", err)
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 
@@ -73,11 +74,11 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 	//    present the bootstrap token.
 	creds, err := secure.ClientTLSServerAuth(cfg.TLSCAFile, cfg.TLSServerName)
 	if err != nil {
-		return fmt.Errorf("enroll TLS setup: %w", err)
+		return deviceID, fmt.Errorf("enroll TLS setup: %w", err)
 	}
 	conn, err := grpc.NewClient(enrollAddr, grpc.WithTransportCredentials(creds))
 	if err != nil {
-		return fmt.Errorf("dial enroll endpoint: %w", err)
+		return deviceID, fmt.Errorf("dial enroll endpoint: %w", err)
 	}
 	defer conn.Close()
 
@@ -94,29 +95,29 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 		AgentVersion: cfg.AgentVersion,
 	})
 	if err != nil {
-		return fmt.Errorf("enroll RPC failed: %w", err)
+		return deviceID, fmt.Errorf("enroll RPC failed: %w", err)
 	}
 	if resp.Error != "" {
-		return fmt.Errorf("enrollment rejected by server: %s", resp.Error)
+		return deviceID, fmt.Errorf("enrollment rejected by server: %s", resp.Error)
 	}
 	if resp.ClientCertPem == "" {
-		return fmt.Errorf("enrollment returned no certificate")
+		return deviceID, fmt.Errorf("enrollment returned no certificate")
 	}
 
 	// 3. Persist the signed cert + private key. protect-at-rest will seal the key.
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return fmt.Errorf("marshal private key: %w", err)
+		return deviceID, fmt.Errorf("marshal private key: %w", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	if err := os.MkdirAll(filepath.Dir(cfg.TLSKeyFile), 0o755); err != nil {
-		return err
+		return deviceID, err
 	}
 	if err := os.WriteFile(cfg.TLSKeyFile, keyPEM, 0o600); err != nil {
-		return fmt.Errorf("write client key: %w", err)
+		return deviceID, fmt.Errorf("write client key: %w", err)
 	}
 	if err := os.WriteFile(cfg.TLSCertFile, []byte(resp.ClientCertPem), 0o644); err != nil {
-		return fmt.Errorf("write client cert: %w", err)
+		return deviceID, fmt.Errorf("write client cert: %w", err)
 	}
 	// Only write the CA if one isn't already provisioned (don't clobber the embedded one).
 	if resp.CaChainPem != "" {
@@ -124,7 +125,19 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 			_ = os.WriteFile(cfg.TLSCAFile, []byte(resp.CaChainPem), 0o644)
 		}
 	}
+
+	// 4. Adopt a server-reconciled id (dedup): if the vault matched us to an
+	//    existing device, persist that canonical id so it survives restarts.
+	effectiveID := deviceID
+	if a := strings.TrimSpace(resp.AssignedDeviceId); a != "" && a != deviceID {
+		if err := persistDeviceID(cfg.SecureDir, a, fingerprint); err != nil {
+			slog.Warn("enrollment: could not persist reconciled device id", "assigned", a, "error", err.Error())
+		} else {
+			slog.Info("enrollment: server reconciled this device (dedup) — adopting id", "was", deviceID, "now", a)
+			effectiveID = a
+		}
+	}
 	slog.Info("enrollment: success — client cert provisioned",
-		"device_id", deviceID, "assigned_device_id", resp.AssignedDeviceId, "cert", cfg.TLSCertFile)
-	return nil
+		"device_id", effectiveID, "cert", cfg.TLSCertFile)
+	return effectiveID, nil
 }

@@ -72,6 +72,26 @@ func writeNewIdentity(path, fingerprint, source string) (string, string, error) 
 	return id, source, nil
 }
 
+// persistDeviceID overwrites identity.json with a specific device id (keeping the
+// current fingerprint). Used when the server reconciles the agent to a canonical
+// id during enrollment (dedup), so the adopted id survives restarts.
+func persistDeviceID(secureDir, id, fingerprint string) error {
+	path := filepath.Join(secureDir, "identity.json")
+	rec := identity{DeviceID: id, Fingerprint: fingerprint, CreatedAt: time.Now().Unix()}
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(secureDir, 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // newUUID returns an RFC 4122 version-4 UUID using crypto/rand (no external dep).
 func newUUID() (string, error) {
 	var b [16]byte

@@ -469,8 +469,13 @@ func runProcess(ctx context.Context) {
 	// before mTLS. No-op when a cert already exists. Fail loud if it cannot proceed
 	// (SCM restarts the service and retries).
 	sysUUID, machGUID := hardwareIDs()
-	if err := ensureEnrolled(ctx, cfg, cfg.DeviceID, sysUUID, machGUID); err != nil {
+	effectiveID, err := ensureEnrolled(ctx, cfg, cfg.DeviceID, sysUUID, machGUID, fingerprint)
+	if err != nil {
 		log.Fatalf("enrollment: %v", err)
+	}
+	if effectiveID != cfg.DeviceID {
+		slog.Info("device id updated by enrollment reconciliation", "device_id", effectiveID)
+		cfg.DeviceID = effectiveID
 	}
 
 	slog.Info("Aegis One Agent starting up",
