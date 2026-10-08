@@ -470,8 +470,20 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			return err
 		}
 		if hb := msg.GetHeartbeat(); hb != nil {
-			fmt.Printf("Received heartbeat -> device: %s, version: %s, os: %s\n",
-				hb.DeviceId, hb.AgentVersion, hb.Os)
+			fmt.Printf("Received heartbeat -> device: %s, hostname: %s, version: %s, os: %s\n",
+				hb.DeviceId, hb.Hostname, hb.AgentVersion, hb.Os)
+			// Attribute update from heartbeat: hostname is mutable and NOT the key.
+			// A rename keeps the same device record — only the attribute changes.
+			s.mu.Lock()
+			rec := s.byID[hb.DeviceId]
+			if rec == nil {
+				s.byID[hb.DeviceId] = &deviceRecord{DeviceID: hb.DeviceId, Hostname: hb.Hostname, LastSeen: time.Now()}
+				fmt.Printf("  device %s seen via heartbeat (registered), hostname: %s\n", hb.DeviceId, hb.Hostname)
+			} else if hb.Hostname != "" && rec.Hostname != hb.Hostname {
+				fmt.Printf("  device %s RENAMED: %q -> %q (same record — hostname is just an attribute)\n", hb.DeviceId, rec.Hostname, hb.Hostname)
+				rec.Hostname = hb.Hostname
+			}
+			s.mu.Unlock()
 		}
 		if result := msg.GetCommandResult(); result != nil {
 			fmt.Printf("Received command result -> command_id: %s, status: %s, message: %s\n",
