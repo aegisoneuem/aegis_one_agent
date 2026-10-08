@@ -101,7 +101,7 @@
     -->
     <CustomAction Id="SetWriteConfigData"
                   Property="WriteConfig"
-                  Value="writeconfig --install-dir &quot;[ClientDir]&quot; --server &quot;[SERVERADDRESS]&quot; --server-name &quot;[SERVERNAME]&quot; --token &quot;[ENROLLTOKEN]&quot; --ca &quot;[CACERTFILE]&quot;" />
+                  Value="writeconfig --server &quot;[SERVERADDRESS]&quot; --server-name &quot;[SERVERNAME]&quot; --token &quot;[ENROLLTOKEN]&quot; --ca &quot;[CACERTFILE]&quot;" />
     <CustomAction Id="WriteConfig"
                   FileRef="AgentExeFile"
                   ExeCommand="[CustomActionData]"

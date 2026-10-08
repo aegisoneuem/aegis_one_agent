@@ -430,30 +430,41 @@ func main() {
 // land in the config without hand-editing. Blank flags keep the defaults.
 func runWriteConfig(args []string) {
 	fs := flag.NewFlagSet("writeconfig", flag.ExitOnError)
-	out := fs.String("out", config.FilePath(), "config.json output path")
-	installDir := fs.String("install-dir", "", `install root (e.g. C:\Program Files\AegisOne\Client)`)
+	out := fs.String("out", "", `config.json path (default <install-dir>\SKVC\config.json)`)
+	installDir := fs.String("install-dir", "", "install root (default: the directory of this exe)")
 	server := fs.String("server", "", "server address (host:port)")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SAN)")
 	token := fs.String("token", "", "per-tenant enrollment token")
 	ca := fs.String("ca", "", `CA cert to install (copied to <install-dir>\SKVC\certs\ca.crt)`)
 	_ = fs.Parse(args)
 
+	// Default the install root to THIS exe's directory — avoids passing a path
+	// with a trailing backslash (which breaks quoted args from the MSI).
+	root := strings.TrimRight(strings.TrimSpace(*installDir), `\/`)
+	if root == "" {
+		if exe, err := os.Executable(); err == nil {
+			root = filepath.Dir(exe)
+		} else {
+			root = `C:\Program Files\AegisOne\Client`
+		}
+	}
+	outPath := strings.TrimSpace(*out)
+	if outPath == "" {
+		outPath = filepath.Join(root, "SKVC", "config.json")
+	}
+
 	overrides := map[string]string{
 		"AEGIS_SERVER_ADDRESS":  *server,
 		"AEGIS_TLS_SERVER_NAME": *serverName,
 		"AEGIS_ENROLL_TOKEN":    *token,
 	}
-	if err := config.WriteConfig(*out, *installDir, overrides); err != nil {
+	if err := config.WriteConfig(outPath, root, overrides); err != nil {
 		fmt.Fprintf(os.Stderr, "writeconfig: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("wrote config to", *out)
+	fmt.Println("wrote config to", outPath)
 
 	if strings.TrimSpace(*ca) != "" {
-		root := strings.TrimRight(strings.TrimSpace(*installDir), `\/`)
-		if root == "" {
-			root = `C:\Program Files\AegisOne\Client`
-		}
 		dst := filepath.Join(root, "SKVC", "certs", "ca.crt")
 		if err := copyFile(*ca, dst); err != nil {
 			fmt.Fprintf(os.Stderr, "writeconfig: install CA cert: %v\n", err)
