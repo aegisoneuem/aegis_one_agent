@@ -111,30 +111,59 @@ type Config struct {
 	InstallRetryBackoff  time.Duration // wait between transient-failure retries
 }
 
-// WriteTemplate writes a config.json template (keys = env-var names) with the
-// current defaults, for an admin to edit. Durations/sizes are in seconds/bytes.
-func WriteTemplate(path string) error {
-	tmpl := map[string]string{
+// defaultConfigMap returns the config.json defaults (keys = env-var names).
+// Durations/sizes are in seconds/bytes. installDir, when non-empty, roots the
+// per-install paths (secure dir, certs, download, cab) under it.
+func defaultConfigMap(installDir string) map[string]string {
+	if strings.TrimSpace(installDir) == "" {
+		installDir = `C:\Program Files\AegisOne\Client`
+	}
+	installDir = strings.TrimRight(installDir, `\/`)
+	skvc := installDir + `\SKVC`
+	return map[string]string{
 		"AEGIS_SERVER_ADDRESS":        "127.0.0.1:50051",
 		"AEGIS_LOG_LEVEL":             "info",
 		"AEGIS_LOG_MAX_AGE_DAYS":      "10",
 		"AEGIS_DEVICE_ID":             "",
-		"AEGIS_WSUS_SCAN_CAB":         `C:\Program Files\AegisOne\Client\wsusscn2.cab`,
+		"AEGIS_WSUS_SCAN_CAB":         skvc + `\wsusscn2.cab`,
 		"AEGIS_DEVICE_STATE_INTERVAL": "300",
 		"AEGIS_RECON_SCAN_INTERVAL":   "604800",
-		"AEGIS_SECURE_DIR":            `C:\Program Files\AegisOne\Client\SKVC`,
-		"AEGIS_DOWNLOAD_DIR":          `C:\Program Files\AegisOne\Client\SKVC\download`,
-		"AEGIS_TLS_CA":                `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`,
-		"AEGIS_TLS_CERT":              `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`,
-		"AEGIS_TLS_KEY":               `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`,
+		"AEGIS_SECURE_DIR":            skvc,
+		"AEGIS_DOWNLOAD_DIR":          skvc + `\download`,
+		"AEGIS_TLS_CA":                skvc + `\certs\ca.crt`,
+		"AEGIS_TLS_CERT":              skvc + `\certs\client.crt`,
+		"AEGIS_TLS_KEY":               skvc + `\certs\client.key`,
 		"AEGIS_TLS_SERVER_NAME":       "aegis-server",
+		"AEGIS_ENROLL_TOKEN":          "",
 		"AEGIS_HEARTBEAT_INTERVAL":    "300",
 		"AEGIS_KEEPALIVE_TIME":        "60",
 		"AEGIS_CACHE_MAX_BYTES":       "2147483648",
 		"AEGIS_CACHE_TTL":             "86400",
 		"AEGIS_INSTALL_TIMEOUT":       "1800",
 	}
-	data, err := json.MarshalIndent(tmpl, "", "  ")
+}
+
+// WriteTemplate writes a config.json template with the current defaults, for an
+// admin to edit.
+func WriteTemplate(path string) error {
+	return writeConfigMap(path, defaultConfigMap(""))
+}
+
+// WriteConfig writes config.json = defaults (rooted at installDir if given) with
+// non-empty overrides applied. Used by the `writeconfig` subcommand so the MSI can
+// populate server address / enroll token / server name / paths at install time.
+func WriteConfig(path, installDir string, overrides map[string]string) error {
+	m := defaultConfigMap(installDir)
+	for k, v := range overrides {
+		if strings.TrimSpace(v) != "" {
+			m[k] = v
+		}
+	}
+	return writeConfigMap(path, m)
+}
+
+func writeConfigMap(path string, m map[string]string) error {
+	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}

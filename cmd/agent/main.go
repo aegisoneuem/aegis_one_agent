@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -408,16 +409,44 @@ func main() {
 			fmt.Println("wrote config template to", path)
 			return
 		}
+		if arg == "writeconfig" {
+			runWriteConfig(os.Args[2:]) // used by the MSI to populate config.json
+			return
+		}
 		if runControlCommand(arg) { // install/uninstall/start/stop (Windows)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: %s [config|install|uninstall|start|stop]\n(no argument runs the agent)\n",
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: %s [config|writeconfig|install|uninstall|start|stop]\n(no argument runs the agent)\n",
 			arg, filepath.Base(os.Args[0]))
 		os.Exit(2)
 	}
 	// No args: run as a Windows service when launched by the SCM; otherwise run
 	// in the console (dev). Platform-split in service_windows.go / service_other.go.
 	runAgentEntry()
+}
+
+// runWriteConfig writes config.json from flags — invoked by the MSI custom action
+// so install-time values (server address, enroll token, server name, install dir)
+// land in the config without hand-editing. Blank flags keep the defaults.
+func runWriteConfig(args []string) {
+	fs := flag.NewFlagSet("writeconfig", flag.ExitOnError)
+	out := fs.String("out", config.FilePath(), "config.json output path")
+	installDir := fs.String("install-dir", "", `install root (e.g. C:\Program Files\AegisOne\Client)`)
+	server := fs.String("server", "", "server address (host:port)")
+	serverName := fs.String("server-name", "", "expected server certificate name (TLS SAN)")
+	token := fs.String("token", "", "per-tenant enrollment token")
+	_ = fs.Parse(args)
+
+	overrides := map[string]string{
+		"AEGIS_SERVER_ADDRESS":  *server,
+		"AEGIS_TLS_SERVER_NAME": *serverName,
+		"AEGIS_ENROLL_TOKEN":    *token,
+	}
+	if err := config.WriteConfig(*out, *installDir, overrides); err != nil {
+		fmt.Fprintf(os.Stderr, "writeconfig: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("wrote config to", *out)
 }
 
 // runProcess is the agent's actual work: set up everything and run the connect
