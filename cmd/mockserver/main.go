@@ -582,6 +582,22 @@ func main() {
 		bySysUUID: make(map[string]*deviceRecord),
 	}
 
+	// Test helper: pre-seed N dummy devices so a single VM can exercise the
+	// license cap (AEGIS_PRESEED_DEVICES). Each consumes a seat.
+	if n, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("AEGIS_PRESEED_DEVICES"))); n > 0 {
+		for i := 1; i <= n; i++ {
+			rec := &deviceRecord{
+				DeviceID:   fmt.Sprintf("seed-%d", i),
+				SystemUUID: fmt.Sprintf("seed-uuid-%d", i),
+				Hostname:   fmt.Sprintf("seed-host-%d", i),
+				LastSeen:   time.Now(),
+			}
+			srv.byID[rec.DeviceID] = rec
+			srv.bySysUUID[rec.SystemUUID] = rec
+		}
+		fmt.Printf("Pre-seeded %d dummy device(s) for license testing\n", n)
+	}
+
 	s := grpc.NewServer(
 		grpc.Creds(creds),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
