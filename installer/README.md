@@ -22,7 +22,7 @@ writes `config.json`, and installs the CA cert — interactively or silently.
 
 From this `installer/` folder:
 ```
-wix build Package.wxs ConfigDlg.wxs ^
+wix build Package.wxs ^
   -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext ^
   -o AegisOneClient.msi
 ```

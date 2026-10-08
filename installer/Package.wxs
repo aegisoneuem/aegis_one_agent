@@ -114,8 +114,44 @@
       <Custom Action="WriteConfig" Before="StartServices" Condition="NOT Installed" />
     </InstallExecuteSequence>
 
-    <!-- UI: standard InstallDir wizard + our custom Settings dialog (ConfigDlg.wxs). -->
+    <!-- UI: standard InstallDir wizard + our custom "Connection & Enrollment"
+         dialog. Kept in <Package> (not a separate fragment) so it always links. -->
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <UI>
+      <Dialog Id="AegisConfigDlg" Width="370" Height="270" Title="AegisOne Client Setup">
+        <Control Id="TopLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Connection &amp; Enrollment" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="Where the agent connects and how it enrolls." />
+
+        <Control Id="ServerLabel" Type="Text" X="20" Y="60" Width="200" Height="12" Text="Server address (host:port):" />
+        <Control Id="ServerEdit" Type="Edit" X="20" Y="73" Width="330" Height="16" Property="SERVERADDRESS" />
+
+        <Control Id="NameLabel" Type="Text" X="20" Y="96" Width="250" Height="12" Text="Expected server certificate name (TLS):" />
+        <Control Id="NameEdit" Type="Edit" X="20" Y="109" Width="330" Height="16" Property="SERVERNAME" />
+
+        <Control Id="TokenLabel" Type="Text" X="20" Y="132" Width="250" Height="12" Text="Enrollment token:" />
+        <Control Id="TokenEdit" Type="Edit" X="20" Y="145" Width="330" Height="16" Property="ENROLLTOKEN" />
+
+        <Control Id="CaLabel" Type="Text" X="20" Y="168" Width="300" Height="12" Text="CA certificate file (full path):" />
+        <Control Id="CaEdit" Type="Edit" X="20" Y="181" Width="330" Height="16" Property="CACERTFILE" />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      </Dialog>
+
+      <!-- Insert AegisConfigDlg between InstallDirDlg and VerifyReadyDlg. -->
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="AegisConfigDlg" Order="10" Condition="WIXUI_INSTALLDIR_VALID = &quot;1&quot;" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="AegisConfigDlg" Order="10" />
+    </UI>
 
   </Package>
 </Wix>
