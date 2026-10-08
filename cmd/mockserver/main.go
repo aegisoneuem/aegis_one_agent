@@ -78,12 +78,15 @@ type deviceRecord struct {
 
 // reconcile resolves an enrollment to a single logical device, de-duplicating by
 // device_id then by SMBIOS system_uuid (so a reinstall/reimage with a fresh
-// device_id maps back to the existing record). Returns the assigned device_id and
-// whether this was a dedup (reconciled to a different id than requested).
-func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool) {
+// device_id maps back to the existing record), and enforces the license cap.
+// Returns the assigned device_id, whether this was a dedup, and a non-empty
+// rejection reason if a NEW device would exceed the license (existing/dedup
+// devices never consume a license and are always allowed).
+func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool, rejected string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	isNew := false
 	switch {
 	case req.DeviceId != "" && s.byID[req.DeviceId] != nil:
 		assigned = req.DeviceId // known device_id → same record
@@ -92,6 +95,15 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 		deduped = assigned != req.DeviceId
 	default:
 		assigned = req.DeviceId // brand-new device
+		isNew = true
+	}
+
+	// License: only a NEW device consumes a seat. Re-enroll/reinstall/dedup of an
+	// already-registered device does not.
+	if isNew {
+		if max := licenseMax(); max > 0 && len(s.byID) >= max {
+			return "", false, fmt.Sprintf("license limit reached (%d/%d in use) — raise the license or decommission a device", len(s.byID), max)
+		}
 	}
 
 	rec := &deviceRecord{
@@ -105,7 +117,22 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 	if req.SystemUuid != "" {
 		s.bySysUUID[req.SystemUuid] = rec
 	}
-	return assigned, deduped
+	return assigned, deduped, ""
+}
+
+func (s *server) deviceCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byID)
+}
+
+// licenseMax reads the license cap (AEGIS_LICENSE_MAX); 0 / unset = unlimited.
+func licenseMax() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("AEGIS_LICENSE_MAX")))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // Enroll is the tiny-vault reference: it validates the bootstrap token, signs the
@@ -129,8 +156,13 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 	if err := csr.CheckSignature(); err != nil {
 		return &pb.EnrollResponse{Error: "CSR signature invalid"}, nil
 	}
-	// Reconcile to a single logical device (dedup by device_id then system_uuid).
-	assigned, deduped := s.reconcile(req)
+	// Reconcile to a single logical device (dedup by device_id then system_uuid)
+	// and enforce the license cap.
+	assigned, deduped, rejected := s.reconcile(req)
+	if rejected != "" {
+		fmt.Printf("Enroll REJECTED -> device_id=%s hostname=%s: %s\n", req.DeviceId, req.Hostname, rejected)
+		return &pb.EnrollResponse{Error: rejected}, nil
+	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
@@ -151,12 +183,16 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 		return &pb.EnrollResponse{Error: "sign cert: " + err.Error()}, nil
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	lic := ""
+	if max := licenseMax(); max > 0 {
+		lic = fmt.Sprintf(" [license %d/%d]", s.deviceCount(), max)
+	}
 	if deduped {
-		fmt.Printf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s system_uuid=%s hostname=%s (same hardware → existing device)\n",
-			req.DeviceId, assigned, req.SystemUuid, req.Hostname)
+		fmt.Printf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s system_uuid=%s hostname=%s (same hardware → existing device)%s\n",
+			req.DeviceId, assigned, req.SystemUuid, req.Hostname, lic)
 	} else {
-		fmt.Printf("Enroll OK -> device_id=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)\n",
-			assigned, req.SystemUuid, req.MachineGuid, req.Hostname, req.Os)
+		fmt.Printf("Enroll OK -> device_id=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)%s\n",
+			assigned, req.SystemUuid, req.MachineGuid, req.Hostname, req.Os, lic)
 	}
 	return &pb.EnrollResponse{
 		ClientCertPem:    string(certPEM),
