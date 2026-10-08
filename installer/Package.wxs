@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AegisOne Client — WiX v4/v5 installer.
+
+  Build:   wix build Package.wxs ConfigDlg.wxs -ext WixToolset.Util.wixext -ext WixToolset.UI.wixext -o AegisOneClient.msi
+  (see installer/README.md for the full build + sign + silent-install runbook)
+
+  Interactive install shows: Welcome -> License -> Install Location -> Settings
+  (server address / enroll token / CA cert) -> Ready -> Progress -> Finish.
+
+  Silent install, e.g.:
+    msiexec /i AegisOneClient.msi /qn ^
+      SERVERADDRESS=aegis.corp.local:50051 SERVERNAME=aegis.corp.local ^
+      ENROLLTOKEN=tenant-abc-123 CACERTFILE=C:\deploy\ca.crt
+
+  NOTE: validate with `wix build` on a machine with the WiX toolset; custom
+  dialogs / custom-action sequencing sometimes need a minor tweak per WiX version.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="AegisOne Client"
+           Manufacturer="HCL Software"
+           Version="1.0.0.0"
+           UpgradeCode="7B3A9C1E-4D2F-4E6A-9B10-AE51C0FFEE01"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <!-- Block downgrades; replace older versions in place. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AegisOne Client is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs icon + metadata. -->
+    <Icon Id="AegisIcon" SourceFile="assets/icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AegisIcon" />
+    <Property Id="ARPHELPLINK" Value="https://www.hcl-software.com" />
+
+    <!-- Settings (overridable in the UI dialog OR on the msiexec command line). -->
+    <Property Id="SERVERADDRESS" Value="127.0.0.1:50051" />
+    <Property Id="SERVERNAME" Value="aegis-server" />
+    <Property Id="ENROLLTOKEN" Value="" />
+    <Property Id="CACERTFILE" Value="" Secure="yes" />
+
+    <!-- Branding bitmaps + license (swap the files in assets/ to rebrand). -->
+    <WixVariable Id="WixUIBannerBmp" Value="assets/banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="assets/dialog.bmp" />
+    <WixVariable Id="WixUILicenseRtf" Value="assets/license.rtf" />
+
+    <!-- Install tree: <ProgramFiles>\AegisOne\Client (+ SKVC data dirs). -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AegisOne">
+        <Directory Id="ClientDir" Name="Client">
+          <Directory Id="SKVCDir" Name="SKVC">
+            <Directory Id="CertsDir" Name="certs" />
+            <Directory Id="LogsDir" Name="logs" />
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- The agent binary + the Windows service (LocalSystem, auto-start,
+         restart-on-failure). Service lifecycle is handled by the MSI. -->
+    <ComponentGroup Id="ProductComponents" Directory="ClientDir">
+      <Component Id="AgentExeComponent" Guid="*">
+        <File Id="AgentExeFile" Name="agent-windows.exe" Source="..\build\agent-windows.exe" KeyPath="yes" />
+
+        <ServiceInstall Id="AegisOneSvcInstall"
+                        Name="AegisOneAgent"
+                        DisplayName="Aegis One Agent"
+                        Description="Aegis One endpoint management agent."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Vital="yes">
+          <!-- Restart the service on failure (matches the agent's own install logic). -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="60" />
+        </ServiceInstall>
+        <!-- Start on install, stop on install+uninstall, remove on uninstall. -->
+        <ServiceControl Id="AegisOneSvcControl"
+                        Name="AegisOneAgent"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="AegisOne Client" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <!--
+      Write config.json + install the CA cert from the chosen settings, BEFORE the
+      service starts. Deferred (runs elevated as SYSTEM) with CustomActionData: the
+      property named the same as the deferred action carries its command line.
+    -->
+    <CustomAction Id="SetWriteConfigData"
+                  Property="WriteConfig"
+                  Value="writeconfig --install-dir &quot;[ClientDir]&quot; --server &quot;[SERVERADDRESS]&quot; --server-name &quot;[SERVERNAME]&quot; --token &quot;[ENROLLTOKEN]&quot; --ca &quot;[CACERTFILE]&quot;" />
+    <CustomAction Id="WriteConfig"
+                  FileRef="AgentExeFile"
+                  ExeCommand="[CustomActionData]"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetWriteConfigData" Before="WriteConfig" Condition="NOT Installed" />
+      <Custom Action="WriteConfig" Before="StartServices" Condition="NOT Installed" />
+    </InstallExecuteSequence>
+
+    <!-- UI: standard InstallDir wizard + our custom Settings dialog (ConfigDlg.wxs). -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+  </Package>
+</Wix>

@@ -435,6 +435,7 @@ func runWriteConfig(args []string) {
 	server := fs.String("server", "", "server address (host:port)")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SAN)")
 	token := fs.String("token", "", "per-tenant enrollment token")
+	ca := fs.String("ca", "", `CA cert to install (copied to <install-dir>\SKVC\certs\ca.crt)`)
 	_ = fs.Parse(args)
 
 	overrides := map[string]string{
@@ -447,6 +448,31 @@ func runWriteConfig(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("wrote config to", *out)
+
+	if strings.TrimSpace(*ca) != "" {
+		root := strings.TrimRight(strings.TrimSpace(*installDir), `\/`)
+		if root == "" {
+			root = `C:\Program Files\AegisOne\Client`
+		}
+		dst := filepath.Join(root, "SKVC", "certs", "ca.crt")
+		if err := copyFile(*ca, dst); err != nil {
+			fmt.Fprintf(os.Stderr, "writeconfig: install CA cert: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("installed CA cert to", dst)
+	}
+}
+
+// copyFile copies src to dst, creating the destination directory.
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
 }
 
 // runProcess is the agent's actual work: set up everything and run the connect
