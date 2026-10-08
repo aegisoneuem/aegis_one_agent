@@ -11,8 +11,7 @@ private*.txt
 /agent
 /mockserver
 /cachetest
-# installer build artifacts + placeholder branding (provide real logos at build time)
+# installer build artifacts (branding assets ARE tracked)
 installer/*.msi
 installer/*.wixpdb
-installer/assets/*.bmp
-installer/assets/*.ico
+installer/*.log

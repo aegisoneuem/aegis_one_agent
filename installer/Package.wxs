@@ -32,9 +32,13 @@
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Add/Remove Programs icon + metadata. -->
-    <Icon Id="AegisIcon" SourceFile="assets/icon.ico" />
+    <Icon Id="AegisIcon" SourceFile="assets/aegisone.ico" />
     <Property Id="ARPPRODUCTICON" Value="AegisIcon" />
-    <Property Id="ARPHELPLINK" Value="https://www.hcl-software.com" />
+
+    <!-- Install folder, recorded so uninstall can remove the whole tree. -->
+    <Property Id="AEGISINSTALLFOLDER">
+      <RegistrySearch Id="FindInstallFolder" Root="HKLM" Key="SOFTWARE\AegisOne\Client" Name="InstallFolder" Type="raw" />
+    </Property>
 
     <!-- Settings (overridable in the UI dialog OR on the msiexec command line). -->
     <Property Id="SERVERADDRESS" Value="127.0.0.1:50051" Secure="yes" />
@@ -93,6 +97,7 @@
              config file or custom action is needed. Written before the service
              starts (same component), so the token is available at first run. -->
         <RegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
           <RegistryValue Name="AEGIS_SERVER_ADDRESS" Type="string" Value="[SERVERADDRESS]" />
           <RegistryValue Name="AEGIS_TLS_SERVER_NAME" Type="string" Value="[SERVERNAME]" />
           <RegistryValue Name="AEGIS_ENROLL_TOKEN" Type="string" Value="[ENROLLTOKEN]" />
@@ -103,6 +108,11 @@
           <RegistryValue Name="AEGIS_TLS_KEY" Type="string" Value="[CertsDir]client.key" />
           <RegistryValue Name="AEGIS_WSUS_SCAN_CAB" Type="string" Value="[SKVCDir]wsusscn2.cab" />
         </RegistryKey>
+
+        <!-- On uninstall, recursively delete the whole install tree
+             (C:\Program Files\AegisOne), including runtime-created data under SKVC
+             (identity, certs, cache, logs) that the MSI did not itself install. -->
+        <util:RemoveFolderEx On="uninstall" Property="AEGISINSTALLFOLDER" />
       </Component>
     </ComponentGroup>
 
