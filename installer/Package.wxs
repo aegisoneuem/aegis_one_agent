@@ -37,10 +37,10 @@
     <Property Id="ARPHELPLINK" Value="https://www.hcl-software.com" />
 
     <!-- Settings (overridable in the UI dialog OR on the msiexec command line). -->
-    <Property Id="SERVERADDRESS" Value="127.0.0.1:50051" />
-    <Property Id="SERVERNAME" Value="aegis-server" />
-    <Property Id="ENROLLTOKEN" Value="" />
-    <Property Id="CACERTFILE" Value="" Secure="yes" />
+    <Property Id="SERVERADDRESS" Value="127.0.0.1:50051" Secure="yes" />
+    <Property Id="SERVERNAME" Value="aegis-server" Secure="yes" />
+    <Property Id="ENROLLTOKEN" Secure="yes" />
+    <Property Id="CACERTFILE" Secure="yes" />
 
     <!-- Branding bitmaps + license (swap the files in assets/ to rebrand). -->
     <WixVariable Id="WixUIBannerBmp" Value="assets/banner.bmp" />

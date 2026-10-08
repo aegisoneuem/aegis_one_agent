@@ -19,12 +19,8 @@
         <!-- Standard banner + header. -->
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUIBannerBmp" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes">
-          <Text>{\WixUI_Font_Title}Connection &amp; Enrollment</Text>
-        </Control>
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes">
-          <Text>Where the agent connects and how it enrolls.</Text>
-        </Control>
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Connection &amp; Enrollment" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes" Text="Where the agent connects and how it enrolls." />
 
         <!-- Server address -->
         <Control Id="ServerLabel" Type="Text" X="20" Y="60" Width="120" Height="12" Text="Server address (host:port):" />
@@ -52,7 +48,7 @@
       </Dialog>
 
       <!-- Insert AegisConfigDlg between InstallDirDlg and VerifyReadyDlg. -->
-      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="AegisConfigDlg" Order="10">WIXUI_INSTALLDIR_VALID="1"</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="AegisConfigDlg" Order="10" Condition="WIXUI_INSTALLDIR_VALID = &quot;1&quot;" />
       <Publish Dialog="AegisConfigDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" />
       <Publish Dialog="AegisConfigDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="AegisConfigDlg" Order="10" />
