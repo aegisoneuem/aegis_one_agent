@@ -1,7 +1,7 @@
 # AegisOne Client installer (MSI)
 
 WiX v4/v5 installer for the AegisOne agent: installs the binary, registers the
-`AegisOneAgent` Windows service (LocalSystem, auto-start, restart-on-failure),
+`AegisOneClient` Windows service (LocalSystem, auto-start, restart-on-failure),
 writes `config.json`, and installs the CA cert — interactively or silently.
 
 ## Prerequisites (on the build machine)
@@ -77,7 +77,7 @@ msiexec /x AegisOneClient.msi /qn
 1. Copies `agent-windows.exe` to `<INSTALLFOLDER>\Client\`.
 2. Runs `agent-windows.exe writeconfig --install-dir "<..>\Client" --server .. --server-name .. --token .. --ca ..`
    → writes `SKVC\config.json` and copies the CA cert to `SKVC\certs\ca.crt`.
-3. Registers + starts the `AegisOneAgent` service (restart-on-failure).
+3. Registers + starts the `AegisOneClient` service (restart-on-failure).
 
 On first run the agent generates its device identity and **enrolls** (keypair +
 CSR → server signs → per-device cert), then connects over mTLS.

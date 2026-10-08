@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	serviceName    = "AegisOneAgent"
-	serviceDisplay = "Aegis One Agent"
+	serviceName    = "AegisOneClient"
+	serviceDisplay = "AegisOne Client"
 	serviceDesc    = "Aegis One endpoint management agent — patch detection and remediation."
 )
 

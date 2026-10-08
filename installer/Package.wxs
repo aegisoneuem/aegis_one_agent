@@ -66,9 +66,9 @@
         <File Id="AgentExeFile" Name="agent-windows.exe" Source="..\build\agent-windows.exe" KeyPath="yes" />
 
         <ServiceInstall Id="AegisOneSvcInstall"
-                        Name="AegisOneAgent"
-                        DisplayName="Aegis One Agent"
-                        Description="Aegis One endpoint management agent."
+                        Name="AegisOneClient"
+                        DisplayName="AegisOne Client"
+                        Description="AegisOne endpoint management client."
                         Type="ownProcess"
                         Start="auto"
                         ErrorControl="normal"
@@ -82,7 +82,7 @@
         </ServiceInstall>
         <!-- Start on install, stop on install+uninstall, remove on uninstall. -->
         <ServiceControl Id="AegisOneSvcControl"
-                        Name="AegisOneAgent"
+                        Name="AegisOneClient"
                         Start="install"
                         Stop="both"
                         Remove="uninstall"
