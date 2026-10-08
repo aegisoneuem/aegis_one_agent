@@ -467,10 +467,12 @@ func runWriteConfig(args []string) {
 	if strings.TrimSpace(*ca) != "" {
 		dst := filepath.Join(root, "SKVC", "certs", "ca.crt")
 		if err := copyFile(*ca, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "writeconfig: install CA cert: %v\n", err)
-			os.Exit(1)
+			// Non-fatal: a missing/unreadable CA should not abort the whole install.
+			// The agent will log a clear error until the CA is placed at dst.
+			fmt.Fprintf(os.Stderr, "writeconfig: WARNING could not install CA cert (%v) — place it at %s\n", err, dst)
+		} else {
+			fmt.Println("installed CA cert to", dst)
 		}
-		fmt.Println("installed CA cert to", dst)
 	}
 }
 
