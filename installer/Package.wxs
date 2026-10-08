@@ -87,34 +87,28 @@
                         Stop="both"
                         Remove="uninstall"
                         Wait="yes" />
+
+        <!-- Installer-written config. The agent reads these natively from
+             HKLM\SOFTWARE\AegisOne\Client (env > file > registry > default), so no
+             config file or custom action is needed. Written before the service
+             starts (same component), so the token is available at first run. -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="AEGIS_SERVER_ADDRESS" Type="string" Value="[SERVERADDRESS]" />
+          <RegistryValue Name="AEGIS_TLS_SERVER_NAME" Type="string" Value="[SERVERNAME]" />
+          <RegistryValue Name="AEGIS_ENROLL_TOKEN" Type="string" Value="[ENROLLTOKEN]" />
+          <RegistryValue Name="AEGIS_TLS_CA" Type="string" Value="[CACERTFILE]" />
+          <RegistryValue Name="AEGIS_SECURE_DIR" Type="string" Value="[SKVCDir]" />
+          <RegistryValue Name="AEGIS_DOWNLOAD_DIR" Type="string" Value="[SKVCDir]download" />
+          <RegistryValue Name="AEGIS_TLS_CERT" Type="string" Value="[CertsDir]client.crt" />
+          <RegistryValue Name="AEGIS_TLS_KEY" Type="string" Value="[CertsDir]client.key" />
+          <RegistryValue Name="AEGIS_WSUS_SCAN_CAB" Type="string" Value="[SKVCDir]wsusscn2.cab" />
+        </RegistryKey>
       </Component>
     </ComponentGroup>
 
     <Feature Id="Main" Title="AegisOne Client" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
     </Feature>
-
-    <!--
-      Write config.json + install the CA cert from the chosen settings, BEFORE the
-      service starts. Deferred (runs elevated as SYSTEM) with CustomActionData: the
-      property named the same as the deferred action carries its command line.
-    -->
-    <CustomAction Id="SetWriteConfigData"
-                  Property="WriteConfig"
-                  Value="writeconfig --server &quot;[SERVERADDRESS]&quot; --server-name &quot;[SERVERNAME]&quot; --token &quot;[ENROLLTOKEN]&quot; --ca &quot;[CACERTFILE]&quot;" />
-    <CustomAction Id="WriteConfig"
-                  FileRef="AgentExeFile"
-                  ExeCommand="[CustomActionData]"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="check" />
-
-    <!-- Unambiguous ordering: InstallFiles -> SetWriteConfigData -> WriteConfig,
-         all before the service starts (StartServices runs later). -->
-    <InstallExecuteSequence>
-      <Custom Action="SetWriteConfigData" After="InstallFiles" Condition="NOT Installed" />
-      <Custom Action="WriteConfig" After="SetWriteConfigData" Condition="NOT Installed" />
-    </InstallExecuteSequence>
 
     <!-- UI: standard InstallDir wizard + our custom "Connection & Enrollment"
          dialog. Kept in <Package> (not a separate fragment) so it always links. -->

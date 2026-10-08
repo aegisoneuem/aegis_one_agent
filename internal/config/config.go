@@ -61,14 +61,25 @@ func loadFileConfig(path string) map[string]string {
 	return m
 }
 
-// resolve returns the value for key from the environment (highest priority) then
-// the config file; "" means neither set it (caller uses its default).
+// registryLookup reads a config value from the OS registry (set on Windows). The
+// MSI installer writes settings there natively, so no config file is required.
+var registryLookup func(key string) string
+
+// resolve returns the value for key: environment (highest) > config file >
+// registry (installer-written) > "" (caller uses its default).
 func resolve(key string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
 	if v, ok := fileCfg[key]; ok {
-		return strings.TrimSpace(v)
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	if registryLookup != nil {
+		if v := strings.TrimSpace(registryLookup(key)); v != "" {
+			return v
+		}
 	}
 	return ""
 }
