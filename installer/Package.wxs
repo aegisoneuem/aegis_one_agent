@@ -21,7 +21,7 @@
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Package Name="AegisOne Client"
-           Manufacturer="HCL Software"
+           Manufacturer="AegisOne"
            Version="1.0.0.0"
            UpgradeCode="7B3A9C1E-4D2F-4E6A-9B10-AE51C0FFEE01"
            Scope="perMachine"
@@ -109,9 +109,11 @@
                   Impersonate="no"
                   Return="check" />
 
+    <!-- Unambiguous ordering: InstallFiles -> SetWriteConfigData -> WriteConfig,
+         all before the service starts (StartServices runs later). -->
     <InstallExecuteSequence>
-      <Custom Action="SetWriteConfigData" Before="WriteConfig" Condition="NOT Installed" />
-      <Custom Action="WriteConfig" Before="StartServices" Condition="NOT Installed" />
+      <Custom Action="SetWriteConfigData" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="WriteConfig" After="SetWriteConfigData" Condition="NOT Installed" />
     </InstallExecuteSequence>
 
     <!-- UI: standard InstallDir wizard + our custom "Connection & Enrollment"

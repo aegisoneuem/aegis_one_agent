@@ -429,20 +429,35 @@ func main() {
 // so install-time values (server address, enroll token, server name, install dir)
 // land in the config without hand-editing. Blank flags keep the defaults.
 func runWriteConfig(args []string) {
-	fs := flag.NewFlagSet("writeconfig", flag.ExitOnError)
+	// Debug log to a guaranteed SYSTEM-writable path (the MSI swallows stdout).
+	dbg := func(format string, a ...any) {
+		line := fmt.Sprintf(time.Now().Format("15:04:05")+" "+format+"\n", a...)
+		for _, p := range []string{`C:\ProgramData\AegisOne-writeconfig.log`, filepath.Join(os.TempDir(), "aegis-writeconfig.log")} {
+			if f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+				_, _ = f.WriteString(line)
+				_ = f.Close()
+			}
+		}
+	}
+	exe, exeErr := os.Executable()
+	dbg("writeconfig start: args=%v exe=%q exeErr=%v", args, exe, exeErr)
+
+	fs := flag.NewFlagSet("writeconfig", flag.ContinueOnError)
 	out := fs.String("out", "", `config.json path (default <install-dir>\SKVC\config.json)`)
 	installDir := fs.String("install-dir", "", "install root (default: the directory of this exe)")
 	server := fs.String("server", "", "server address (host:port)")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SAN)")
 	token := fs.String("token", "", "per-tenant enrollment token")
 	ca := fs.String("ca", "", `CA cert to install (copied to <install-dir>\SKVC\certs\ca.crt)`)
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		dbg("flag parse error: %v", err)
+	}
 
 	// Default the install root to THIS exe's directory — avoids passing a path
 	// with a trailing backslash (which breaks quoted args from the MSI).
 	root := strings.TrimRight(strings.TrimSpace(*installDir), `\/`)
 	if root == "" {
-		if exe, err := os.Executable(); err == nil {
+		if exeErr == nil {
 			root = filepath.Dir(exe)
 		} else {
 			root = `C:\Program Files\AegisOne\Client`
@@ -452,28 +467,34 @@ func runWriteConfig(args []string) {
 	if outPath == "" {
 		outPath = filepath.Join(root, "SKVC", "config.json")
 	}
+	dbg("root=%q outPath=%q", root, outPath)
 
 	overrides := map[string]string{
 		"AEGIS_SERVER_ADDRESS":  *server,
 		"AEGIS_TLS_SERVER_NAME": *serverName,
 		"AEGIS_ENROLL_TOKEN":    *token,
 	}
+	// Never abort the whole install on a config/CA problem — log it and exit 0 so
+	// the service still installs; the agent logs clearly if config is missing.
 	if err := config.WriteConfig(outPath, root, overrides); err != nil {
+		dbg("WriteConfig FAILED: %v", err)
 		fmt.Fprintf(os.Stderr, "writeconfig: %v\n", err)
-		os.Exit(1)
+	} else {
+		dbg("wrote config to %q", outPath)
+		fmt.Println("wrote config to", outPath)
 	}
-	fmt.Println("wrote config to", outPath)
 
 	if strings.TrimSpace(*ca) != "" {
 		dst := filepath.Join(root, "SKVC", "certs", "ca.crt")
 		if err := copyFile(*ca, dst); err != nil {
-			// Non-fatal: a missing/unreadable CA should not abort the whole install.
-			// The agent will log a clear error until the CA is placed at dst.
+			dbg("CA copy WARNING src=%q dst=%q err=%v", *ca, dst, err)
 			fmt.Fprintf(os.Stderr, "writeconfig: WARNING could not install CA cert (%v) — place it at %s\n", err, dst)
 		} else {
+			dbg("installed CA cert to %q", dst)
 			fmt.Println("installed CA cert to", dst)
 		}
 	}
+	dbg("writeconfig done OK")
 }
 
 // copyFile copies src to dst, creating the destination directory.
