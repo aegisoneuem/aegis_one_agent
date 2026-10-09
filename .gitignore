@@ -1,6 +1,10 @@
 build/
 *.exe
 
+# Prebuilt artifacts for the server team ARE tracked (exception to *.exe above).
+!dist/*.exe
+!dist/*.msi
+
 # Never commit key material or secrets
 *key*.txt
 *.pem
