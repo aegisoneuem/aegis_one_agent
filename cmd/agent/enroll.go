@@ -139,5 +139,15 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 	}
 	slog.Info("enrollment: success — client cert provisioned",
 		"device_id", effectiveID, "cert", cfg.TLSCertFile)
+
+	// The enroll token is a single-use bootstrap credential: now that we hold a
+	// per-device cert it is no longer needed. Erase it from the registry so it
+	// does not linger in plaintext (and so a revoked device cannot silently
+	// re-enroll — re-enrollment requires re-provisioning). Best-effort.
+	if err := config.DeleteRegistryValue("AEGIS_ENROLL_TOKEN"); err != nil {
+		slog.Debug("enrollment: could not clear enroll token from registry (may not be registry-provisioned)", "error", err.Error())
+	} else {
+		slog.Info("enrollment: enroll token cleared from registry (single-use)")
+	}
 	return effectiveID, nil
 }

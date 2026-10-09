@@ -97,6 +97,11 @@
              config file or custom action is needed. Written before the service
              starts (same component), so the token is available at first run. -->
         <RegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client" ForceDeleteOnUninstall="yes">
+          <!-- Restrict to SYSTEM (the service account) + Administrators, so the
+               enroll token is not readable by standard users in the brief window
+               before the agent erases it after enrollment. -->
+          <util:PermissionEx User="[WIX_ACCOUNT_LOCALSYSTEM]" GenericAll="yes" />
+          <util:PermissionEx User="[WIX_ACCOUNT_ADMINISTRATORS]" GenericAll="yes" />
           <RegistryValue Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
           <RegistryValue Name="AEGIS_SERVER_ADDRESS" Type="string" Value="[SERVERADDRESS]" />
           <RegistryValue Name="AEGIS_TLS_SERVER_NAME" Type="string" Value="[SERVERNAME]" />
