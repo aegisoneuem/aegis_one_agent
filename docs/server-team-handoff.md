@@ -87,10 +87,21 @@ arrives in the heartbeat as a **mutable attribute**.
    - Count must be reconciliation-aware (don't double-count reinstalls).
 
 5. **Certificate lifecycle**
-   - Renewal / rotation before expiry.
+   - **Per-device cert validity ~398 days** (BigFix convention; mock issues 398d —
+     make it a server policy). Long-lived on purpose: the agent does NOT re-enroll
+     yearly.
+   - **RENEWAL before expiry (the important one):** the agent requests a fresh cert
+     over its EXISTING mTLS channel (authenticated by its current cert — **no token**),
+     well before expiry (e.g. at ~2/3 of lifetime). This is what makes the
+     delete-token-after-enroll model safe at scale — a normally-running agent never
+     needs the enroll token again. **Server must implement a renewal RPC/flow** (sign
+     a new cert for an already-authenticated device). Agent-side renewal trigger is a
+     small follow-up.
    - **Revocation** on decommission/delete (CRL / short-lived certs / server-side
      allowlist checked at connect). *Note:* the agent does not yet auto-re-enroll
      on a revoked cert — see §4.
+   - **License ≠ cert:** the deployment license/entitlement (count, expiry, features)
+     is separate and typically long-lived (BigFix masthead license runs years).
 
 6. **Device lifecycle states** (last-seen driven, thresholds configurable)
    - `online → offline → stale → decommissioned → deleted`; auto-cleanup schedule;

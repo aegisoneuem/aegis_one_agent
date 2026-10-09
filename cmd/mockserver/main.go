@@ -174,7 +174,7 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 		SerialNumber: serial,
 		Subject:      pkixName(assigned),
 		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().AddDate(1, 0, 0), // 1-year cert (real server rotates)
+		NotAfter:     time.Now().AddDate(0, 0, 398), // ~1yr (BigFix convention); real server makes this policy + renews before expiry
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
