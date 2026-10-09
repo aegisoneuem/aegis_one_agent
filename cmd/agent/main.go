@@ -618,6 +618,10 @@ func runProcess(ctx context.Context) {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		log.Fatalf("failed to create temp dir: %v", err)
 	}
+	// Self-heal: clear any plaintext temp files left behind by an operation that
+	// was interrupted (crash/kill/restart mid stage-or-install). Runs before the
+	// workers start, so it never races an in-flight operation.
+	sweepTempDir(tmpDir)
 	// Download dir: where the server delivers runtime/adhoc patch files (distinct
 	// from the staging cache). Always kept so admins have a known drop location.
 	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
