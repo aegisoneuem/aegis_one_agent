@@ -179,20 +179,23 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 }
 
 func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, drainSignal <-chan struct{}) error {
-	// mTLS is mandatory (security is not toggleable). Load the agent's client
-	// credentials once; fail loud if the certs are missing/unreadable rather than
-	// silently falling back to an insecure channel. keys protects the private key
-	// at rest (DPAPI-sealed) — see secure.ClientCredentials.
-	creds, err := secure.ClientCredentials(cfg.TLSCAFile, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSServerName, keys)
-	if err != nil {
-		return fmt.Errorf("mTLS setup failed (certs required): %w", err)
-	}
-	slog.Info("mTLS enabled", "server_name", cfg.TLSServerName, "ca", cfg.TLSCAFile, "client_cert", cfg.TLSCertFile)
-
-	connFail := 0 // consecutive connection failures, to throttle reconnect logging
+	connFail := 0   // consecutive connection failures, to throttle reconnect logging
+	tlsLogged := false
 	for {
 		if rootCtx.Err() != nil {
 			return nil // graceful shutdown requested
+		}
+		// (Re)load mTLS creds each connect so a renewed cert is picked up on
+		// reconnect. mTLS is mandatory; keys protects the private key at rest.
+		creds, err := secure.ClientCredentials(cfg.TLSCAFile, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSServerName, keys)
+		if err != nil {
+			logReconnect(&connFail, cfg.ServerAddress, err)
+			sleepOrDone(rootCtx, cfg.ReconnectBackoff)
+			continue
+		}
+		if !tlsLogged {
+			slog.Info("mTLS enabled", "server_name", cfg.TLSServerName, "ca", cfg.TLSCAFile, "client_cert", cfg.TLSCertFile)
+			tlsLogged = true
 		}
 		conn, err := grpc.NewClient(cfg.ServerAddress,
 			grpc.WithTransportCredentials(creds),
@@ -221,6 +224,27 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 			slog.Info("connected to server", "after_failed_attempts", connFail)
 			connFail = 0
 		}
+
+		// Cert renewal: periodically check if the client cert is nearing expiry;
+		// if so, renew it over THIS mTLS channel (no token) and reconnect to use it.
+		go func() {
+			defer recoverLog("cert-renewal")
+			ticker := time.NewTicker(cfg.CertCheckInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if renewed, err := renewIfDue(ctx, client, cfg); err != nil {
+						slog.Error("cert renewal failed", "error", err.Error())
+					} else if renewed {
+						cancel() // tear down so the next reconnect loads the new cert
+						return
+					}
+				}
+			}
+		}()
 
 		// Sender: the ONLY goroutine that writes to the stream (gRPC Send is not
 		// safe for concurrent use). It drains the outbox (command results, install

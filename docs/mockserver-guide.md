@@ -77,6 +77,9 @@ gRPC service `AgentControlPlane` (proto repo `grpc/agent.proto`):
   validate token + license, reconcile device, sign the CSR → per-device client cert.
 - **`FetchContent(ContentRequest) returns (stream ContentChunk)`** — stream a cab/patch
   file to the agent (peer-cache delivery). No internet on the endpoint.
+- **`Renew(RenewRequest) returns (RenewResponse)`** — re-issue the client cert BEFORE
+  expiry over mTLS; authenticated by the current cert (no token), signs the new CSR
+  for the same device_id. This is how long-lived certs rotate without re-enrollment.
 
 **Command signing:** every `Command` is `{command_id, type, payload, signature}` where
 `signature = Ed25519(payload)`. The mockserver signs with a **dev** Ed25519 key; the
@@ -193,6 +196,18 @@ set AEGIS_PRESEED_DEVICES=1       REM seed N dummy devices so a single VM hits t
 A new device over the cap → `Enroll REJECTED ... license limit reached (N/max)`;
 the agent fails loud. Re-enroll/dedup of an existing device does NOT consume a seat.
 
+### Cert renewal (short cert to see it in seconds)
+Per-device certs are long-lived (~398 days) and the agent renews them over the
+existing mTLS channel (no token) at ~2/3 of lifetime. To observe it quickly:
+```
+set AEGIS_CERT_TTL_SECONDS=60      REM mockserver issues 60-second certs
+```
+On the AGENT, shorten the check interval (config/registry): `AEGIS_CERT_CHECK_INTERVAL=10s`.
+Enroll → ~40s later the agent renews: mockserver prints `Renew OK -> device_id=..`,
+agent logs `cert renewal: success — new cert written; reconnecting`, then reconnects
+with the new cert. **No token is used** — renewal is authenticated by the current
+cert. The real server implements `Renew` the same way (+ revocation/lifecycle checks).
+
 ### Concurrency demo
 ```
 set AEGIS_PARALLEL_PINGS=10       REM sends 10 hostname commands alongside an install
@@ -218,6 +233,7 @@ Shows a long DISM install running while other commands are handled concurrently.
 | `AEGIS_BASELINE_BUILD/_KBS` | push a PatchBaseline |
 | `AEGIS_REBOOT_DELAY` / `AEGIS_CANCEL_REBOOT` | reboot / cancel-reboot command |
 | `AEGIS_PARALLEL_PINGS` | N concurrent hostname commands |
+| `AEGIS_CERT_TTL_SECONDS` | issued client-cert validity in seconds (default 398 days) — small = test renewal fast |
 
 ---
 

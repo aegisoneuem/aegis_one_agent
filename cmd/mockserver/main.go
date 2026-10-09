@@ -126,6 +126,75 @@ func (s *server) deviceCount() int {
 	return len(s.byID)
 }
 
+// certTTL is the issued client-cert validity. Default ~398 days (BigFix
+// convention); AEGIS_CERT_TTL_SECONDS overrides (small values make renewal
+// observable in seconds for testing).
+func certTTL() time.Duration {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("AEGIS_CERT_TTL_SECONDS"))); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 398 * 24 * time.Hour
+}
+
+// signClientCert signs a client cert for the given CN with the CA.
+func (s *server) signClientCert(cn string, pub any) (string, error) {
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(certTTL()),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, s.caCert, pub, s.caKey)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+}
+
+// clientCertCN returns the device_id (CN) of the verified client cert on the mTLS
+// connection, or "" if none.
+func clientCertCN(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.VerifiedChains) == 0 || len(tlsInfo.State.VerifiedChains[0]) == 0 {
+		return ""
+	}
+	return tlsInfo.State.VerifiedChains[0][0].Subject.CommonName
+}
+
+// Renew re-issues the client cert for an already-authenticated device (over mTLS,
+// no token). The real server adds revocation/lifecycle checks here.
+func (s *server) Renew(ctx context.Context, req *pb.RenewRequest) (*pb.RenewResponse, error) {
+	cn := clientCertCN(ctx)
+	if cn == "" {
+		return &pb.RenewResponse{Error: "renew requires a verified client certificate"}, nil
+	}
+	block, _ := pem.Decode([]byte(req.CsrPem))
+	if block == nil {
+		return &pb.RenewResponse{Error: "bad CSR PEM"}, nil
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil || csr.CheckSignature() != nil {
+		return &pb.RenewResponse{Error: "invalid CSR"}, nil
+	}
+	// Sign for the AUTHENTICATED device_id (cert CN), not whatever the CSR claims.
+	certPEM, err := s.signClientCert(cn, csr.PublicKey)
+	if err != nil {
+		return &pb.RenewResponse{Error: "sign cert: " + err.Error()}, nil
+	}
+	fmt.Printf("Renew OK -> device_id=%s (new cert signed, valid %s)\n", cn, certTTL())
+	return &pb.RenewResponse{ClientCertPem: certPEM}, nil
+}
+
 // licenseMax reads the license cap (AEGIS_LICENSE_MAX); 0 / unset = unlimited.
 func licenseMax() int {
 	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("AEGIS_LICENSE_MAX")))
@@ -164,25 +233,12 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 		return &pb.EnrollResponse{Error: rejected}, nil
 	}
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return &pb.EnrollResponse{Error: "serial: " + err.Error()}, nil
-	}
-	// The cert identity is the ASSIGNED id (not the CSR's CN) — so a reconciled
-	// device gets a cert bound to its canonical id.
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkixName(assigned),
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().AddDate(0, 0, 398), // ~1yr (BigFix convention); real server makes this policy + renews before expiry
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, s.caCert, csr.PublicKey, s.caKey)
+	// Sign for the ASSIGNED id (not the CSR's CN) — a reconciled device gets a cert
+	// bound to its canonical id.
+	certPEM, err := s.signClientCert(assigned, csr.PublicKey)
 	if err != nil {
 		return &pb.EnrollResponse{Error: "sign cert: " + err.Error()}, nil
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	lic := ""
 	if max := licenseMax(); max > 0 {
 		lic = fmt.Sprintf(" [license %d/%d]", s.deviceCount(), max)
