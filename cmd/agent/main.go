@@ -224,6 +224,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 			slog.Info("connected to server", "after_failed_attempts", connFail)
 			connFail = 0
 		}
+		agentHealth.update(func(h *healthState) { h.connected = true })
 
 		// Cert renewal: periodically check if the client cert is nearing expiry;
 		// if so, renew it over THIS mTLS channel (no token) and reconnect to use it.
@@ -278,6 +279,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 						slog.Warn("heartbeat failed, connection dropping", "error", err.Error())
 						return
 					}
+					agentHealth.update(func(h *healthState) { h.lastHeartbeat = time.Now() })
 					drainReports(stream, buf)
 				}
 			}
@@ -385,6 +387,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 		}()
 
 		<-ctx.Done() // sender or receiver failed (or shutdown); tear down and retry
+		agentHealth.update(func(h *healthState) { h.connected = false })
 		conn.Close()
 		sleepOrDone(rootCtx, cfg.ReconnectBackoff)
 	}
@@ -576,6 +579,12 @@ func runProcess(ctx context.Context) {
 			return // graceful shutdown requested while retrying
 		}
 	}
+
+	// Local health/status endpoint (localhost only) for monitoring/troubleshooting.
+	agentHealth.update(func(h *healthState) {
+		h.version, h.deviceID, h.hostname, h.osName, h.enrolled = cfg.AgentVersion, cfg.DeviceID, cfg.Hostname, cfg.OS, true
+	})
+	startHealthServer(ctx, cfg.HealthAddr)
 
 	slog.Info("Aegis One Agent starting up",
 		"server", cfg.ServerAddress,

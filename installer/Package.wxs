@@ -126,6 +126,9 @@
             <RegistryValue Name="AEGIS_DOWNLOAD_DIR" Type="string" Value="[SKVCDir]download" />
             <RegistryValue Name="AEGIS_WSUS_SCAN_CAB" Type="string" Value="[SKVCDir]wsusscn2.cab" />
           </RegistryKey>
+          <RegistryKey Key="Settings">
+            <RegistryValue Name="AEGIS_HEALTH_ADDR" Type="string" Value="127.0.0.1:50080" />
+          </RegistryKey>
         </RegistryKey>
 
         <!-- On uninstall, recursively delete the whole install tree

@@ -114,6 +114,7 @@ type Config struct {
 	EnrollAddress        string        // enrollment endpoint (server-auth TLS); used only when no client cert exists
 	EnrollToken          string        // per-tenant bootstrap enrollment token
 	CertCheckInterval    time.Duration // how often to check the client cert for renewal
+	HealthAddr           string        // localhost-only health/status HTTP endpoint (empty disables)
 	CacheMaxBytes        int64         // patch cache size cap (bytes); pre-cache/staging budget
 	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
 	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
@@ -273,6 +274,7 @@ func Load() Config {
 		EnrollAddress:        getenv("AEGIS_ENROLL_ADDRESS", ""),
 		EnrollToken:          getenv("AEGIS_ENROLL_TOKEN", ""),
 		CertCheckInterval:    durationFromEnv("AEGIS_CERT_CHECK_INTERVAL", 12*time.Hour),
+		HealthAddr:           getenv("AEGIS_HEALTH_ADDR", "127.0.0.1:50080"),
 		CacheMaxBytes:        int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
 		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
