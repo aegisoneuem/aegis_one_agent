@@ -533,14 +533,24 @@ func runProcess(ctx context.Context) {
 	// server (keypair+CSR → token-authenticated Enroll → signed per-device cert)
 	// before mTLS. No-op when a cert already exists. Fail loud if it cannot proceed
 	// (SCM restarts the service and retries).
+	// Enroll with retry: a service must stay up even if the server is unreachable
+	// at boot (don't exit — SCM would flap it). Retry with backoff until enrolled
+	// or shutdown. No-op once a cert exists.
 	sysUUID, machGUID := hardwareIDs()
-	effectiveID, err := ensureEnrolled(ctx, cfg, cfg.DeviceID, sysUUID, machGUID, fingerprint)
-	if err != nil {
-		log.Fatalf("enrollment: %v", err)
-	}
-	if effectiveID != cfg.DeviceID {
-		slog.Info("device id updated by enrollment reconciliation", "device_id", effectiveID)
-		cfg.DeviceID = effectiveID
+	for {
+		effectiveID, err := ensureEnrolled(ctx, cfg, cfg.DeviceID, sysUUID, machGUID, fingerprint)
+		if err == nil {
+			if effectiveID != cfg.DeviceID {
+				slog.Info("device id updated by enrollment reconciliation", "device_id", effectiveID)
+				cfg.DeviceID = effectiveID
+			}
+			break
+		}
+		slog.Error("enrollment failed — will retry", "error", err.Error(), "retry_in", cfg.ReconnectBackoff.String())
+		sleepOrDone(ctx, cfg.ReconnectBackoff)
+		if ctx.Err() != nil {
+			return // graceful shutdown requested while retrying
+		}
 	}
 
 	slog.Info("Aegis One Agent starting up",
