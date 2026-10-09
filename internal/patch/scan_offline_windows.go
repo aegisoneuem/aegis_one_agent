@@ -153,7 +153,19 @@ func ScanOffline(cabPath string) ([]Update, error) {
 		item.Release()
 	}
 
-	slog.Info("offline scan complete", "missing", len(out))
+	// Offline cab scans return superseded updates as applicable; drop any update
+	// whose replacement is also in this result set so the reported missing count
+	// and total download size reflect only actionable updates (not redundant,
+	// already-replaced cumulative updates that otherwise inflate the totals).
+	out, droppedSuperseded := dropSuperseded(out)
+	var totalMB float64
+	for _, u := range out {
+		totalMB += u.SizeMB
+	}
+	slog.Info("offline scan complete",
+		"missing", len(out),
+		"dropped_superseded", droppedSuperseded,
+		"total_download_mb", fmt.Sprintf("%.1f", totalMB))
 
 	// Diagnostic: if nothing is missing, distinguish "cab read fine, machine is
 	// current within the cab's scope" from "cab not actually being searched".
