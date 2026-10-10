@@ -105,11 +105,40 @@ func osArchitecture() string {
 	}
 }
 
+// cbsStateInstalled is the CBS package CurrentState for a fully-applied package
+// (what DISM shows as "State: Installed"). CBS keeps a package subkey for EVERY
+// package it knows about regardless of state — Absent, Staged, Superseded,
+// Install-pending, Installed — so the mere EXISTENCE of a Package_for_KBxxxx key
+// does NOT mean the KB is installed. Counting key-existence alone falsely reported
+// staged/superseded KBs as installed, which made the idempotency guard SKIP a
+// genuinely-missing patch (e.g. a KB the offline scan still listed as missing).
+// Only CurrentState == 112 (0x70) means installed.
+const cbsStateInstalled = 112
+
+// cbsPackageInstalled reports whether a single CBS package subkey is in the
+// Installed state. Any error (can't open / no CurrentState) → false, which is the
+// safe direction: the KB is treated as not-installed, so an install just proceeds
+// and DISM (itself idempotent) is the final authority.
+func cbsPackageInstalled(name string) bool {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, cbsPackagesKey+`\`+name, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	state, _, err := k.GetIntegerValue("CurrentState")
+	if err != nil {
+		return false
+	}
+	return state == cbsStateInstalled
+}
+
 // installedKBsFromCBS enumerates the Component Based Servicing package keys and
-// extracts the distinct KB numbers. CBS is more complete than WMI's
-// Win32_QuickFixEngineering (which misses many CBS-delivered cumulative updates)
-// and needs no COM. Still best-effort: the OS build number is the authoritative
-// signal for the cumulative level; this KB set supplements it.
+// extracts the distinct KB numbers of packages in the INSTALLED state. CBS is
+// more complete than WMI's Win32_QuickFixEngineering (which misses many
+// CBS-delivered cumulative updates) and needs no COM. Still best-effort: the OS
+// build number is the authoritative signal for the cumulative level; this KB set
+// supplements it. A KB counts as installed if ANY of its CBS packages is in the
+// installed state (a KB can map to several package subkeys).
 func installedKBsFromCBS() ([]string, error) {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, cbsPackagesKey, registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
@@ -124,7 +153,14 @@ func installedKBsFromCBS() ([]string, error) {
 
 	set := make(map[string]struct{})
 	for _, name := range names {
-		if kb := extractKB(name); kb != "" {
+		kb := extractKB(name)
+		if kb == "" {
+			continue
+		}
+		if _, already := set[kb]; already {
+			continue // this KB is already confirmed installed; skip the extra key open
+		}
+		if cbsPackageInstalled(name) {
 			set[kb] = struct{}{}
 		}
 	}
