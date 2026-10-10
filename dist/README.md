@@ -15,8 +15,12 @@ certgen.exe certs
 set AEGIS_ENROLL_TOKEN=tenant-abc-123
 mockserver.exe
 ```
-Then install the agent via the MSI (point it at this server) and drive scenarios
-per the mockserver guide.
+Then install the agent via the MSI (point it at this server) and drive scenarios.
+
+**👉 Start here:** [../docs/patching-test-guide.md](../docs/patching-test-guide.md) —
+step-by-step patching tests (single patch, multiple patches, success + failure
+scenarios) **and what the real server must implement**. Deeper setup / caching /
+cab / renewal: [../docs/mockserver-guide.md](../docs/mockserver-guide.md).
 
 > These are rebuilt on each release; they are NOT the source of truth (the code is).
 > For large/clean distribution, GitHub Releases is preferable to committing binaries.
