@@ -67,7 +67,7 @@
          restart-on-failure). Service lifecycle is handled by the MSI. -->
     <ComponentGroup Id="ProductComponents" Directory="ClientDir">
       <Component Id="AgentExeComponent" Guid="*">
-        <File Id="AgentExeFile" Name="agent-windows.exe" Source="..\build\agent-windows.exe" KeyPath="yes" />
+        <File Id="AgentExeFile" Name="AegisOneClient.exe" Source="..\build\AegisOneClient.exe" KeyPath="yes" />
 
         <ServiceInstall Id="AegisOneSvcInstall"
                         Name="AegisOneClient"

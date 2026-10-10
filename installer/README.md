@@ -12,7 +12,13 @@ writes `config.json`, and installs the CA cert — interactively or silently.
    wix extension add -g WixToolset.UI.wixext
    wix extension add -g WixToolset.Util.wixext
    ```
-2. A **built agent**: `build\agent-windows.exe` (the .wxs references `..\build\agent-windows.exe`).
+2. A **built agent**: `build\AegisOneClient.exe` (the .wxs references `..\build\AegisOneClient.exe`).
+   Build it from the repo root with `GOOS=windows GOARCH=amd64 go build -o build/AegisOneClient.exe ./cmd/agent/`.
+   The Windows version resource (Task Manager shows "AegisOne Agent", not a generic
+   name) is embedded via `cmd/agent/resource_windows_amd64.syso`, committed to the
+   repo. To change it, edit `cmd/agent/versioninfo.json` and regenerate:
+   `cd cmd/agent && goversioninfo -o resource_windows_amd64.syso versioninfo.json`
+   (`go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest`).
 3. **Branding assets** in `assets/` — see [assets/README.md](assets/README.md)
    (`banner.bmp`, `dialog.bmp`, `icon.ico`; `license.rtf` placeholder included).
 4. For signing: an **Authenticode code-signing certificate** (OV or EV) + the
@@ -34,7 +40,7 @@ sign the **MSI** after. Use a timestamp URL so signatures outlive cert expiry.
 ```
 rem 1) sign the agent binary first
 signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
-  /f AegisCodeSign.pfx /p <PFX_PASSWORD> ..\build\agent-windows.exe
+  /f AegisCodeSign.pfx /p <PFX_PASSWORD> ..\build\AegisOneClient.exe
 
 rem 2) build the MSI (above), then 3) sign the MSI
 signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
@@ -74,9 +80,10 @@ msiexec /x AegisOneClient.msi /qn
 
 ## What the installer does at install time
 
-1. Copies `agent-windows.exe` to `<INSTALLFOLDER>\Client\`.
-2. Runs `agent-windows.exe writeconfig --install-dir "<..>\Client" --server .. --server-name .. --token .. --ca ..`
-   → writes `SKVC\config.json` and copies the CA cert to `SKVC\certs\ca.crt`.
+1. Copies `AegisOneClient.exe` to `<INSTALLFOLDER>\Client\`.
+2. Writes the connection/enrollment settings natively to the registry under
+   `HKLM\SOFTWARE\AegisOne\Client` (the agent reads them: env > file > registry >
+   default). No exe custom action — the config is delivered via WiX `RegistryValue`.
 3. Registers + starts the `AegisOneClient` service (restart-on-failure).
 
 On first run the agent generates its device identity and **enrolls** (keypair +

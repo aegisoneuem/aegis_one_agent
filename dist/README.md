@@ -6,7 +6,7 @@ Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 |---|---|
 | `mockserver.exe` | Reference server. Run it to exercise the agent. See [../docs/mockserver-guide.md](../docs/mockserver-guide.md). |
 | `certgen.exe` | Generates the dev mTLS PKI: `certgen certs` → `certs/` (ca, server, client). |
-| `agent-windows.exe` | The agent (also bundled inside the MSI). Useful for console testing. |
+| `AegisOneClient.exe` | The agent binary (also bundled inside the MSI). Useful for console testing. |
 | `AegisOneClient.msi` | The AegisOne Client installer (interactive + silent). See [../installer/README.md](../installer/README.md). |
 
 Quick start (server team):
