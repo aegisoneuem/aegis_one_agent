@@ -45,8 +45,8 @@ func alreadyInstalled(kb string) bool {
 // spec.HashAlgorithm is part of the wire contract for future configurability;
 // the agent currently implements SHA-256 only, so a different algorithm is
 // rejected fail-loud rather than silently mismatching.
-func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout time.Duration, maxAttempts int, retryBackoff time.Duration, emit phaseEmitter) *pb.InstallStatus {
-	emit(pb.InstallPhase_INSTALL_PHASE_VERIFYING)
+func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout time.Duration, maxAttempts int, retryBackoff time.Duration, emit phaseEmitter) *pb.ActionStatus {
+	emit(pb.ActionPhase_ACTION_PHASE_VERIFYING)
 	// hash_algorithm is the operator's choice (sha256 default, or sha512);
 	// VerifyPatchFile rejects an unsupported algorithm fail-loud. Verify once; the
 	// bytes don't change between DISM retries.
@@ -57,7 +57,7 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
-	emit(pb.InstallPhase_INSTALL_PHASE_RUNNING)
+	emit(pb.ActionPhase_ACTION_PHASE_RUNNING)
 
 	var res *patch.DeployResult
 	var err error
@@ -79,16 +79,16 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 		time.Sleep(retryBackoff)
 	}
 
-	st := &pb.InstallStatus{
+	st := &pb.ActionStatus{
 		Kb:             spec.Kb,
 		ExitCode:       int32(res.ExitCode),
 		RebootRequired: res.RebootRequired,
 		Detail:         res.Detail,
 	}
 	if res.Success {
-		st.Phase = pb.InstallPhase_INSTALL_PHASE_SUCCESS
+		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
 	} else {
-		st.Phase = pb.InstallPhase_INSTALL_PHASE_FAILED
+		st.Phase = pb.ActionPhase_ACTION_PHASE_FAILED
 		st.Reason = res.Reason // concise, classified failure cause
 		if st.Reason == "" {
 			st.Reason = fmt.Sprintf("install failed (exit %d)", res.ExitCode)
@@ -97,6 +97,6 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 	return st
 }
 
-func installFailed(kb, reason string) *pb.InstallStatus {
-	return &pb.InstallStatus{Kb: kb, Phase: pb.InstallPhase_INSTALL_PHASE_FAILED, Reason: reason}
+func installFailed(kb, reason string) *pb.ActionStatus {
+	return &pb.ActionStatus{Kb: kb, Phase: pb.ActionPhase_ACTION_PHASE_FAILED, Reason: reason}
 }

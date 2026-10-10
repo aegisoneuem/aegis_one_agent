@@ -332,8 +332,9 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 						continue
 					}
 					slog.Info("install_patch: accepted, queued", "command_id", cmd.CommandId, "kb", spec.Kb)
-					send(ctx, outbox, &pb.AgentMessage{Payload: &pb.AgentMessage_InstallStatus{
-						InstallStatus: &pb.InstallStatus{CommandId: cmd.CommandId, Kb: spec.Kb, Phase: pb.InstallPhase_INSTALL_PHASE_QUEUED}}})
+					send(ctx, outbox, actionStatusMsg(&pb.ActionStatus{
+						ActionId: cmd.CommandId, ActionType: actionPatchInstall, DeviceId: cfg.DeviceID,
+						Kb: spec.Kb, Phase: pb.ActionPhase_ACTION_PHASE_QUEUED}))
 					select {
 					case installJobs <- installJob{commandID: cmd.CommandId, spec: &spec}:
 					case <-ctx.Done():
@@ -365,12 +366,12 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 						continue
 					}
 					status, message := handleReboot(&spec)
-					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
+					send(ctx, outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionReboot, cfg.DeviceID, "", rebootPhase(status), message)))
 					continue
 				}
 				if strings.EqualFold(strings.TrimSpace(cmd.Type), "cancel_reboot") {
 					status, message := handleCancelReboot()
-					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
+					send(ctx, outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionReboot, cfg.DeviceID, "", rebootPhase(status), message)))
 					continue
 				}
 
@@ -640,7 +641,7 @@ func runProcess(ctx context.Context) {
 	outbox := make(chan *pb.AgentMessage, 256)
 	installJobs := make(chan installJob, 32)
 	inst := &patchInstaller{
-		outbox: outbox, cache: cache, tmpDir: tmpDir, timeout: cfg.InstallTimeout,
+		outbox: outbox, cache: cache, tmpDir: tmpDir, deviceID: cfg.DeviceID, timeout: cfg.InstallTimeout,
 		maxAttempts: cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
 	}
 	go inst.patchWorker(installJobs)

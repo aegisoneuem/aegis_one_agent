@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ import (
 func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, drainSignal chan<- struct{}) {
 	go runDeviceStateReport(cfg, buf, baseline, drainSignal)
 	if cfg.WsusScanCab == "" {
-		slog.Info("reconciliation scan (Layer 4) disabled (no AEGIS_WSUS_SCAN_CAB configured)")
+		slog.Info("patch compliance scan disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
 	}
 	go runReconciliationScan(cfg, buf, drainSignal)
@@ -41,7 +42,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		state, err := patch.CollectLocalState()
 		if err != nil {
 			// Fail loud: unknown local state is not "nothing installed".
-			slog.Error("device-state (Layer 1): could not read local state", "error", err.Error())
+			slog.Error("patch state report: could not read local state", "error", err.Error())
 			return
 		}
 
@@ -68,20 +69,20 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		}
 		fp := deviceStateFingerprint(rep)
 		if fp == lastFingerprint {
-			slog.Debug("device-state (Layer 1): unchanged, skipping send", "build", rep.Build)
+			slog.Debug("patch state report: unchanged, skipping send", "build", rep.Build)
 			return
 		}
 		payload, err := proto.Marshal(rep)
 		if err != nil {
-			slog.Error("device-state (Layer 1): marshal failed", "error", err.Error())
+			slog.Error("patch state report: marshal failed", "error", err.Error())
 			return
 		}
 		if err := buf.Enqueue(kindDeviceState, payload); err != nil {
-			slog.Error("device-state (Layer 1): could not buffer report", "error", err.Error())
+			slog.Error("patch state report: could not buffer report", "error", err.Error())
 			return
 		}
 		lastFingerprint = fp
-		slog.Info("device-state (Layer 1): buffered for sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
+		slog.Info("patch state report: buffered for sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
 		signalDrain(drainSignal)
 	}
 
@@ -146,29 +147,66 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 // scan that reports MISSING updates directly, as a cross-check against the
 // server's Layer 1 diff. Uses only the local cab on disk — never the internet.
 func runReconciliationScan(cfg config.Config, buf buffer.Buffer, drainSignal chan<- struct{}) {
+	// bufferActionStatus queues a per-scan ActionStatus so the console can show the
+	// compliance-scan run in its unified per-action view (not just the result data).
+	bufferActionStatus := func(st *pb.ActionStatus) {
+		payload, err := proto.Marshal(st)
+		if err != nil {
+			slog.Warn("patch compliance scan: could not marshal action status", "error", err.Error())
+			return
+		}
+		if err := buf.Enqueue(kindActionStatus, payload); err != nil {
+			slog.Warn("patch compliance scan: could not buffer action status", "error", err.Error())
+			return
+		}
+		signalDrain(drainSignal)
+	}
+
 	scan := func() {
-		slog.Info("reconciliation (Layer 4): starting offline cab scan", "cab", cfg.WsusScanCab)
+		actionID := fmt.Sprintf("scan-%d", time.Now().Unix())
+		started := time.Now().Unix()
+		slog.Info("patch compliance scan: starting offline cab scan", "cab", cfg.WsusScanCab)
 		updates, err := patch.ScanOffline(cfg.WsusScanCab)
 		if err != nil {
 			// Fail loud: an errored scan is UNKNOWN, never silently "compliant".
-			slog.Error("reconciliation (Layer 4): scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
+			slog.Error("patch compliance scan: scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
+			bufferActionStatus(&pb.ActionStatus{
+				ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
+				Phase: pb.ActionPhase_ACTION_PHASE_FAILED, Reason: "scan failed: " + err.Error(),
+				StartedAt: started, FinishedAt: time.Now().Unix(),
+			})
 			return
 		}
 		result := buildScanResult(cfg, updates)
 		payload, err := proto.Marshal(result)
 		if err != nil {
-			slog.Error("reconciliation (Layer 4): marshal failed", "error", err.Error())
+			slog.Error("patch compliance scan: marshal failed", "error", err.Error())
 			return
 		}
 		if err := buf.Enqueue(kindPatchScanResult, payload); err != nil {
-			slog.Error("reconciliation (Layer 4): could not buffer result", "error", err.Error())
+			slog.Error("patch compliance scan: could not buffer result", "error", err.Error())
 			return
 		}
-		slog.Info("reconciliation (Layer 4): result buffered for sending", "missing", len(result.Missing))
+		// Count actionable vs superseded for the per-action summary the console shows.
+		var actionable, superseded int
+		for _, m := range result.Missing {
+			if m.Superseded {
+				superseded++
+			} else {
+				actionable++
+			}
+		}
+		slog.Info("patch compliance scan: result buffered for sending", "missing", len(result.Missing))
+		bufferActionStatus(&pb.ActionStatus{
+			ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
+			Phase:  pb.ActionPhase_ACTION_PHASE_SUCCESS,
+			Reason: fmt.Sprintf("%d applicable (%d missing, %d superseded)", len(result.Missing), actionable, superseded),
+			StartedAt: started, FinishedAt: time.Now().Unix(),
+		})
 		signalDrain(drainSignal)
 	}
 
-	safeRun("layer4-recon-scan", scan) // once at startup, then on the (weekly) interval
+	safeRun("patch-compliance-scan", scan) // once at startup, then on the (weekly) interval
 	ticker := time.NewTicker(cfg.ReconScanInterval)
 	defer ticker.Stop()
 	for range ticker.C {

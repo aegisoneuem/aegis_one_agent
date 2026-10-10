@@ -581,12 +581,12 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			fmt.Printf("Received command result -> command_id: %s, status: %s, message: %s\n",
 				result.CommandId, result.Status, result.Message)
 		}
-		if st := msg.GetInstallStatus(); st != nil {
-			fmt.Printf("Received install status -> command_id: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s, detail: %s\n",
-				st.CommandId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason, st.Detail)
+		if st := msg.GetActionStatus(); st != nil {
+			fmt.Printf("Received action status -> action_id: %s, type: %s, device: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
+				st.ActionId, st.ActionType, st.DeviceId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			fmt.Printf("Received device-state (Layer 1) -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d\n",
+			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d\n",
 				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs))
 		}
 		if cf := msg.GetCacheFull(); cf != nil {

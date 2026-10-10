@@ -17,15 +17,16 @@ type installJob struct {
 	spec      *pb.InstallPatchSpec
 }
 
-// phaseEmitter streams an InstallPhase for the current job (QUEUED is emitted by
+// phaseEmitter streams an ActionPhase for the current job (QUEUED is emitted by
 // the receiver; VERIFYING/RUNNING by the platform install handler).
-type phaseEmitter func(pb.InstallPhase)
+type phaseEmitter func(pb.ActionPhase)
 
 // patchInstaller carries everything the serial worker needs across installs.
 type patchInstaller struct {
 	outbox       chan<- *pb.AgentMessage
 	cache        *patchcache.Cache
 	tmpDir       string
+	deviceID     string
 	timeout      time.Duration
 	maxAttempts  int
 	retryBackoff time.Duration
@@ -76,16 +77,23 @@ func cacheID(spec *pb.InstallPatchSpec) string {
 
 func (p *patchInstaller) runInstall(job installJob) {
 	cmdID, kb := job.commandID, job.spec.Kb
-	emit := func(phase pb.InstallPhase) {
-		sendStatus(p.outbox, &pb.InstallStatus{CommandId: cmdID, Kb: kb, Phase: phase})
+	started := time.Now().Unix()
+	emit := func(phase pb.ActionPhase) {
+		sendStatus(p.outbox, &pb.ActionStatus{
+			ActionId: cmdID, ActionType: actionPatchInstall, DeviceId: p.deviceID,
+			Kb: kb, Phase: phase, StartedAt: started,
+		})
 	}
 
 	// Idempotency guard: if the KB is already installed, skip the whole flow
-	// (no decrypt, no DISM) and report success — don't redo applied work.
+	// (no decrypt, no DISM) and report NOT_APPLICABLE — don't redo applied work.
 	if alreadyInstalled(kb) {
 		slog.Info("install_patch: already installed, skipping", "command_id", cmdID, "kb", kb)
-		sendStatus(p.outbox, &pb.InstallStatus{CommandId: cmdID, Kb: kb,
-			Phase: pb.InstallPhase_INSTALL_PHASE_SUCCESS, Detail: "already installed (skipped)"})
+		sendStatus(p.outbox, &pb.ActionStatus{
+			ActionId: cmdID, ActionType: actionPatchInstall, DeviceId: p.deviceID, Kb: kb,
+			Phase: pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, Reason: "already installed (skipped)",
+			StartedAt: started, FinishedAt: time.Now().Unix(),
+		})
 		return
 	}
 
@@ -98,12 +106,15 @@ func (p *patchInstaller) runInstall(job installJob) {
 	// re-encryption of a file we are about to consume).
 	if p.cache != nil && id != "" && p.cache.Has(id) {
 		slog.Info("install_patch: patch found in cache (staged), using it", "command_id", cmdID, "id", id)
-		emit(pb.InstallPhase_INSTALL_PHASE_DOWNLOADING)
+		emit(pb.ActionPhase_ACTION_PHASE_DOWNLOADING)
 		tmp := filepath.Join(p.tmpDir, "install-"+sanitize(cmdID)+p.cache.Ext(id))
 		if err := p.cache.Decrypt(id, tmp); err != nil {
 			slog.Error("install_patch: cache decrypt failed", "command_id", cmdID, "id", id, "error", err.Error())
-			sendStatus(p.outbox, &pb.InstallStatus{CommandId: cmdID, Kb: kb,
-				Phase: pb.InstallPhase_INSTALL_PHASE_FAILED, Reason: "cache decrypt failed: " + err.Error()})
+			sendStatus(p.outbox, &pb.ActionStatus{
+				ActionId: cmdID, ActionType: actionPatchInstall, DeviceId: p.deviceID, Kb: kb,
+				Phase: pb.ActionPhase_ACTION_PHASE_FAILED, Reason: "cache decrypt failed: " + err.Error(),
+				StartedAt: started, FinishedAt: time.Now().Unix(),
+			})
 			return
 		}
 		slog.Info("cache: decrypted staged patch to temp", "command_id", cmdID, "id", id, "temp", tmp)
@@ -115,7 +126,13 @@ func (p *patchInstaller) runInstall(job installJob) {
 
 	slog.Info("install_patch: running", "command_id", cmdID, "kb", kb, "from_cache", fromCache)
 	st := handleInstallPatch(job.spec, installPath, p.timeout, p.maxAttempts, p.retryBackoff, emit)
-	st.CommandId = cmdID
+	// Stamp the action-correlation fields the console tracks by (handleInstallPatch
+	// only fills the install-specific fields).
+	st.ActionId = cmdID
+	st.ActionType = actionPatchInstall
+	st.DeviceId = p.deviceID
+	st.StartedAt = started
+	st.FinishedAt = time.Now().Unix()
 
 	// Cleanup. The decrypted temp is always removed (it is transient plaintext).
 	// A cached patch is deleted after a successful install (patches are
@@ -126,7 +143,7 @@ func (p *patchInstaller) runInstall(job installJob) {
 		} else {
 			slog.Info("cache: removed decrypted temp after install", "temp", installPath)
 		}
-		if st.Phase == pb.InstallPhase_INSTALL_PHASE_SUCCESS {
+		if st.Phase == pb.ActionPhase_ACTION_PHASE_SUCCESS {
 			if err := p.cache.Remove(id); err != nil {
 				slog.Warn("cache: could not remove installed patch from cache", "id", id, "error", err.Error())
 			} else {
@@ -141,9 +158,9 @@ func (p *patchInstaller) runInstall(job installJob) {
 		"exit_code", st.ExitCode, "reboot_required", st.RebootRequired, "reason", st.Reason)
 }
 
-// sendStatus queues an InstallStatus for the sender goroutine to transmit.
-func sendStatus(outbox chan<- *pb.AgentMessage, st *pb.InstallStatus) {
-	outbox <- &pb.AgentMessage{Payload: &pb.AgentMessage_InstallStatus{InstallStatus: st}}
+// sendStatus queues an ActionStatus for the sender goroutine to transmit.
+func sendStatus(outbox chan<- *pb.AgentMessage, st *pb.ActionStatus) {
+	outbox <- actionStatusMsg(st)
 }
 
 // sanitize makes a string safe to use in a file name.

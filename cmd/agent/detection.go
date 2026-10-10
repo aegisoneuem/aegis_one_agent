@@ -11,6 +11,7 @@ import (
 const (
 	kindPatchScanResult = "patch_scan_result" // Layer 4 (weekly): missing updates from the cab scan
 	kindDeviceState     = "device_state"      // Layer 1 (frequent): installed-KBs + build
+	kindActionStatus    = "action_status"     // per-action status (e.g. a compliance-scan run's outcome)
 )
 
 // signalDrain wakes the sender to flush the buffer promptly (non-blocking +
@@ -55,7 +56,19 @@ func drainReports(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) 
 			if err := stream.Send(msg); err != nil {
 				return err
 			}
-			slog.Info("sent reconciliation scan result to server", "build", result.Build, "missing", len(result.Missing))
+			slog.Info("sent patch compliance scan result to server", "build", result.Build, "missing", len(result.Missing))
+			return nil
+
+		case kindActionStatus:
+			var st pb.ActionStatus
+			if err := proto.Unmarshal(payload, &st); err != nil {
+				slog.Warn("drain: skipping corrupt action status", "error", err.Error())
+				return nil
+			}
+			if err := stream.Send(actionStatusMsg(&st)); err != nil {
+				return err
+			}
+			slog.Info("sent action status to server", "action_type", st.ActionType, "action_id", st.ActionId, "phase", st.Phase.String())
 			return nil
 
 		default:

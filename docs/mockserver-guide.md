@@ -70,8 +70,13 @@ The agent connects to it per its config (`AEGIS_SERVER_ADDRESS=127.0.0.1:50051`,
 gRPC service `AgentControlPlane` (proto repo `grpc/agent.proto`):
 
 - **`Connect(stream AgentMessage) returns (stream ServerMessage)`** — long-lived mTLS stream.
-  - Agent → server: `Heartbeat`, `CommandResult`, `PatchScanResult`, `InstallStatus`,
+  - Agent → server: `Heartbeat`, `CommandResult`, `PatchScanResult`, `ActionStatus`,
     `DeviceStateReport`, `CacheFullReport`.
+  - `ActionStatus` is the UNIFIED per-action status (replaces the old install-only
+    `InstallStatus`): every dispatched action (patch_install / stage / scan /
+    reboot) reports it with `action_id` (= command_id), `action_type`, `phase`
+    (QUEUED→DOWNLOADING→VERIFYING→RUNNING→SUCCESS/FAILED/NOT_APPLICABLE),
+    `exit_code`, `reason`, `detail`. Scheduled/Pending is a server-side state.
   - Server → agent: `Command` (signed), `PatchBaseline`, `CabManifest`.
 - **`Enroll(EnrollRequest) returns (EnrollResponse)`** — token-gated, server-auth TLS;
   validate token + license, reconcile device, sign the CSR → per-device client cert.
@@ -129,8 +134,8 @@ set AEGIS_INSTALL_KB=KB5126052
 set AEGIS_INSTALL_HASH=<sha256 of the file>        REM optional but recommended
 set AEGIS_INSTALL_HASH_ALGO=sha256                 REM optional (sha256 default, sha512 supported)
 ```
-Observe `InstallStatus` phases: `QUEUED → VERIFYING → RUNNING → SUCCESS/FAILED`
-(exit 0 / 3010 reboot-required). Already-installed KB → `SUCCESS "already installed"`.
+Observe `ActionStatus` phases: `QUEUED → VERIFYING → RUNNING → SUCCESS/FAILED`
+(exit 0 / 3010 reboot-required). Already-installed KB → `NOT_APPLICABLE "already installed (skipped)"`.
 
 ### Multiple patches (serial queue)
 Comma-separated lists (same index across lists):
@@ -153,10 +158,16 @@ Observe `FetchContent: serving ..`, agent `stage_patch: patch staged in cache`.
 Then (keep it staged) send `install_patch` for the same KB → it installs **from
 cache** (no re-fetch). Comma-separated `AEGIS_STAGE_KB` for multiple.
 
-### Patch status reporting
-Already covered — the agent streams `InstallStatus` at each phase; the mockserver
-prints `Received install status -> command_id=.. kb=.. phase=.. exit_code=..
-reboot_required=.. reason=.. detail=..`. The real server persists these transitions.
+### Action status reporting (unified, all action types)
+The agent streams a single `ActionStatus` for EVERY dispatched action
+(patch_install / stage / scan / reboot), so the console shows one consistent
+per-device-per-action lifecycle (BigFix/ManageEngine/Tanium style). The mockserver
+prints `Received action status -> action_id=.. type=.. device=.. kb=.. phase=..
+exit_code=.. reboot_required=.. reason=..`. Phases:
+`QUEUED → DOWNLOADING → VERIFYING → RUNNING → SUCCESS | FAILED | NOT_APPLICABLE`.
+`action_id` = the dispatched `command_id` (the console's correlation key);
+Scheduled/Pending is tracked server-side (scheduling is server-driven). The real
+server persists these transitions per action.
 
 ### Cache-full report
 ```
@@ -246,4 +257,4 @@ The mockserver is minimal. The real server must add (see handoff doc):
 - **Device reconciliation/dedup** (device_id → system_uuid), lifecycle states,
   cert issuance/rotation/**revocation**, secure CA storage, per-customer CA isolation.
 - **Its own Ed25519 command-signing keypair** (configure agents with the public key).
-- Persisting `InstallStatus`, `DeviceStateReport`, `CacheFullReport`, scan results.
+- Persisting `ActionStatus`, `DeviceStateReport`, `CacheFullReport`, scan results.

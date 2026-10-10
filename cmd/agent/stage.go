@@ -39,17 +39,20 @@ func newStager(outbox chan<- *pb.AgentMessage, cache *patchcache.Cache, tmpDir, 
 // be large and its download can take a while.
 func (s *stager) stage(ctx context.Context, client pb.AgentControlPlaneClient, cmdID string, spec *pb.InstallPatchSpec) {
 	id := cacheID(spec)
+	st := func(phase pb.ActionPhase, reason string) *pb.AgentMessage {
+		return actionStatusMsg(simpleActionStatus(cmdID, actionStage, s.deviceID, spec.Kb, phase, reason))
+	}
 	if id == "" {
-		send(ctx, s.outbox, buildCommandResultMessage(cmdID, "failed", "stage_patch: missing kb/hash identifier"))
+		send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_FAILED, "stage_patch: missing kb/hash identifier"))
 		return
 	}
 	if s.cache == nil {
-		send(ctx, s.outbox, buildCommandResultMessage(cmdID, "failed", "stage_patch: cache unavailable"))
+		send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_FAILED, "stage_patch: cache unavailable"))
 		return
 	}
 	if s.cache.Has(id) {
 		slog.Info("stage_patch: already staged", "command_id", cmdID, "id", id)
-		send(ctx, s.outbox, buildCommandResultMessage(cmdID, "staged", "already staged"))
+		send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_SUCCESS, "already staged"))
 		return
 	}
 
@@ -57,7 +60,7 @@ func (s *stager) stage(ctx context.Context, client pb.AgentControlPlaneClient, c
 	if s.inflight[id] {
 		s.mu.Unlock()
 		slog.Info("stage_patch: already staging, ignoring duplicate", "command_id", cmdID, "id", id)
-		send(ctx, s.outbox, buildCommandResultMessage(cmdID, "staging", "stage already in progress"))
+		send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_RUNNING, "stage already in progress"))
 		return
 	}
 	s.inflight[id] = true
@@ -71,7 +74,7 @@ func (s *stager) stage(ctx context.Context, client pb.AgentControlPlaneClient, c
 		}()
 		defer recoverLog("stage-patch")
 
-		send(ctx, s.outbox, buildCommandResultMessage(cmdID, "staging", "fetching patch for staging"))
+		send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_DOWNLOADING, "fetching patch for staging"))
 
 		// The extension (.msu/.cab) comes from the server-provided filename so the
 		// cached file keeps the extension DISM expects at install time.
@@ -85,7 +88,7 @@ func (s *stager) stage(ctx context.Context, client pb.AgentControlPlaneClient, c
 		slog.Info("stage_patch: fetching patch from server", "command_id", cmdID, "id", id, "dest", tmp)
 		if err := fetchContent(ctx, client, req, tmp); err != nil {
 			slog.Error("stage_patch: fetch failed", "command_id", cmdID, "id", id, "error", err.Error())
-			send(ctx, s.outbox, buildCommandResultMessage(cmdID, "failed", "fetch failed: "+err.Error()))
+			send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_FAILED, "fetch failed: "+err.Error()))
 			return
 		}
 
@@ -105,15 +108,15 @@ func (s *stager) stage(ctx context.Context, client pb.AgentControlPlaneClient, c
 			if errors.Is(err, patchcache.ErrCacheFull) {
 				slog.Warn("stage_patch: cache full, cannot stage", "command_id", cmdID, "id", id, "error", err.Error())
 				s.reportCacheFull(ctx, id, needed)
-				send(ctx, s.outbox, buildCommandResultMessage(cmdID, "failed", "cache full: "+err.Error()))
+				send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_FAILED, "cache full: "+err.Error()))
 				return
 			}
 			slog.Error("stage_patch: cache put failed", "command_id", cmdID, "id", id, "error", err.Error())
-			send(ctx, s.outbox, buildCommandResultMessage(cmdID, "failed", "cache put failed: "+err.Error()))
+			send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_FAILED, "cache put failed: "+err.Error()))
 			return
 		}
 		slog.Info("stage_patch: patch staged in cache", "command_id", cmdID, "id", id, "bytes", needed)
-		send(ctx, s.outbox, buildCommandResultMessage(cmdID, "staged", "patch staged in cache"))
+		send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_SUCCESS, "patch staged in cache"))
 	}()
 }
 
