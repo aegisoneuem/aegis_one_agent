@@ -186,16 +186,23 @@ func buildScanResult(cfg config.Config, updates []patch.Update) *pb.PatchScanRes
 	missing := make([]*pb.MissingUpdate, 0, len(updates))
 	for _, u := range updates {
 		missing = append(missing, &pb.MissingUpdate{
-			UpdateId:       u.UpdateID,
-			KbArticleIds:   u.KBArticleIDs,
-			Title:          u.Title,
-			Classification: u.Classification,
-			Products:       u.Products,
-			Type:           u.Type,
-			MsrcSeverity:   u.MsrcSeverity,
-			CveIds:         u.CveIDs,
-			SizeMb:         u.SizeMB,
-			RebootRequired: u.RebootRequired,
+			UpdateId:            u.UpdateID,
+			KbArticleIds:        u.KBArticleIDs,
+			Title:               u.Title,
+			Classification:      u.Classification,
+			Products:            u.Products,
+			Type:                u.Type,
+			MsrcSeverity:        u.MsrcSeverity,
+			CveIds:              u.CveIDs,
+			SizeMb:              u.SizeMB,
+			RebootRequired:      u.RebootRequired,
+			Superseded:          u.Superseded,
+			SupersededUpdateIds: u.SupersededUpdateIDs,
+			SecurityBulletinIds: u.SecurityBulletinIDs,
+			RevisionNumber:      int32(u.RevisionNumber),
+			SupportUrl:          u.SupportURL,
+			Description:         u.Description,
+			MinSizeMb:           u.MinSizeMB,
 		})
 	}
 

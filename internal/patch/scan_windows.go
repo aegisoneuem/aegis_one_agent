@@ -35,7 +35,9 @@ type Update struct {
 	SecurityBulletinIDs []string // Legacy Microsoft security bulletin IDs (e.g. MS17-010)
 	SupersededUpdateIDs []string // UpdateIDs this update supersedes (server uses for correlation/dedup)
 	RebootRequired      bool     // InstallationBehavior.RebootBehavior != NeverReboots
-	SizeMB              float64  // MaxDownloadSize
+	SizeMB              float64  // MaxDownloadSize (upper bound; a bundle reports the superset max)
+	MinSizeMB           float64  // MinDownloadSize (realistic lower bound vs the superset SizeMB)
+	Superseded          bool     // true if replaced by a newer update present in the same scan result (set by markSuperseded)
 	SupportURL          string   // SupportUrl
 
 	// NOTE: the agent only reports this raw metadata. Correlation across
@@ -379,25 +381,11 @@ func buildUpdate(item *ole.IDispatch) Update {
 		id.Release()
 	}
 
-	// MaxDownloadSize is a DECIMAL VARIANT; decode it directly. Fall back to the
-	// common numeric variant types, and debug-log anything still unrecognized.
-	if sizeRaw, err := oleutil.GetProperty(item, "MaxDownloadSize"); err == nil {
-		if bytes, ok := decimalVariantToFloat(sizeRaw); ok {
-			u.SizeMB = bytes / 1024 / 1024
-		} else {
-			switch v := sizeRaw.Value().(type) {
-			case float64:
-				u.SizeMB = v / 1024 / 1024
-			case int64:
-				u.SizeMB = float64(v) / 1024 / 1024
-			case uint64:
-				u.SizeMB = float64(v) / 1024 / 1024
-			default:
-				slog.Debug("scan: unhandled MaxDownloadSize variant type",
-					"go_type", fmt.Sprintf("%T", v), "vt", sizeRaw.VT)
-			}
-		}
-	}
+	// MaxDownloadSize is the upper bound (a bundle reports the superset max, which
+	// is why a single cumulative can show double-digit GB); MinDownloadSize is the
+	// realistic lower bound. Report both so the console can show an honest size.
+	u.SizeMB = downloadSizeMB(item, "MaxDownloadSize")
+	u.MinSizeMB = downloadSizeMB(item, "MinDownloadSize")
 
 	if biRaw, err := oleutil.GetProperty(item, "InstallationBehavior"); err == nil {
 		bi := biRaw.ToIDispatch()
@@ -409,6 +397,32 @@ func buildUpdate(item *ole.IDispatch) Update {
 
 	u.Classification, u.Products = categories(item)
 	return u
+}
+
+// downloadSizeMB reads a WUA download-size property (MaxDownloadSize /
+// MinDownloadSize) and returns it in MB. These are DECIMAL VARIANTs, which go-ole
+// does not expose via Value(), so decode the union bytes directly; fall back to
+// the common numeric variant types and debug-log anything unrecognized (0 then).
+func downloadSizeMB(item *ole.IDispatch, prop string) float64 {
+	raw, err := oleutil.GetProperty(item, prop)
+	if err != nil {
+		return 0
+	}
+	if bytes, ok := decimalVariantToFloat(raw); ok {
+		return bytes / 1024 / 1024
+	}
+	switch v := raw.Value().(type) {
+	case float64:
+		return v / 1024 / 1024
+	case int64:
+		return float64(v) / 1024 / 1024
+	case uint64:
+		return float64(v) / 1024 / 1024
+	default:
+		slog.Debug("scan: unhandled download-size variant type",
+			"property", prop, "go_type", fmt.Sprintf("%T", v), "vt", raw.VT)
+		return 0
+	}
 }
 
 // stringProp reads a string property, returning "" on any error.

@@ -594,11 +594,26 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				cf.DeviceId, cf.PendingId, cf.NeededBytes, cf.CapBytes, cf.InUseBytes, cf.Message)
 		}
 		if psr := msg.GetPatchScanResult(); psr != nil {
-			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d\n",
-				psr.DeviceId, psr.Build, psr.Architecture, psr.Source, len(psr.Missing))
+			// Count the console-facing categories the agent now tags, so the
+			// reference output shows what a real console would categorize.
+			var actionable, superseded int
 			for _, m := range psr.Missing {
-				fmt.Printf("    - [%s] %s (KB=%v, severity=%s, %.1fMB, reboot=%v, cves=%v)\n",
-					m.Classification, m.Title, m.KbArticleIds, m.MsrcSeverity, m.SizeMb, m.RebootRequired, m.CveIds)
+				if m.Superseded {
+					superseded++
+				} else {
+					actionable++
+				}
+			}
+			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, applicable: %d (missing: %d, superseded: %d)\n",
+				psr.DeviceId, psr.Build, psr.Architecture, psr.Source, len(psr.Missing), actionable, superseded)
+			for _, m := range psr.Missing {
+				tag := "MISSING"
+				if m.Superseded {
+					tag = "SUPERSEDED"
+				}
+				fmt.Printf("    - [%s][%s] %s (KB=%v, MS=%v, severity=%s, size=%.1f-%.1fMB, reboot=%v, cves=%v, supersedes=%v)\n",
+					tag, m.Classification, m.Title, m.KbArticleIds, m.SecurityBulletinIds, m.MsrcSeverity,
+					m.MinSizeMb, m.SizeMb, m.RebootRequired, m.CveIds, m.SupersededUpdateIds)
 			}
 		}
 	}
