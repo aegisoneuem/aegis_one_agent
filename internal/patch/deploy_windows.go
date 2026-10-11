@@ -27,9 +27,12 @@ import (
 var installTimeout = 30 * time.Minute
 
 // diskSpaceMultiplier is how many times the patch file size must be free on the
-// target volume before install (DISM expands into the component store). Set from
-// config via SetDiskMultiplier; defaults to 3.
-var diskSpaceMultiplier int64 = 3
+// target volume before install (DISM extracts the package + grows the component
+// store). Set from config via SetDiskMultiplier. Default 2 (file + ~1x working
+// space) — 3x was too aggressive for multi-GB cumulative updates (e.g. a 4.3GB
+// CU would demand ~13GB free). Admins raise it for extra safety or lower it on
+// tight volumes.
+var diskSpaceMultiplier int64 = 2
 
 // SetDiskMultiplier overrides the disk-space pre-flight multiplier (config).
 func SetDiskMultiplier(n int64) {

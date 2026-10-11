@@ -279,7 +279,7 @@ func Load() Config {
 		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
 		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
 		InstallTimeout:       durationFromEnv("AEGIS_INSTALL_TIMEOUT", 30*time.Minute),
-		InstallDiskMultiplier: int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 3),
+		InstallDiskMultiplier: int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 2),
 		InstallMaxAttempts:   int(int64FromEnv("AEGIS_INSTALL_MAX_ATTEMPTS", 2)),
 		InstallRetryBackoff:  durationFromEnv("AEGIS_INSTALL_RETRY_BACKOFF", 30*time.Second),
 	}
