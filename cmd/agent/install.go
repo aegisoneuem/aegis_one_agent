@@ -6,15 +6,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/patch"
 	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
-// installJob is a patch install handed from the receiver to the serial worker.
+// installJob is a patch install (or uninstall) handed from the receiver to the
+// serial worker. Both go through the same worker because the Windows servicing
+// stack processes one operation at a time.
 type installJob struct {
 	commandID string
 	spec      *pb.InstallPatchSpec
+	uninstall bool // true = remove the KB (wusa) instead of install (DISM)
 }
 
 // phaseEmitter streams an ActionPhase for the current job (QUEUED is emitted by
@@ -44,9 +48,13 @@ type patchInstaller struct {
 func (p *patchInstaller) patchWorker(jobs <-chan installJob) {
 	for job := range jobs {
 		job := job
-		// Isolate each install: a panic in one must not kill the worker (which
-		// would stop ALL future installs) — recover and move to the next job.
-		safeRun("patch-install", func() { p.runInstall(job) })
+		// Isolate each job: a panic in one must not kill the worker (which would
+		// stop ALL future installs) — recover and move to the next job.
+		if job.uninstall {
+			safeRun("patch-uninstall", func() { p.runUninstall(job) })
+		} else {
+			safeRun("patch-install", func() { p.runInstall(job) })
+		}
 	}
 }
 
@@ -163,6 +171,51 @@ func (p *patchInstaller) runInstall(job installJob) {
 	slog.Info("install_patch: finished",
 		"command_id", cmdID, "phase", st.Phase.String(),
 		"exit_code", st.ExitCode, "reboot_required", st.RebootRequired, "reason", st.Reason)
+}
+
+// runUninstall removes an installed KB via wusa (idempotent: if the KB is not
+// installed, it reports NOT_APPLICABLE without running wusa). Runs on the same
+// serial worker as installs (the servicing stack is single-operation).
+func (p *patchInstaller) runUninstall(job installJob) {
+	cmdID, kb := job.commandID, job.spec.Kb
+	started := time.Now().Unix()
+
+	if !alreadyInstalled(kb) {
+		slog.Info("uninstall_patch: not installed, nothing to do", "command_id", cmdID, "kb", kb)
+		sendStatus(p.outbox, &pb.ActionStatus{
+			ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
+			Phase: pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, Reason: "not installed (nothing to uninstall)",
+			StartedAt: started, FinishedAt: time.Now().Unix(),
+		})
+		return
+	}
+
+	sendStatus(p.outbox, &pb.ActionStatus{
+		ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
+		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, StartedAt: started,
+	})
+	slog.Info("uninstall_patch: running", "command_id", cmdID, "kb", kb)
+	res := patch.UninstallKB(kb, p.timeout)
+
+	st := &pb.ActionStatus{
+		ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
+		ExitCode: int32(res.ExitCode), RebootRequired: res.RebootRequired, Detail: res.Detail,
+		StartedAt: started, FinishedAt: time.Now().Unix(),
+	}
+	if res.Success {
+		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
+		// A reboot may be needed to finalize the removal — track it so the device's
+		// pending-reboot report names this KB.
+		if res.RebootRequired && p.rebootStore != nil {
+			p.rebootStore.add(kb)
+		}
+	} else {
+		st.Phase = pb.ActionPhase_ACTION_PHASE_FAILED
+		st.Reason = res.Reason
+	}
+	sendStatus(p.outbox, st)
+	slog.Info("uninstall_patch: finished", "command_id", cmdID, "kb", kb,
+		"phase", st.Phase.String(), "exit_code", st.ExitCode, "reboot_required", st.RebootRequired, "reason", st.Reason)
 }
 
 // sendStatus queues an ActionStatus for the sender goroutine to transmit.

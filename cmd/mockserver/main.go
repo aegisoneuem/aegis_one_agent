@@ -429,6 +429,32 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// Optionally push one or more signed uninstall_patch commands. Set
+		// AEGIS_UNINSTALL_KB (comma-separated for multiple). The agent removes each
+		// installed KB via wusa on the serial worker and reports ActionStatus.
+		if kbEnv := os.Getenv("AEGIS_UNINSTALL_KB"); kbEnv != "" {
+			for i, kb := range strings.Split(kbEnv, ",") {
+				kb = strings.TrimSpace(kb)
+				if kb == "" {
+					continue
+				}
+				specBytes, err := proto.Marshal(&pb.InstallPatchSpec{Kb: kb})
+				if err != nil {
+					log.Printf("failed to marshal uninstall spec: %v", err)
+					continue
+				}
+				cmdID := fmt.Sprintf("uninstall-%03d", i+1)
+				cmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+					CommandId: cmdID, Type: "uninstall_patch", Payload: specBytes, Signature: signPayload(specBytes),
+				}}}
+				if err := stream.Send(cmd); err != nil {
+					log.Printf("failed to send uninstall command: %v", err)
+					return
+				}
+				fmt.Printf("Sent command -> id: %s, type: uninstall_patch, kb=%s (signed)\n", cmdID, kb)
+			}
+		}
+
 		// Optionally push one or more signed stage_patch commands (pre-cache ahead
 		// of a scheduled install). Set AEGIS_STAGE_KB (and optionally _HASH /
 		// _HASH_ALGO / _FILE as a filename hint for the extension); comma-separated

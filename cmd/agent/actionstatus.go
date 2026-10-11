@@ -9,8 +9,9 @@ import (
 // Action type labels for ActionStatus.action_type — the console groups and
 // filters per-action status by these, the same way BigFix/ManageEngine/Tanium do.
 const (
-	actionPatchInstall = "patch_install"
-	actionStage        = "stage"
+	actionPatchInstall   = "patch_install"
+	actionPatchUninstall = "patch_uninstall"
+	actionStage          = "stage"
 	actionScan         = "scan"
 	actionReboot       = "reboot"
 )

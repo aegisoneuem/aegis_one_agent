@@ -42,15 +42,6 @@ func SetDiskMultiplier(n int64) {
 }
 
 // DeployResult is the outcome of installing one local patch file.
-type DeployResult struct {
-	Path           string
-	Success        bool
-	RebootRequired bool
-	ExitCode       int
-	Reason         string // concise, human failure cause (empty on success)
-	Transient      bool   // failure looks transient → safe to retry
-	Detail         string // trailing DISM output (for logs/console)
-}
 
 // InstallLocalPatch installs a LOCAL patch file (.msu or .cab) with DISM — no
 // internet and no PowerShell. The server delivers the file to the endpoint via

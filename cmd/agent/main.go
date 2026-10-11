@@ -343,6 +343,26 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 					continue
 				}
 
+				// uninstall_patch: remove an installed KB (wusa) on the serial worker.
+				if strings.EqualFold(strings.TrimSpace(cmd.Type), "uninstall_patch") {
+					var spec pb.InstallPatchSpec
+					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
+						slog.Error("uninstall_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
+						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid uninstall payload"))
+						continue
+					}
+					slog.Info("uninstall_patch: accepted, queued", "command_id", cmd.CommandId, "kb", spec.Kb)
+					send(ctx, outbox, actionStatusMsg(&pb.ActionStatus{
+						ActionId: cmd.CommandId, ActionType: actionPatchUninstall, DeviceId: cfg.DeviceID,
+						Kb: spec.Kb, Phase: pb.ActionPhase_ACTION_PHASE_QUEUED}))
+					select {
+					case installJobs <- installJob{commandID: cmd.CommandId, spec: &spec, uninstall: true}:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+
 				// stage_patch: pre-cache a patch (encrypted, StateStaged) ahead of a
 				// scheduled install. Fetched via peer-cache; runs in the background so
 				// it does not block the receiver.
