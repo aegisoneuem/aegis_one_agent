@@ -210,16 +210,22 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 			slog.Error("FULL-SCAN (cab): could not buffer result", "error", err.Error())
 			return
 		}
-		// Count actionable vs superseded for the per-action summary the console shows.
+		// Count actionable vs superseded, and collect KB numbers, for the per-action
+		// summary + a visible client-log list of what the scan found.
 		var actionable, superseded int
+		missingKBs := make([]string, 0, len(result.Missing))
 		for _, m := range result.Missing {
+			tag := "KB" + strings.Join(m.KbArticleIds, "/")
 			if m.Superseded {
 				superseded++
+				tag += "(superseded)"
 			} else {
 				actionable++
 			}
+			missingKBs = append(missingKBs, tag)
 		}
-		slog.Info("FULL-SCAN (cab): result buffered for sending", "missing", len(result.Missing))
+		slog.Info("FULL-SCAN (cab): result buffered for sending",
+			"missing", len(result.Missing), "actionable", actionable, "superseded", superseded, "kbs", missingKBs)
 		bufferActionStatus(&pb.ActionStatus{
 			ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
 			Phase:  pb.ActionPhase_ACTION_PHASE_SUCCESS,
