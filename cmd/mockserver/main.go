@@ -600,8 +600,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				st.ActionId, st.ActionType, st.DeviceId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d, reboot_pending: %v",
-				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs), ds.RebootPending)
+			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d %v, reboot_pending: %v",
+				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs), ds.InstalledKbs, ds.RebootPending)
 			if ds.RebootPending {
 				fmt.Printf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}
