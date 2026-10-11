@@ -95,7 +95,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			return
 		}
 		lastFingerprint = fp
-		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs), "reboot_pending", rep.RebootPending)
+		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs), "kbs", rep.InstalledKbs, "reboot_pending", rep.RebootPending)
 		signalDrain(drainSignal)
 	}
 
