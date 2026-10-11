@@ -196,6 +196,10 @@ func classifyDISMFailure(exitCode int, output string) (reason string, transient 
 		return "required source files missing (component store may be corrupt — run DISM /RestoreHealth)", false
 	case strings.Contains(o, "0x800f0923"):
 		return "package not applicable, or a reboot is pending from a previous update", false
+	case exitCode == 50 || strings.Contains(o, "0x80070032") || strings.Contains(o, "the request is not supported"):
+		return "patch not applicable to this OS edition/build (wrong package), or a required servicing stack update (SSU) is missing", false
+	case strings.Contains(o, "0x800f081e"):
+		return "patch not applicable to this system (already superseded, or not for this OS/build)", false
 	case strings.Contains(o, "0x80073701") || strings.Contains(o, "0x800f0831"):
 		return "component store corruption (run DISM /RestoreHealth or SFC /scannow)", false
 	case strings.Contains(o, "trustedinstaller") && (strings.Contains(o, "disabled") || strings.Contains(o, "cannot be started")):
@@ -211,10 +215,14 @@ func classifyDISMFailure(exitCode int, output string) (reason string, transient 
 	case strings.Contains(o, "0x8024"):
 		return "Windows Update servicing error (" + firstHRESULT(output) + ")", true
 	}
+	// Unknown failure: treat as PERMANENT (do not retry). The genuinely-transient
+	// causes (rolled-back, servicing-stack busy, WU 0x8024) are enumerated above;
+	// anything else is far more likely a non-retryable condition (not-applicable,
+	// unsupported, bad package) and blind retries just delay a clear failure.
 	if h := firstHRESULT(output); h != "" {
-		return fmt.Sprintf("install failed (exit %d, %s)", exitCode, h), true
+		return fmt.Sprintf("install failed (exit %d, %s)", exitCode, h), false
 	}
-	return fmt.Sprintf("install failed (exit %d)", exitCode), true
+	return fmt.Sprintf("install failed (exit %d)", exitCode), false
 }
 
 // firstHRESULT returns the first 0x######## token in s, or "".

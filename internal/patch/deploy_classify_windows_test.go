@@ -50,6 +50,9 @@ func TestClassifyDISMFailure(t *testing.T) {
 		{"not applicable/reboot", 1, "0x800f0923", "package not applicable, or a reboot is pending from a previous update"},
 		{"corruption", 1, "0x80073701 ERROR_SXS_ASSEMBLY_MISSING", "component store corruption (run DISM /RestoreHealth or SFC /scannow)"},
 		{"access denied", 5, "Access is denied.", "access denied — the agent must run elevated (LocalSystem) to install"},
+		{"not supported exit 50", 50, "Error: 50\r\n\r\nThe request is not supported.", "patch not applicable to this OS edition/build (wrong package), or a required servicing stack update (SSU) is missing"},
+		{"not supported hresult", 1, "0x80070032 the request is not supported", "patch not applicable to this OS edition/build (wrong package), or a required servicing stack update (SSU) is missing"},
+		{"not applicable 081e", 1, "0x800f081e CBS_E_NOT_APPLICABLE", "patch not applicable to this system (already superseded, or not for this OS/build)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -68,12 +71,19 @@ func TestClassifyDISMFailureTransient(t *testing.T) {
 	if _, tr := classifyDISMFailure(5, "access is denied"); tr {
 		t.Error("access denied should not be transient")
 	}
-	// Transient (retry).
+	if _, tr := classifyDISMFailure(50, "The request is not supported."); tr {
+		t.Error("not-supported (exit 50) should not be transient")
+	}
+	// Transient (retry) — only the explicitly-enumerated glitches.
 	if _, tr := classifyDISMFailure(1, "another installation is already in progress"); !tr {
 		t.Error("busy should be transient")
 	}
-	if _, tr := classifyDISMFailure(1, "some unknown failure"); !tr {
-		t.Error("unknown should be transient (one retry)")
+	if _, tr := classifyDISMFailure(1, "operation failed 0x800f0922"); !tr {
+		t.Error("rolled-back should be transient")
+	}
+	// Unknown failures are now treated as PERMANENT (no blind retry).
+	if _, tr := classifyDISMFailure(1, "some unknown failure"); tr {
+		t.Error("unknown should NOT be transient (fail fast with a clear code)")
 	}
 }
 
