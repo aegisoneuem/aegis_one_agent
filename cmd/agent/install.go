@@ -27,6 +27,7 @@ type patchInstaller struct {
 	cache        *patchcache.Cache
 	tmpDir       string
 	deviceID     string
+	rebootStore  *rebootPendingStore
 	timeout      time.Duration
 	maxAttempts  int
 	retryBackoff time.Duration
@@ -150,6 +151,12 @@ func (p *patchInstaller) runInstall(job installJob) {
 				slog.Info("cache: removed installed patch from cache", "id", id)
 			}
 		}
+	}
+
+	// Track KBs that need a reboot so the device's pending-reboot report can name
+	// which patches are waiting (cleared once the OS pending-reboot flag is gone).
+	if st.Phase == pb.ActionPhase_ACTION_PHASE_SUCCESS && st.RebootRequired && p.rebootStore != nil {
+		p.rebootStore.add(kb)
 	}
 
 	sendStatus(p.outbox, st)

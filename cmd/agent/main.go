@@ -178,7 +178,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
 	connFail := 0   // consecutive connection failures, to throttle reconnect logging
 	tlsLogged := false
 	for {
@@ -372,6 +372,16 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 				if strings.EqualFold(strings.TrimSpace(cmd.Type), "cancel_reboot") {
 					status, message := handleCancelReboot()
 					send(ctx, outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionReboot, cfg.DeviceID, "", rebootPhase(status), message)))
+					continue
+				}
+
+				// scan_now: server/console-driven on-demand compliance scan. Fire the
+				// same trigger a new cab uses; the scan runs in the detection goroutine
+				// and streams its own scan ActionStatus. Ack receipt here.
+				if strings.EqualFold(strings.TrimSpace(cmd.Type), "scan_now") || strings.EqualFold(strings.TrimSpace(cmd.Type), "scan") {
+					slog.Info("scan_now: on-demand compliance scan requested", "command_id", cmd.CommandId)
+					signalDrain(scanTrigger)
+					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "accepted", "compliance scan triggered"))
 					continue
 				}
 
@@ -640,8 +650,12 @@ func runProcess(ctx context.Context) {
 	// jobs) survive reconnects.
 	outbox := make(chan *pb.AgentMessage, 256)
 	installJobs := make(chan installJob, 32)
+	// Tracks which installed KBs are awaiting a reboot (for the device-level
+	// pending-reboot report). Shared by the installer (writes) and detection (reads).
+	rebootStore := newRebootPendingStore(cfg.SecureDir)
 	inst := &patchInstaller{
-		outbox: outbox, cache: cache, tmpDir: tmpDir, deviceID: cfg.DeviceID, timeout: cfg.InstallTimeout,
+		outbox: outbox, cache: cache, tmpDir: tmpDir, deviceID: cfg.DeviceID, rebootStore: rebootStore,
+		timeout: cfg.InstallTimeout,
 		maxAttempts: cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
 	}
 	go inst.patchWorker(installJobs)
@@ -655,17 +669,21 @@ func runProcess(ctx context.Context) {
 
 	// Baseline cache for the offline self-diff (server pushes it; Layer 1 uses it).
 	baseline := newBaselineStore(cfg.SecureDir)
-	// Cab version handler (server reports version; agent fetches if stale).
-	cabs := newCabManifestHandler(cfg.SecureDir, cfg.WsusScanCab)
+	// scanTrigger fires a full compliance scan on demand — when a new catalog (cab)
+	// lands (set below) — instead of waiting for the weekly tick. Coalescing.
+	scanTrigger := make(chan struct{}, 1)
+	// Cab version handler (server reports version; agent fetches if stale, then
+	// triggers a scan against the new catalog).
+	cabs := newCabManifestHandler(cfg.SecureDir, cfg.WsusScanCab, scanTrigger)
 	// drainSignal lets detection wake the sender to flush the buffer promptly
 	// (otherwise a report buffered after connect waits for the next heartbeat).
 	drainSignal := make(chan struct{}, 1)
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
-	go runPatchDetection(cfg, buf, baseline, drainSignal)
+	go runPatchDetection(cfg, buf, baseline, rebootStore, scanTrigger, drainSignal)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, keys, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")

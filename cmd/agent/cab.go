@@ -19,18 +19,20 @@ import (
 // reacts to the server-reported version: same → nothing; different → fetch the
 // new cab via peer-cache over the same mTLS channel (never the internet).
 type cabManifestHandler struct {
-	versionPath string // SKVC\cab.version — the version of the cab on disk
-	cabPath     string // destination path for the cab itself (cfg.WsusScanCab)
+	versionPath string        // SKVC\cab.version — the version of the cab on disk
+	cabPath     string        // destination path for the cab itself (cfg.WsusScanCab)
+	scanTrigger chan<- struct{} // signalled after a new cab lands, to run a full compliance scan
 
 	mu           sync.Mutex
 	lastNotified string // avoid re-logging the same pending version every check-in
 	fetching     bool   // single-flight: one cab fetch at a time
 }
 
-func newCabManifestHandler(dir, cabPath string) *cabManifestHandler {
+func newCabManifestHandler(dir, cabPath string, scanTrigger chan<- struct{}) *cabManifestHandler {
 	return &cabManifestHandler{
 		versionPath: filepath.Join(dir, "cab.version"),
 		cabPath:     cabPath,
+		scanTrigger: scanTrigger,
 	}
 }
 
@@ -117,6 +119,10 @@ func (h *cabManifestHandler) fetchStale(ctx context.Context, client pb.AgentCont
 			return
 		}
 		slog.Info("wsusscn2.cab updated", "version", version, "path", h.cabPath)
+		// New catalog on disk → trigger a full compliance scan now (don't wait for
+		// the weekly tick). A new/uninstalled patch WITHOUT a cab change is caught
+		// cheaply by the fast lane; only a changed catalog needs the heavy scan.
+		signalDrain(h.scanTrigger)
 	}()
 }
 

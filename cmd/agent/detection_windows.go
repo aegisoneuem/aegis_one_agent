@@ -21,13 +21,13 @@ import (
 // the buffer (the sender goroutine drains it), never the network.
 //   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
 //   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
-func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, drainSignal chan<- struct{}) {
-	go runDeviceStateReport(cfg, buf, baseline, drainSignal)
+func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
+	go runDeviceStateReport(cfg, buf, baseline, rebootStore, drainSignal)
 	if cfg.WsusScanCab == "" {
 		slog.Info("patch compliance scan disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
 	}
-	go runReconciliationScan(cfg, buf, drainSignal)
+	go runReconciliationScan(cfg, buf, scanTrigger, drainSignal)
 }
 
 // runDeviceStateReport is Layer 1: read installed KBs + build locally (registry
@@ -35,7 +35,7 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineS
 // when it CHANGED since the last send (the installed set rarely changes, so
 // sending every cycle would be wasteful at fleet scale). The agent reports
 // installed facts only; the server computes "missing".
-func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, drainSignal chan<- struct{}) {
+func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, drainSignal chan<- struct{}) {
 	var lastFingerprint string
 	var lastSelfDiffKey string
 	report := func() {
@@ -58,14 +58,27 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			}
 			lastSelfDiffKey = key
 		}
+		// Device-level pending-reboot (cheap registry read). If nothing is pending,
+		// the reboot has happened → clear the tracked KBs (they are now effective).
+		rebootPending, rebootSources := patch.RebootPending()
+		var pendingKBs []string
+		if rebootPending {
+			pendingKBs = rebootStore.list()
+		} else {
+			rebootStore.clear()
+		}
+
 		rep := &pb.DeviceStateReport{
-			DeviceId:       cfg.DeviceID,
-			ProductName:    state.ProductName,
-			DisplayVersion: state.DisplayVersion,
-			Build:          state.FullBuild,
-			Architecture:   state.Architecture,
-			CollectedAt:    time.Now().Unix(),
-			InstalledKbs:   state.InstalledKBs,
+			DeviceId:             cfg.DeviceID,
+			ProductName:          state.ProductName,
+			DisplayVersion:       state.DisplayVersion,
+			Build:                state.FullBuild,
+			Architecture:         state.Architecture,
+			CollectedAt:          time.Now().Unix(),
+			InstalledKbs:         state.InstalledKBs,
+			RebootPending:        rebootPending,
+			RebootPendingKbs:     pendingKBs,
+			RebootPendingSources: rebootSources,
 		}
 		fp := deviceStateFingerprint(rep)
 		if fp == lastFingerprint {
@@ -140,13 +153,23 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 		h.Write([]byte(kb))
 		h.Write([]byte{','})
 	}
+	// Include pending-reboot state so a newly-pending (or post-reboot cleared)
+	// device is reported promptly, not suppressed as "unchanged".
+	h.Write([]byte{'|'})
+	if rep.RebootPending {
+		h.Write([]byte("reboot-pending"))
+	}
+	for _, kb := range rep.RebootPendingKbs {
+		h.Write([]byte(kb))
+		h.Write([]byte{','})
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 // runReconciliationScan is Layer 4: the occasional (weekly) heavier offline cab
 // scan that reports MISSING updates directly, as a cross-check against the
 // server's Layer 1 diff. Uses only the local cab on disk — never the internet.
-func runReconciliationScan(cfg config.Config, buf buffer.Buffer, drainSignal chan<- struct{}) {
+func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	// bufferActionStatus queues a per-scan ActionStatus so the console can show the
 	// compliance-scan run in its unified per-action view (not just the result data).
 	bufferActionStatus := func(st *pb.ActionStatus) {
@@ -206,11 +229,20 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, drainSignal cha
 		signalDrain(drainSignal)
 	}
 
-	safeRun("patch-compliance-scan", scan) // once at startup, then on the (weekly) interval
+	safeRun("patch-compliance-scan", scan) // once at startup, then on the interval OR a trigger
 	ticker := time.NewTicker(cfg.ReconScanInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		safeRun("layer4-recon-scan", scan)
+	for {
+		select {
+		case <-ticker.C:
+			safeRun("patch-compliance-scan", scan)
+		case <-scanTrigger:
+			// A new catalog (cab) landed (or an on-demand scan was requested) — run
+			// the heavy scan now instead of waiting for the weekly tick. Install/
+			// uninstall WITHOUT a cab change is handled cheaply by the fast lane.
+			slog.Info("patch compliance scan: triggered (new catalog / on-demand)")
+			safeRun("patch-compliance-scan", scan)
+		}
 	}
 }
 

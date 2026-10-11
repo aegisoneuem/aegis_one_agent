@@ -518,6 +518,20 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			fmt.Printf("Sent command -> id: reboot-001, type: reboot, delay=%ds (signed)\n", delay)
 		}
 
+		// Optionally send a signed scan_now command (set AEGIS_SCAN_NOW=1) — forces an
+		// on-demand compliance scan on the endpoint (what a console "Scan now" does).
+		if os.Getenv("AEGIS_SCAN_NOW") != "" {
+			payload := []byte("")
+			scan := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+				CommandId: "scan-now-001", Type: "scan_now", Payload: payload, Signature: signPayload(payload),
+			}}}
+			if err := stream.Send(scan); err != nil {
+				log.Printf("failed to send scan_now: %v", err)
+				return
+			}
+			fmt.Println("Sent command -> id: scan-now-001, type: scan_now (signed)")
+		}
+
 		// Optionally send a signed cancel_reboot command (set AEGIS_CANCEL_REBOOT=1).
 		if os.Getenv("AEGIS_CANCEL_REBOOT") != "" {
 			payload := []byte("")
@@ -586,8 +600,12 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				st.ActionId, st.ActionType, st.DeviceId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d\n",
-				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs))
+			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d, reboot_pending: %v",
+				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs), ds.RebootPending)
+			if ds.RebootPending {
+				fmt.Printf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
+			}
+			fmt.Println()
 		}
 		if cf := msg.GetCacheFull(); cf != nil {
 			fmt.Printf("Received CACHE-FULL report -> device: %s, pending: %s, needed: %d, cap: %d, in_use: %d, msg: %s\n",
