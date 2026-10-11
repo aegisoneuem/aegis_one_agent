@@ -21,7 +21,7 @@ import (
 // only that service (ssOthers + its ServiceID, Online=false), reuses the same
 // rich Update extraction as the online scan, then removes the temporary service.
 // Ref: learn.microsoft.com/windows/win32/wua_sdk/using-wua-to-scan-for-updates-offline
-func ScanOffline(cabPath string) ([]Update, error) {
+func ScanOffline(cabPath string) (*OfflineScanResult, error) {
 	// AddScanPackageService requires an ABSOLUTE path to an existing cab file;
 	// a relative path throws a generic COM exception. Resolve and validate first.
 	absCab, err := filepath.Abs(cabPath)
@@ -115,15 +115,64 @@ func ScanOffline(cabPath string) ([]Update, error) {
 		return nil, fmt.Errorf("set ServiceID: %w", err)
 	}
 
-	slog.Info("offline scan: searching against local catalog")
+	// Missing: applicable + not installed.
+	missing, err := searchUpdates(searcher, "IsInstalled=0")
+	if err != nil {
+		return nil, err
+	}
+	// Offline cab scans return superseded updates as applicable. Flag (don't drop)
+	// any whose replacement is also in this set, so the console can show the
+	// superseded category while the actionable totals exclude them.
+	superseded := markSuperseded(missing)
+	var actionable int
+	var actionableMB float64
+	for _, u := range missing {
+		if u.Superseded {
+			continue
+		}
+		actionable++
+		actionableMB += u.SizeMB
+	}
+
+	// Installed: the AUTHORITATIVE installed-updates view (WUA — what the system and
+	// a UEM console show), NOT the coarse CBS-registry list. Catalog-scoped, so it
+	// is the set relevant to patch compliance.
+	installed, err := searchUpdates(searcher, "IsInstalled=1")
+	if err != nil {
+		slog.Warn("offline scan: installed-updates search failed (missing still reported)", "error", err.Error())
+		installed = nil
+	}
+
+	slog.Info("offline scan complete",
+		"applicable_missing", len(missing),
+		"actionable_missing", actionable,
+		"superseded", superseded,
+		"installed", len(installed),
+		"actionable_download_mb", fmt.Sprintf("%.1f", actionableMB))
+
+	return &OfflineScanResult{Missing: missing, Installed: installed}, nil
+}
+
+// OfflineScanResult is the outcome of an offline cab scan: the not-installed
+// applicable updates (missing; superseded ones tagged) and the installed updates
+// (the authoritative WUA view — what the system/console shows).
+type OfflineScanResult struct {
+	Missing   []Update
+	Installed []Update
+}
+
+// searchUpdates runs one WUA search against the already-scoped (offline cab)
+// searcher and returns the updates found.
+func searchUpdates(searcher *ole.IDispatch, criteria string) ([]Update, error) {
+	slog.Info("offline scan: searching catalog", "criteria", criteria)
 	stop := startHeartbeat("offline WUA search")
-	resultRaw, err := oleutil.CallMethod(searcher, "Search", "IsInstalled=0")
+	resultRaw, err := oleutil.CallMethod(searcher, "Search", criteria)
 	stop()
 	if err != nil {
 		if oleErr, ok := err.(*ole.OleError); ok {
-			return nil, fmt.Errorf("offline search failed: code=0x%X, %s", oleErr.Code(), oleErr.Description())
+			return nil, fmt.Errorf("offline search %q failed: code=0x%X, %s", criteria, oleErr.Code(), oleErr.Description())
 		}
-		return nil, fmt.Errorf("offline search failed: %w", err)
+		return nil, fmt.Errorf("offline search %q failed: %w", criteria, err)
 	}
 	result := resultRaw.ToIDispatch()
 	defer result.Release()
@@ -152,43 +201,5 @@ func ScanOffline(cabPath string) ([]Update, error) {
 		out = append(out, buildUpdate(item))
 		item.Release()
 	}
-
-	// Offline cab scans return superseded updates as applicable. Flag (don't drop)
-	// any update whose replacement is also in this set, so the console can show the
-	// superseded category while the actionable totals below exclude them.
-	superseded := markSuperseded(out)
-	var actionable int
-	var actionableMB float64
-	for _, u := range out {
-		if u.Superseded {
-			continue
-		}
-		actionable++
-		actionableMB += u.SizeMB
-	}
-	slog.Info("offline scan complete",
-		"applicable", len(out),
-		"actionable_missing", actionable,
-		"superseded", superseded,
-		"actionable_download_mb", fmt.Sprintf("%.1f", actionableMB))
-
-	// Diagnostic: if nothing is missing, distinguish "cab read fine, machine is
-	// current within the cab's scope" from "cab not actually being searched".
-	// A large installed-known count proves the cab was read and matched.
-	if len(out) == 0 {
-		if instRaw, err := oleutil.CallMethod(searcher, "Search", "IsInstalled=1"); err == nil {
-			ir := instRaw.ToIDispatch()
-			if uraw, err := oleutil.GetProperty(ir, "Updates"); err == nil {
-				u := uraw.ToIDispatch()
-				if c, err := oleutil.GetProperty(u, "Count"); err == nil {
-					slog.Info("offline scan diagnostic", "installed_updates_known_to_cab", int(c.Val),
-						"note", "large=cab read & matched (missing=0 means cab stale/limited); 0=cab not searched")
-				}
-				u.Release()
-			}
-			ir.Release()
-		}
-	}
-
 	return out, nil
 }

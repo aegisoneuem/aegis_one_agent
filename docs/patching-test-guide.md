@@ -129,13 +129,17 @@ sc stop AegisOneClient & sc start AegisOneClient
 
 | Lane | What it reports | Cost | When | Log prefix |
 |---|---|---|---|---|
-| **FAST LANE** (DeviceStateReport) | **installed** KBs + build + **reboot_pending** | ~ms (registry) | every `AEGIS_DEVICE_STATE_INTERVAL`, send **on change** | `FAST-LANE patch-state:` |
-| **FULL SCAN** (PatchScanResult) | **missing** / superseded (full metadata) | ~1-2 min (WUA cab) | startup + weekly + **new cab** + **scan_now** | `FULL-SCAN (cab):` |
+| **FAST LANE** (DeviceStateReport) | **build** (authoritative cumulative level) + **reboot_pending** | ~ms (registry) | every `AEGIS_DEVICE_STATE_INTERVAL`, send **on change** | `FAST-LANE patch-state:` |
+| **FULL SCAN** (PatchScanResult) | **missing** / **superseded** / **installed** (full metadata, authoritative WUA) | ~2-4 min (WUA cab) | startup + weekly + **new cab** + **scan_now** + **CBS change (debounced)** | `FULL-SCAN (cab):` |
 
-"Installed" comes from the fast lane; "missing (which KB + details)" comes from the full
-scan. The server correlates both by `device_id`. Every dispatched action (install/stage/
-reboot/scan) also streams a unified **`ActionStatus`** (`QUEUED→DOWNLOADING→VERIFYING→
-RUNNING→SUCCESS/FAILED/NOT_APPLICABLE`).
+The authoritative **installed AND missing** lists both come from the FULL SCAN (WUA —
+what the system/console shows). The fast lane carries only the cheap, authoritative
+**build** + **reboot_pending** (the coarse CBS installed-KB list was dropped as
+misleading). The server correlates by `device_id`. Every dispatched action (install/
+uninstall/stage/reboot/scan) also streams a unified **`ActionStatus`**
+(`QUEUED→DOWNLOADING→VERIFYING→RUNNING→SUCCESS/FAILED/NOT_APPLICABLE`), so per-patch
+install/uninstall is known **instantly** (no scan needed); the full scan reconciles the
+broader picture and is triggered automatically on any CBS servicing change (debounced).
 
 ---
 
@@ -170,7 +174,7 @@ Expect `...SUCCESS exit_code=3010 reboot_required=true`, then the fast lane:
 ```
 patch state report -> ... reboot_pending: true (sources=[CBS], awaiting_kbs=[KB_______])
 ```
-**Reboot the VM** → next report `reboot_pending: false`, the KB now in `installed_kbs`, build advanced.
+**Reboot the VM** → next report `reboot_pending: false`, build advanced; the next full scan lists the KB under `installed`.
 
 ### UC-4 — Multiple patches (serial)
 Comma-separate (same index across lists):
@@ -186,14 +190,21 @@ time — the servicing stack is serial); other traffic stays responsive meanwhil
 ### UC-5 — Reinstall (idempotency)
 Send an install for a KB already installed → `phase=NOT_APPLICABLE reason="already installed (skipped)"` (no DISM).
 
-### UC-6 — Uninstall detection
-Today the agent auto-**detects** an uninstall (it does not yet uninstall on command —
-see note). Uninstall a patch via **Settings → Windows Update → Uninstall updates**
-(reboot if it asks). The agent's fast lane picks up the installed-set/build change and a
-full scan re-lists it as **missing**. Watch `installed_kbs` shrink / the next
-`FULL-SCAN` report it missing again.
-> **Note:** an agent-driven `uninstall_patch` command is not yet implemented (ask the
-> agent team). Detection of externally-uninstalled patches works today.
+### UC-6 — Uninstall (command) + auto-detect
+**Agent-driven** (console/server): send an uninstall via the mock server —
+```cmd
+set AEGIS_ENROLL_TOKEN=tenant-abc-123
+set AEGIS_UNINSTALL_KB=KB5062170
+mockserver.exe
+```
+→ `action status type=patch_uninstall RUNNING→SUCCESS` (NOT_APPLICABLE if the KB isn't
+installed; reboot_required if a reboot is needed to finalize). **Instant** feedback.
+
+**Manual / external** (Settings → Uninstall updates): no ActionStatus, but the agent's
+**CBS servicing watch** detects the change and, after a short debounce (~1 min), triggers
+a full scan that re-lists the KB as **missing** (and drops it from `installed`). So both
+agent-driven and manual changes are detected — agent-driven instantly, manual within a
+couple of minutes.
 
 ### UC-7 — Pre-cache (peer-cache staging) then install from cache
 ```cmd

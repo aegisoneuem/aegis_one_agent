@@ -68,6 +68,10 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			rebootStore.clear()
 		}
 
+		// Fast lane carries only cheap, authoritative signals: the OS build (the
+		// authoritative cumulative level) + pending-reboot. The installed-updates
+		// LIST is NOT sent here (the coarse CBS list was misleading) — the
+		// authoritative installed set comes from the full scan (PatchScanResult).
 		rep := &pb.DeviceStateReport{
 			DeviceId:             cfg.DeviceID,
 			ProductName:          state.ProductName,
@@ -75,7 +79,6 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			Build:                state.FullBuild,
 			Architecture:         state.Architecture,
 			CollectedAt:          time.Now().Unix(),
-			InstalledKbs:         state.InstalledKBs,
 			RebootPending:        rebootPending,
 			RebootPendingKbs:     pendingKBs,
 			RebootPendingSources: rebootSources,
@@ -95,7 +98,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			return
 		}
 		lastFingerprint = fp
-		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs), "kbs", rep.InstalledKbs, "reboot_pending", rep.RebootPending)
+		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "reboot_pending", rep.RebootPending)
 		signalDrain(drainSignal)
 	}
 
@@ -148,13 +151,9 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 	h.Write([]byte(rep.Build))
 	h.Write([]byte{'|'})
 	h.Write([]byte(rep.Architecture))
-	h.Write([]byte{'|'})
-	for _, kb := range rep.InstalledKbs {
-		h.Write([]byte(kb))
-		h.Write([]byte{','})
-	}
-	// Include pending-reboot state so a newly-pending (or post-reboot cleared)
-	// device is reported promptly, not suppressed as "unchanged".
+	// Pending-reboot state so a newly-pending (or post-reboot cleared) device is
+	// reported promptly, not suppressed as "unchanged". (The installed-KB list is no
+	// longer in the fast lane; servicing-set changes are caught by the CBS watch.)
 	h.Write([]byte{'|'})
 	if rep.RebootPending {
 		h.Write([]byte("reboot-pending"))
@@ -189,7 +188,7 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 		actionID := fmt.Sprintf("scan-%d", time.Now().Unix())
 		started := time.Now().Unix()
 		slog.Info("FULL-SCAN (cab): starting offline cab scan", "cab", cfg.WsusScanCab)
-		updates, err := patch.ScanOffline(cfg.WsusScanCab)
+		scan, err := patch.ScanOffline(cfg.WsusScanCab)
 		if err != nil {
 			// Fail loud: an errored scan is UNKNOWN, never silently "compliant".
 			slog.Error("FULL-SCAN (cab): scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
@@ -200,7 +199,7 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 			})
 			return
 		}
-		result := buildScanResult(cfg, updates)
+		result := buildScanResult(cfg, scan)
 		payload, err := proto.Marshal(result)
 		if err != nil {
 			slog.Error("FULL-SCAN (cab): marshal failed", "error", err.Error())
@@ -225,11 +224,11 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 			missingKBs = append(missingKBs, tag)
 		}
 		slog.Info("FULL-SCAN (cab): result buffered for sending",
-			"missing", len(result.Missing), "actionable", actionable, "superseded", superseded, "kbs", missingKBs)
+			"missing", actionable, "superseded", superseded, "installed", len(result.Installed), "missing_kbs", missingKBs)
 		bufferActionStatus(&pb.ActionStatus{
 			ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
 			Phase:  pb.ActionPhase_ACTION_PHASE_SUCCESS,
-			Reason: fmt.Sprintf("%d applicable (%d missing, %d superseded)", len(result.Missing), actionable, superseded),
+			Reason: fmt.Sprintf("%d missing, %d superseded, %d installed", actionable, superseded, len(result.Installed)),
 			StartedAt: started, FinishedAt: time.Now().Unix(),
 		})
 		signalDrain(drainSignal)
@@ -254,16 +253,31 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 	}
 }
 
-func buildScanResult(cfg config.Config, updates []patch.Update) *pb.PatchScanResult {
+func buildScanResult(cfg config.Config, scan *patch.OfflineScanResult) *pb.PatchScanResult {
 	state, err := patch.CollectLocalState()
 	if err != nil {
-		slog.Warn("reconciliation (Layer 4): could not read local state for report", "error", err.Error())
+		slog.Warn("FULL-SCAN (cab): could not read local state for report", "error", err.Error())
 		state = &patch.LocalState{}
 	}
+	return &pb.PatchScanResult{
+		DeviceId:       cfg.DeviceID,
+		ProductName:    state.ProductName,
+		DisplayVersion: state.DisplayVersion,
+		Build:          state.FullBuild,
+		Architecture:   state.Architecture,
+		CollectedAt:    time.Now().Unix(),
+		Source:         "offline-cab",
+		Missing:        toMissingUpdates(scan.Missing),
+		Installed:      toMissingUpdates(scan.Installed),
+	}
+}
 
-	missing := make([]*pb.MissingUpdate, 0, len(updates))
+// toMissingUpdates maps the rich internal Update metadata onto the wire type
+// (used for both the missing and the installed lists).
+func toMissingUpdates(updates []patch.Update) []*pb.MissingUpdate {
+	out := make([]*pb.MissingUpdate, 0, len(updates))
 	for _, u := range updates {
-		missing = append(missing, &pb.MissingUpdate{
+		out = append(out, &pb.MissingUpdate{
 			UpdateId:            u.UpdateID,
 			KbArticleIds:        u.KBArticleIDs,
 			Title:               u.Title,
@@ -283,15 +297,5 @@ func buildScanResult(cfg config.Config, updates []patch.Update) *pb.PatchScanRes
 			MinSizeMb:           u.MinSizeMB,
 		})
 	}
-
-	return &pb.PatchScanResult{
-		DeviceId:       cfg.DeviceID,
-		ProductName:    state.ProductName,
-		DisplayVersion: state.DisplayVersion,
-		Build:          state.FullBuild,
-		Architecture:   state.Architecture,
-		CollectedAt:    time.Now().Unix(),
-		Source:         "offline-cab",
-		Missing:        missing,
-	}
+	return out
 }

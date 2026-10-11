@@ -626,8 +626,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				st.ActionId, st.ActionType, st.DeviceId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, installed_kbs: %d %v, reboot_pending: %v",
-				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, len(ds.InstalledKbs), ds.InstalledKbs, ds.RebootPending)
+			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, reboot_pending: %v",
+				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending)
 			if ds.RebootPending {
 				fmt.Printf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}
@@ -648,8 +648,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					actionable++
 				}
 			}
-			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, applicable: %d (missing: %d, superseded: %d)\n",
-				psr.DeviceId, psr.Build, psr.Architecture, psr.Source, len(psr.Missing), actionable, superseded)
+			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d, superseded: %d, INSTALLED: %d\n",
+				psr.DeviceId, psr.Build, psr.Architecture, psr.Source, actionable, superseded, len(psr.Installed))
 			for _, m := range psr.Missing {
 				tag := "MISSING"
 				if m.Superseded {
@@ -658,6 +658,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				fmt.Printf("    - [%s][%s] %s (KB=%v, MS=%v, severity=%s, size=%.1f-%.1fMB, reboot=%v, cves=%v, supersedes=%v)\n",
 					tag, m.Classification, m.Title, m.KbArticleIds, m.SecurityBulletinIds, m.MsrcSeverity,
 					m.MinSizeMb, m.SizeMb, m.RebootRequired, m.CveIds, m.SupersededUpdateIds)
+			}
+			for _, m := range psr.Installed {
+				fmt.Printf("    - [INSTALLED][%s] %s (KB=%v, severity=%s)\n",
+					m.Classification, m.Title, m.KbArticleIds, m.MsrcSeverity)
 			}
 		}
 	}

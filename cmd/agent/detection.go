@@ -43,7 +43,7 @@ func drainReports(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) 
 			if err := stream.Send(msg); err != nil {
 				return err // keep for retry
 			}
-			slog.Info("sent device-state report to server", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
+			slog.Info("sent device-state report to server", "build", rep.Build, "reboot_pending", rep.RebootPending)
 			return nil
 
 		case kindPatchScanResult:

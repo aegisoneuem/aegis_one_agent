@@ -36,7 +36,12 @@ func main() {
 	var updates []patch.Update
 	if cab != "" {
 		fmt.Printf("Offline reconciliation scan using catalog: %s\n", cab)
-		updates, err = patch.ScanOffline(cab)
+		var res *patch.OfflineScanResult
+		res, err = patch.ScanOffline(cab)
+		if res != nil {
+			updates = res.Missing // this diagnostic tool reports the applicable/missing set
+			fmt.Printf("(installed updates known to catalog: %d)\n", len(res.Installed))
+		}
 	} else {
 		fmt.Println("Scanning for missing Windows updates (online)...")
 		updates, err = patch.ScanWindowsUpdates()
