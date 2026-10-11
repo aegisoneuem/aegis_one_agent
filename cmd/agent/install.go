@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -134,7 +135,9 @@ func (p *patchInstaller) runInstall(job installJob) {
 	}
 
 	slog.Info("install_patch: running", "command_id", cmdID, "kb", kb, "from_cache", fromCache)
+	stopPings := p.startProgressPings(cmdID, actionPatchInstall, kb, started)
 	st := handleInstallPatch(job.spec, installPath, p.timeout, p.maxAttempts, p.retryBackoff, emit)
+	stopPings()
 	// Stamp the action-correlation fields the console tracks by (handleInstallPatch
 	// only fills the install-specific fields).
 	st.ActionId = cmdID
@@ -195,7 +198,9 @@ func (p *patchInstaller) runUninstall(job installJob) {
 		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, StartedAt: started,
 	})
 	slog.Info("uninstall_patch: running", "command_id", cmdID, "kb", kb)
+	stopPings := p.startProgressPings(cmdID, actionPatchUninstall, kb, started)
 	res := patch.UninstallKB(kb, p.timeout)
+	stopPings()
 
 	st := &pb.ActionStatus{
 		ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
@@ -216,6 +221,37 @@ func (p *patchInstaller) runUninstall(job installJob) {
 	sendStatus(p.outbox, st)
 	slog.Info("uninstall_patch: finished", "command_id", cmdID, "kb", kb,
 		"phase", st.Phase.String(), "exit_code", st.ExitCode, "reboot_required", st.RebootRequired, "reason", st.Reason)
+}
+
+// progressPingInterval is how often the agent re-sends a RUNNING ActionStatus to
+// the server during a long install/uninstall, so the console shows the action is
+// still progressing (not stuck) — like BigFix's running state.
+const progressPingInterval = 30 * time.Second
+
+// startProgressPings streams periodic RUNNING updates (with elapsed time) to the
+// server for a long-running action, and returns a stop func to call when it ends.
+func (p *patchInstaller) startProgressPings(cmdID, actionType, kb string, started int64) func() {
+	stop := make(chan struct{})
+	go func() {
+		defer recoverLog("progress-pings")
+		t := time.NewTicker(progressPingInterval)
+		defer t.Stop()
+		begin := time.Now()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				sendStatus(p.outbox, &pb.ActionStatus{
+					ActionId: cmdID, ActionType: actionType, DeviceId: p.deviceID, Kb: kb,
+					Phase:     pb.ActionPhase_ACTION_PHASE_RUNNING,
+					Reason:    fmt.Sprintf("in progress (elapsed %s)", time.Since(begin).Round(time.Second)),
+					StartedAt: started,
+				})
+			}
+		}
+	}()
+	return func() { close(stop) }
 }
 
 // sendStatus queues an ActionStatus for the sender goroutine to transmit.
