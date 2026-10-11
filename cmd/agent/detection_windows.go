@@ -42,7 +42,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		state, err := patch.CollectLocalState()
 		if err != nil {
 			// Fail loud: unknown local state is not "nothing installed".
-			slog.Error("patch state report: could not read local state", "error", err.Error())
+			slog.Error("FAST-LANE patch-state: could not read local state", "error", err.Error())
 			return
 		}
 
@@ -82,20 +82,20 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		}
 		fp := deviceStateFingerprint(rep)
 		if fp == lastFingerprint {
-			slog.Debug("patch state report: unchanged, skipping send", "build", rep.Build)
+			slog.Debug("FAST-LANE patch-state: no change this cycle (skip send)", "build", rep.Build, "interval", cfg.DeviceStateInterval.String())
 			return
 		}
 		payload, err := proto.Marshal(rep)
 		if err != nil {
-			slog.Error("patch state report: marshal failed", "error", err.Error())
+			slog.Error("FAST-LANE patch-state: marshal failed", "error", err.Error())
 			return
 		}
 		if err := buf.Enqueue(kindDeviceState, payload); err != nil {
-			slog.Error("patch state report: could not buffer report", "error", err.Error())
+			slog.Error("FAST-LANE patch-state: could not buffer report", "error", err.Error())
 			return
 		}
 		lastFingerprint = fp
-		slog.Info("patch state report: buffered for sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs))
+		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "installed_kbs", len(rep.InstalledKbs), "reboot_pending", rep.RebootPending)
 		signalDrain(drainSignal)
 	}
 
@@ -175,11 +175,11 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 	bufferActionStatus := func(st *pb.ActionStatus) {
 		payload, err := proto.Marshal(st)
 		if err != nil {
-			slog.Warn("patch compliance scan: could not marshal action status", "error", err.Error())
+			slog.Warn("FULL-SCAN (cab): could not marshal action status", "error", err.Error())
 			return
 		}
 		if err := buf.Enqueue(kindActionStatus, payload); err != nil {
-			slog.Warn("patch compliance scan: could not buffer action status", "error", err.Error())
+			slog.Warn("FULL-SCAN (cab): could not buffer action status", "error", err.Error())
 			return
 		}
 		signalDrain(drainSignal)
@@ -188,11 +188,11 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 	scan := func() {
 		actionID := fmt.Sprintf("scan-%d", time.Now().Unix())
 		started := time.Now().Unix()
-		slog.Info("patch compliance scan: starting offline cab scan", "cab", cfg.WsusScanCab)
+		slog.Info("FULL-SCAN (cab): starting offline cab scan", "cab", cfg.WsusScanCab)
 		updates, err := patch.ScanOffline(cfg.WsusScanCab)
 		if err != nil {
 			// Fail loud: an errored scan is UNKNOWN, never silently "compliant".
-			slog.Error("patch compliance scan: scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
+			slog.Error("FULL-SCAN (cab): scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
 			bufferActionStatus(&pb.ActionStatus{
 				ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
 				Phase: pb.ActionPhase_ACTION_PHASE_FAILED, Reason: "scan failed: " + err.Error(),
@@ -203,11 +203,11 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 		result := buildScanResult(cfg, updates)
 		payload, err := proto.Marshal(result)
 		if err != nil {
-			slog.Error("patch compliance scan: marshal failed", "error", err.Error())
+			slog.Error("FULL-SCAN (cab): marshal failed", "error", err.Error())
 			return
 		}
 		if err := buf.Enqueue(kindPatchScanResult, payload); err != nil {
-			slog.Error("patch compliance scan: could not buffer result", "error", err.Error())
+			slog.Error("FULL-SCAN (cab): could not buffer result", "error", err.Error())
 			return
 		}
 		// Count actionable vs superseded for the per-action summary the console shows.
@@ -219,7 +219,7 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 				actionable++
 			}
 		}
-		slog.Info("patch compliance scan: result buffered for sending", "missing", len(result.Missing))
+		slog.Info("FULL-SCAN (cab): result buffered for sending", "missing", len(result.Missing))
 		bufferActionStatus(&pb.ActionStatus{
 			ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
 			Phase:  pb.ActionPhase_ACTION_PHASE_SUCCESS,
@@ -229,18 +229,20 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 		signalDrain(drainSignal)
 	}
 
+	slog.Info("FULL-SCAN (cab): running at startup (heavy; then only on weekly interval / new catalog / on-demand)")
 	safeRun("patch-compliance-scan", scan) // once at startup, then on the interval OR a trigger
 	ticker := time.NewTicker(cfg.ReconScanInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
+			slog.Info("FULL-SCAN (cab): running on the periodic interval", "interval", cfg.ReconScanInterval.String())
 			safeRun("patch-compliance-scan", scan)
 		case <-scanTrigger:
 			// A new catalog (cab) landed (or an on-demand scan was requested) — run
 			// the heavy scan now instead of waiting for the weekly tick. Install/
 			// uninstall WITHOUT a cab change is handled cheaply by the fast lane.
-			slog.Info("patch compliance scan: triggered (new catalog / on-demand)")
+			slog.Info("FULL-SCAN (cab): triggered (new catalog / on-demand)")
 			safeRun("patch-compliance-scan", scan)
 		}
 	}
