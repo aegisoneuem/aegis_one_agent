@@ -683,6 +683,11 @@ func runProcess(ctx context.Context) {
 	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf, baseline, rebootStore, scanTrigger, drainSignal)
 
+	// Watch the servicing store (CBS) and debounce-trigger a re-scan on any local
+	// install/uninstall — instant auto-detect without running the heavy scan on a
+	// timer (event-driven; no-op on non-Windows).
+	go watchServicingForRescan(ctx, scanTrigger)
+
 	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
