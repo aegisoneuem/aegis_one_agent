@@ -86,10 +86,14 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 	if !res.Success && !strings.Contains(strings.ToLower(res.Reason), "disk space") {
 		slog.Info("install_patch: DISM could not install this .msu — falling back to wusa (the manual install path)", "kb", spec.Kb, "dism_exit", res.ExitCode, "dism_reason", res.Reason)
 		if wres := patch.RunWUSAInstall(installPath, timeout); wres != nil {
-			if wres.Success {
+			switch {
+			case wres.AlreadyInstalled:
+				slog.Info("install_patch: wusa reports the KB is already installed — nothing to do", "kb", spec.Kb, "exit_code", wres.ExitCode)
+				res = wres
+			case wres.Success:
 				slog.Info("install_patch: installed via wusa fallback", "kb", spec.Kb, "exit_code", wres.ExitCode, "reboot_required", wres.RebootRequired)
 				res = wres
-			} else {
+			default:
 				res.Detail = strings.TrimSpace(res.Detail + "\n-- wusa fallback also failed: " + wres.Reason + " --\n" + wres.Detail)
 			}
 		}
@@ -101,9 +105,17 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 		RebootRequired: res.RebootRequired,
 		Detail:         res.Detail,
 	}
-	if res.Success {
+	switch {
+	case res.AlreadyInstalled:
+		// The installer (DISM/wusa) found the KB already present — report it as a
+		// no-op, NOT a fresh install. This catches the case where the cheap CBS
+		// pre-check missed it (CBS state is not always authoritative).
+		st.Phase = pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE
+		st.Reason = "already installed (nothing to do)"
+		st.RebootRequired = false // nothing was installed this time
+	case res.Success:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
-	} else {
+	default:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_FAILED
 		st.Reason = res.Reason // concise, classified failure cause
 		if st.Reason == "" {

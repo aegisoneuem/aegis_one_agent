@@ -21,13 +21,13 @@ import (
 // the buffer (the sender goroutine drains it), never the network.
 //   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
 //   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
-func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
+func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, installedSet *installedStore, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	go runDeviceStateReport(cfg, buf, baseline, rebootStore, drainSignal)
 	if cfg.WsusScanCab == "" {
 		slog.Info("patch compliance scan disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
 	}
-	go runReconciliationScan(cfg, buf, scanTrigger, drainSignal)
+	go runReconciliationScan(cfg, buf, installedSet, scanTrigger, drainSignal)
 }
 
 // runDeviceStateReport is Layer 1: read installed KBs + build locally (registry
@@ -168,7 +168,7 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 // runReconciliationScan is Layer 4: the occasional (weekly) heavier offline cab
 // scan that reports MISSING updates directly, as a cross-check against the
 // server's Layer 1 diff. Uses only the local cab on disk — never the internet.
-func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
+func runReconciliationScan(cfg config.Config, buf buffer.Buffer, installedSet *installedStore, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	// bufferActionStatus queues a per-scan ActionStatus so the console can show the
 	// compliance-scan run in its unified per-action view (not just the result data).
 	bufferActionStatus := func(st *pb.ActionStatus) {
@@ -185,6 +185,20 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 	}
 
 	scan := func() {
+		// Never run the heavy scan while the agent is installing/uninstalling — they
+		// contend on WU/TrustedInstaller (slow install + half-applied scan data). If a
+		// servicing op is in progress, defer: the CBS watch re-triggers a scan once it
+		// settles, so the scan is not lost.
+		if servicingBusy.Load() {
+			slog.Info("FULL-SCAN (cab): deferred — an install/uninstall is in progress; will re-scan after it settles")
+			return
+		}
+		if !servicingGate.TryLock() {
+			slog.Info("FULL-SCAN (cab): deferred — a servicing op just started; will re-scan after it settles")
+			return
+		}
+		defer servicingGate.Unlock()
+
 		actionID := fmt.Sprintf("scan-%d", time.Now().Unix())
 		started := time.Now().Unix()
 		slog.Info("FULL-SCAN (cab): starting offline cab scan", "cab", cfg.WsusScanCab)
@@ -225,6 +239,14 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, scanTrigger <-c
 		}
 		slog.Info("FULL-SCAN (cab): result buffered for sending",
 			"missing", actionable, "superseded", superseded, "installed", len(result.Installed), "missing_kbs", missingKBs)
+
+		// Persist the authoritative installed-KB set so the install worker can RELIABLY
+		// skip an already-applied patch (the cheap CBS check misses some updates).
+		installedKBs := make([]string, 0, len(result.Installed))
+		for _, u := range result.Installed {
+			installedKBs = append(installedKBs, u.KbArticleIds...)
+		}
+		installedSet.replace(installedKBs)
 		bufferActionStatus(&pb.ActionStatus{
 			ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
 			Phase:  pb.ActionPhase_ACTION_PHASE_SUCCESS,

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +31,16 @@ type installJob struct {
 // (manual) changes happen while this is false and trigger a scan as normal.
 var servicingBusy atomic.Bool
 
+// servicingGate serializes the agent's OWN install/uninstall against the heavy
+// offline compliance scan. Both pound the same Windows Update / TrustedInstaller
+// plumbing, so running them together starves each other — a wusa install that
+// takes ~3 min alone can drag to 15+ min while a scan runs, and the scan reads a
+// half-applied state (wrong "installed"/"missing" counts). The install/uninstall
+// takes the lock (waiting out an in-flight scan, bounded); the scan TryLock-skips
+// and is re-triggered after the op settles (via the CBS watch). Only one heavy
+// servicing op touches WU at a time.
+var servicingGate sync.Mutex
+
 // phaseEmitter streams an ActionPhase for the current job (QUEUED is emitted by
 // the receiver; VERIFYING/RUNNING by the platform install handler).
 type phaseEmitter func(pb.ActionPhase)
@@ -41,9 +52,21 @@ type patchInstaller struct {
 	tmpDir       string
 	deviceID     string
 	rebootStore  *rebootPendingStore
+	installedSet *installedStore
 	timeout      time.Duration
 	maxAttempts  int
 	retryBackoff time.Duration
+}
+
+// isInstalled reports whether the KB is already present, using the AUTHORITATIVE
+// last-scan installed set first (WUA ground truth) and falling back to the cheap
+// CBS check. The CBS check alone misses some updates, so the scan set is what
+// lets the agent reliably skip a redundant install of an already-applied patch.
+func (p *patchInstaller) isInstalled(kb string) bool {
+	if p.installedSet != nil && p.installedSet.has(kb) {
+		return true
+	}
+	return alreadyInstalled(kb)
 }
 
 // patchWorker runs patch installs ONE AT A TIME. The Windows servicing stack
@@ -95,7 +118,17 @@ func cacheID(spec *pb.InstallPatchSpec) string {
 
 func (p *patchInstaller) runInstall(job installJob) {
 	servicingBusy.Store(true)
-	defer servicingBusy.Store(false)
+	// Serialize against the compliance scan: wait out any in-flight scan, and keep
+	// scans from starting while we install (they contend on WU/TrustedInstaller).
+	if !servicingGate.TryLock() {
+		slog.Info("install_patch: waiting for an in-flight compliance scan to finish before installing",
+			"command_id", job.commandID, "kb", job.spec.Kb)
+		servicingGate.Lock()
+	}
+	defer func() {
+		servicingGate.Unlock()
+		servicingBusy.Store(false)
+	}()
 	cmdID, kb := job.commandID, job.spec.Kb
 	started := time.Now().Unix()
 	emit := func(phase pb.ActionPhase) {
@@ -107,7 +140,7 @@ func (p *patchInstaller) runInstall(job installJob) {
 
 	// Idempotency guard: if the KB is already installed, skip the whole flow
 	// (no decrypt, no DISM) and report NOT_APPLICABLE — don't redo applied work.
-	if alreadyInstalled(kb) {
+	if p.isInstalled(kb) {
 		slog.Info("install_patch: already installed, skipping", "command_id", cmdID, "kb", kb)
 		sendStatus(p.outbox, &pb.ActionStatus{
 			ActionId: cmdID, ActionType: actionPatchInstall, DeviceId: p.deviceID, Kb: kb,
@@ -191,11 +224,15 @@ func (p *patchInstaller) runInstall(job installJob) {
 // serial worker as installs (the servicing stack is single-operation).
 func (p *patchInstaller) runUninstall(job installJob) {
 	servicingBusy.Store(true)
-	defer servicingBusy.Store(false)
+	servicingGate.Lock()
+	defer func() {
+		servicingGate.Unlock()
+		servicingBusy.Store(false)
+	}()
 	cmdID, kb := job.commandID, job.spec.Kb
 	started := time.Now().Unix()
 
-	if !alreadyInstalled(kb) {
+	if !p.isInstalled(kb) {
 		slog.Info("uninstall_patch: not installed, nothing to do", "command_id", cmdID, "kb", kb)
 		sendStatus(p.outbox, &pb.ActionStatus{
 			ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
@@ -221,6 +258,9 @@ func (p *patchInstaller) runUninstall(job installJob) {
 	}
 	if res.Success {
 		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
+		// Drop it from the authoritative installed set NOW so a quick reinstall is not
+		// wrongly skipped before the post-uninstall rescan refreshes the set.
+		p.installedSet.remove(kb)
 		// A reboot may be needed to finalize the removal — track it so the device's
 		// pending-reboot report names this KB.
 		if res.RebootRequired && p.rebootStore != nil {

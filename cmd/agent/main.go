@@ -673,10 +673,14 @@ func runProcess(ctx context.Context) {
 	// Tracks which installed KBs are awaiting a reboot (for the device-level
 	// pending-reboot report). Shared by the installer (writes) and detection (reads).
 	rebootStore := newRebootPendingStore(cfg.SecureDir)
+	// Authoritative installed-KB set from the last full scan — the install worker
+	// reads it as a reliable "already installed?" pre-check; detection refreshes it.
+	installedSet := newInstalledStore(cfg.SecureDir)
 	inst := &patchInstaller{
 		outbox: outbox, cache: cache, tmpDir: tmpDir, deviceID: cfg.DeviceID, rebootStore: rebootStore,
-		timeout: cfg.InstallTimeout,
-		maxAttempts: cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
+		installedSet: installedSet,
+		timeout:      cfg.InstallTimeout,
+		maxAttempts:  cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
 	}
 	go inst.patchWorker(installJobs)
 
@@ -701,7 +705,7 @@ func runProcess(ctx context.Context) {
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
-	go runPatchDetection(cfg, buf, baseline, rebootStore, scanTrigger, drainSignal)
+	go runPatchDetection(cfg, buf, baseline, rebootStore, installedSet, scanTrigger, drainSignal)
 
 	// Watch the servicing store (CBS) and debounce-trigger a re-scan on any local
 	// install/uninstall — instant auto-detect without running the heavy scan on a
