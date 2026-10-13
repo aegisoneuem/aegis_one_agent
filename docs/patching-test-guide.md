@@ -99,6 +99,29 @@ No server-side change. On the 2nd VM's install, set:
 - same `AEGIS_ENROLL_TOKEN` + same `ca.crt`.
 **Fresh install per VM** — never copy `identity.json`/client cert between VMs (would duplicate identity).
 
+### 2.7 Agent on-disk layout
+Everything the agent owns lives under one install root (like BigFix's `BES Client\`):
+```
+C:\Program Files\AegisOne\Client\
+  AegisOneClient.exe            ← service binary (Task Manager: "AegisOne Agent")
+  SKVC\                         ← all agent state (secure key vault + cache); per-device, never copied between machines
+    config.json                 ← optional; absent by default (settings come from the registry)
+    identity.json               ← persisted device identity (hardware-bound)
+    wsusscn2.cab                ← offline compliance catalog (delivered via peer-cache)
+    installed-kbs.json          ← authoritative installed-KB set from the last full scan (install pre-check)
+    reboot-pending.json         ← KBs the agent installed that await a reboot
+    certs\                      ← ca.crt, client.crt, client.key.enc (DPAPI-sealed key)
+    cache\                      ← staged (pre-cached) encrypted patches
+    download\                   ← server-delivered runtime patch files (just-in-time)
+    buffer\patch-buffer.jsonl   ← durable outbound report buffer (survives disconnect)
+    logs\agent-YYYY-MM-DD.log   ← daily rotating agent log (kept AEGIS_LOG_MAX_AGE_DAYS)
+```
+Maps to BigFix: `SKVC\` ≈ `__BESData\`, `certs\` ≈ `KeyStorage\`/`TrustedDownloadCerts\`,
+`logs\` ≈ the root `*.log`, the exe at the root like `BESClient.exe`. On uninstall the MSI
+removes the program files; `SKVC\` (identity/certs/cache) is left by policy — delete it
+separately for a full decommission wipe (keeping it across reinstall is fine; the server
+reconciles by hardware fingerprint).
+
 ---
 
 ## 3. Config reference (how to change agent settings)
@@ -187,8 +210,12 @@ mockserver.exe
 Expect `install-001` runs to terminal, **then** `install-002` (patches install one at a
 time — the servicing stack is serial); other traffic stays responsive meanwhile.
 
-### UC-5 — Reinstall (idempotency)
-Send an install for a KB already installed → `phase=NOT_APPLICABLE reason="already installed (skipped)"` (no DISM).
+### UC-5 — Reinstall (idempotency — reliable, two layers)
+Send an install for a KB that is already installed → `phase=NOT_APPLICABLE`, no DISM/wusa run. Two independent guards make this reliable:
+1. **Pre-check** against the authoritative last-scan installed set (`SKVC\installed-kbs.json`, refreshed by every full scan). If the KB is there → `reason="already installed (skipped)"` — the installer is never invoked. (The cheap CBS registry check is a fallback; it alone misses some updates, which is why the scan set is authoritative.)
+2. **Installer-level** catch — if the pre-check misses it (e.g. no scan yet), DISM/wusa itself reports "already installed" (wusa exit `2359302` / `0x240006`) → `reason="already installed (nothing to do)"`. So a redundant install of an already-present patch is **always** reported as NOT_APPLICABLE, never a misleading SUCCESS.
+
+A redelivered command after a reboot/reconnect (the mock resends on every connect) therefore reports NOT_APPLICABLE, not a second install.
 
 ### UC-6 — Uninstall (command) + auto-detect
 **Agent-driven** (console/server): send an uninstall via the mock server —
@@ -199,6 +226,24 @@ mockserver.exe
 ```
 → `action status type=patch_uninstall RUNNING→SUCCESS` (NOT_APPLICABLE if the KB isn't
 installed; reboot_required if a reboot is needed to finalize). **Instant** feedback.
+
+The agent removes updates via the **Windows Update Agent (WUA) COM API**, NOT `wusa.exe`
+— wusa's silent `/uninstall /quiet` returns `ERROR_INVALID_PARAMETER (0x57)` from a
+non-interactive LocalSystem service, even though it works in an interactive admin
+session. WUA works in session 0, needs no internet, and uses no PowerShell.
+
+> **⚠ Known limitation — cumulative / baked-in updates may be non-removable.**
+> Latest **cumulative updates (LCU)**, **servicing-stack updates (SSU)**, and updates
+> **baked into the OS image** often cannot be removed programmatically — Windows has no
+> removal data for them. The agent reports this **fail-loud and clear**, e.g.
+> `WU_E_ALL_UPDATES_FAILED (0x80240022)` → *"commonly a cumulative/baked-in update WUA
+> cannot remove. If removal is required, try Control Panel → Installed Updates (manual)
+> which uses a different (wusa/CBS) path."* In testing, Control Panel's manual uninstall
+> (which shells out to wusa interactively) can succeed where the programmatic path
+> cannot. **Server team: treat a failed uninstall of a cumulative/SSU as expected; the
+> message tells the operator to fall back to the manual Control-Panel path.** A more
+> complete DISM `/Remove-Package` based uninstall is a planned follow-up (see
+> [server-team-handoff.md](server-team-handoff.md)).
 
 **Manual / external** (Settings → Uninstall updates): no ActionStatus, but the agent's
 **CBS servicing watch** detects the change and, after a short debounce (~1 min), triggers
@@ -268,10 +313,37 @@ mockserver.exe
 ### UC-14 — Failure scenarios (all fail **loud + clear**, no silent drop)
 - **Wrong hash** → `FAILED` "sha256 mismatch" (DISM never runs).
 - **File missing** → `FAILED` "file not found".
-- **Wrong-OS / not-applicable patch** (e.g. a Win11 .msu on Server 2022) → `FAILED`
-  "patch not applicable to this OS edition/build …" (DISM exit 50) — fails fast, no retry.
 - **Insufficient disk** → `FAILED` "insufficient disk space …" (DISM exit 112) — CBS rolls
   back; the system stays unpatched (not broken).
+- **Genuinely wrong-OS patch** → `FAILED` with a classified reason — fails fast, no retry.
+
+### UC-14b — DISM → wusa install fallback (Server 2022 especially)
+Some `.msu` (seen on Windows Server 2022) **cannot be installed by DISM** — DISM returns
+`exit 50 / 0x80070032 "The request is not supported"`. This is **not** a real failure of
+the patch: the agent automatically **falls back to `wusa.exe`** (the manual "install this
+update" path) and the install succeeds. The logs make the sequence explicit:
+```
+deploy: DISM attempt failed ... exit_code=50 "DISM does not support installing this .msu (exit 50 …) — handled by the wusa fallback"
+install_patch: DISM could not install this .msu — falling back to wusa (the manual install path)
+deploy: wusa install succeeded exit_code=0|3010 reboot_required=..
+```
+So a DISM exit-50 WARN in the log is expected on some packages — look for the wusa line
+right after. (The disk pre-flight failure is NOT retried via wusa — wusa needs the same
+free space.)
+
+### UC-14c — Scan ↔ install never overlap (serialization)
+The heavy compliance scan and an install/uninstall both hammer Windows Update /
+TrustedInstaller, so the agent **serializes** them (only one touches WU at a time):
+- If a scan is **in flight** when an install arrives, the install logs
+  `install_patch: waiting for an in-flight compliance scan to finish before installing`,
+  then runs once the scan completes.
+- If an install/uninstall is **in progress** when a scan would run, the scan logs
+  `FULL-SCAN (cab): deferred — an install/uninstall is in progress; will re-scan after it settles`
+  and the post-op CBS watch re-triggers it afterwards.
+
+You should **never** see `wusa install` and `offline WUA search` both logging "still
+working" at the same time. This keeps installs fast and prevents the scan from reading a
+half-applied state (wrong installed/missing counts).
 
 ### UC-15 — Disk pre-flight (fileSize × 2)
 Before installing, the agent requires free disk ≥ `fileSize × AEGIS_INSTALL_DISK_MULTIPLIER`
@@ -339,9 +411,10 @@ The mock fakes these; production builds them for real:
 |---|---|
 | `x509: ECDSA verification failure ("Aegis One Dev CA")` | Agent `ca.crt` ≠ server CA. Use one `certs\` set; re-enroll: delete `SKVC\certs\client.*` (keep `identity.json`), copy matching `ca.crt`, re-add token, restart. |
 | `token=<unset — enrollment will reject>` | `set AEGIS_ENROLL_TOKEN=tenant-abc-123` (plain, no quotes). |
-| install `NOT_APPLICABLE` unexpectedly | that KB is already installed; use a genuinely-missing KB / behind snapshot. |
-| install `exit 50 "not applicable"` | wrong `.msu` for this OS/build — use the correct per-OS package. |
+| install `NOT_APPLICABLE` unexpectedly | that KB is already installed (per the last scan's `installed-kbs.json` or the installer itself); use a genuinely-missing KB / behind snapshot. |
+| install logs `DISM attempt failed ... exit 50` | **expected on some .msu** — the agent falls back to wusa automatically; look for `wusa install succeeded` right after (UC-14b). |
 | install `exit 112 "insufficient disk"` | free disk (≥ ~15 GB), or lower `AEGIS_INSTALL_DISK_MULTIPLIER`. |
+| uninstall `FAILED 0x80240022` / "not uninstallable" | cumulative/SSU/baked-in update — expected; use Control Panel → Installed Updates manually (UC-6 note). |
 | fast lane "not running" | it is — silent when unchanged; `AEGIS_LOG_LEVEL=debug` to see the ticks. |
 | compliance scan error "cab not present" | copy `wsusscn2.cab` to `SKVC\`, restart. |
 

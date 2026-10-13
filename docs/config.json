@@ -1,0 +1,17 @@
+﻿{
+  "AEGIS_SERVER_ADDRESS": "127.0.0.1:50051",
+  "AEGIS_ENROLL_TOKEN": "tenant-abc-123",
+  "AEGIS_TLS_SERVER_NAME": "localhost",
+  "AEGIS_HEARTBEAT_INTERVAL": "10",
+  "AEGIS_HEARTBEAT_JITTER": "2",
+  "AEGIS_TLS_CA": "C:/Program Files/AegisOne/Client/SKVC/certs/ca.crt",
+  "AEGIS_TLS_CERT": "C:/Program Files/AegisOne/Client/SKVC/certs/client.crt",
+  "AEGIS_TLS_KEY": "C:/Program Files/AegisOne/Client/SKVC/certs/client.key",
+  "AEGIS_SECURE_DIR": "C:/Program Files/AegisOne/Client/SKVC",
+  "AEGIS_DOWNLOAD_DIR": "C:/Program Files/AegisOne/Client/SKVC/download",
+  "AEGIS_WSUS_SCAN_CAB": "C:/Program Files/AegisOne/Client/SKVC/wsusscn2.cab",
+  "AEGIS_DEVICE_STATE_INTERVAL": "20",
+  "AEGIS_RECON_SCAN_INTERVAL": "604800",
+  "AEGIS_CACHE_MAX_BYTES": "2147483648",
+  "AEGIS_LOG_LEVEL": "debug"
+}

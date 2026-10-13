@@ -121,6 +121,15 @@ arrives in the heartbeat as a **mutable attribute**.
   retry mTLS; it does **not** yet detect "cert rejected → delete cert → re-enroll".
   That's a planned agent item once the server's revocation mechanism is defined.
 - Windows cert-store / TPM key storage (currently DPAPI-sealed PEM).
+- **Reliable uninstall of cumulative / baked-in updates:** uninstall today uses the
+  Windows Update Agent (WUA) COM API — it works for ordinary removable updates but
+  Windows refuses to remove latest **cumulative (LCU)**, **servicing-stack (SSU)**, and
+  **image-baked** updates programmatically (reported fail-loud, e.g. `0x80240022`; the
+  message tells the operator to use Control Panel → Installed Updates manually). Planned:
+  a **DISM `/online /Remove-Package`** path (the CBS-level mechanism Control Panel uses),
+  which needs KB→package-name resolution (DISM does not expose the KB, so resolve by
+  recording the package name at install time via a `get-packages` before/after diff).
+  Until then: **a failed uninstall of a cumulative/SSU is expected — fall back to manual.**
 
 ---
 
