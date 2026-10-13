@@ -54,11 +54,21 @@ func watchServicingForRescan(ctx context.Context, scanTrigger chan<- struct{}) {
 			timer.Reset(servicingRescanDebounce)
 			armed = true
 		case <-timer.C:
-			if armed {
-				armed = false
-				slog.Info("servicing settled — triggering compliance re-scan")
-				signalDrain(scanTrigger)
+			if !armed {
+				break
 			}
+			// If the AGENT is mid install/uninstall, its own CBS churn is expected and
+			// already reported via ActionStatus — defer the re-scan until it finishes
+			// so we don't scan repeatedly during the install. External/manual changes
+			// happen while not busy and fire normally.
+			if servicingBusy.Load() {
+				slog.Debug("servicing re-scan deferred: agent install/uninstall in progress")
+				timer.Reset(servicingRescanDebounce)
+				break
+			}
+			armed = false
+			slog.Info("servicing settled — triggering compliance re-scan")
+			signalDrain(scanTrigger)
 		}
 	}
 }

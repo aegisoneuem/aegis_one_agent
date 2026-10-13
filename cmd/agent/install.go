@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/patch"
@@ -21,6 +22,13 @@ type installJob struct {
 	spec      *pb.InstallPatchSpec
 	uninstall bool // true = remove the KB (wusa) instead of install (DISM)
 }
+
+// servicingBusy is true while the agent is running its OWN install/uninstall
+// (DISM/wusa). The CBS servicing watch uses it to DEFER the post-change re-scan
+// until the agent's op finishes — the agent's own CBS churn is expected and is
+// already reported via ActionStatus, so scanning mid-install is wasteful. External
+// (manual) changes happen while this is false and trigger a scan as normal.
+var servicingBusy atomic.Bool
 
 // phaseEmitter streams an ActionPhase for the current job (QUEUED is emitted by
 // the receiver; VERIFYING/RUNNING by the platform install handler).
@@ -86,6 +94,8 @@ func cacheID(spec *pb.InstallPatchSpec) string {
 }
 
 func (p *patchInstaller) runInstall(job installJob) {
+	servicingBusy.Store(true)
+	defer servicingBusy.Store(false)
 	cmdID, kb := job.commandID, job.spec.Kb
 	started := time.Now().Unix()
 	emit := func(phase pb.ActionPhase) {
@@ -180,6 +190,8 @@ func (p *patchInstaller) runInstall(job installJob) {
 // installed, it reports NOT_APPLICABLE without running wusa). Runs on the same
 // serial worker as installs (the servicing stack is single-operation).
 func (p *patchInstaller) runUninstall(job installJob) {
+	servicingBusy.Store(true)
+	defer servicingBusy.Store(false)
 	cmdID, kb := job.commandID, job.spec.Kb
 	started := time.Now().Unix()
 
