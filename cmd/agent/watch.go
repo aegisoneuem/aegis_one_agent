@@ -36,8 +36,15 @@ func watchServicingForRescan(ctx context.Context, scanTrigger chan<- struct{}) {
 		case <-ctx.Done():
 			return
 		case <-fire:
-			slog.Info("servicing change detected (CBS) — scheduling a compliance re-scan after it settles",
-				"debounce", servicingRescanDebounce.String())
+			// A single install/uninstall touches MANY CBS package keys → many fires.
+			// Log once per debounce window (at INFO); the rest just extend the timer
+			// (DEBUG) so the log is not spammed.
+			if !armed {
+				slog.Info("servicing change detected (CBS) — will re-scan after it settles",
+					"debounce", servicingRescanDebounce.String())
+			} else {
+				slog.Debug("servicing change (CBS) — extending debounce")
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:

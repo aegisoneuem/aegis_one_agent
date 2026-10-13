@@ -79,6 +79,22 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 		time.Sleep(retryBackoff)
 	}
 
+	// DISM failed — some .msu (especially on Windows Server) install via wusa but
+	// not DISM ("The request is not supported"). Fall back to wusa.exe (exactly what
+	// the manual "install this update" does). Skip when the failure was the disk
+	// pre-flight — wusa needs the same free space, so retrying there is pointless.
+	if !res.Success && !strings.Contains(strings.ToLower(res.Reason), "disk space") {
+		slog.Warn("install_patch: DISM failed — trying wusa fallback", "kb", spec.Kb, "dism_reason", res.Reason)
+		if wres := patch.RunWUSAInstall(installPath, timeout); wres != nil {
+			if wres.Success {
+				slog.Info("install_patch: installed via wusa fallback", "kb", spec.Kb, "exit_code", wres.ExitCode, "reboot_required", wres.RebootRequired)
+				res = wres
+			} else {
+				res.Detail = strings.TrimSpace(res.Detail + "\n-- wusa fallback also failed: " + wres.Reason + " --\n" + wres.Detail)
+			}
+		}
+	}
+
 	st := &pb.ActionStatus{
 		Kb:             spec.Kb,
 		ExitCode:       int32(res.ExitCode),

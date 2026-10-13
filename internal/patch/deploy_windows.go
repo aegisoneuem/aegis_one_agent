@@ -173,6 +173,52 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	return res, nil
 }
 
+// RunWUSAInstall installs a LOCAL .msu via wusa.exe (the Windows Update Standalone
+// Installer — exactly what double-clicking a .msu does). It is the FALLBACK for
+// when DISM cannot install a given .msu ("The request is not supported"), which
+// happens for some packages, especially on Windows Server. No internet; the caller
+// verifies integrity first. timeout bounds the single wusa invocation.
+func RunWUSAInstall(path string, timeout time.Duration) *DeployResult {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return &DeployResult{Reason: fmt.Sprintf("resolve patch path %q: %v", path, err)}
+	}
+	slog.Info("deploy: installing local patch via wusa (fallback)", "file", abs, "timeout", timeout.String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "wusa.exe", abs, "/quiet", "/norestart")
+	stop := startHeartbeat("wusa install")
+	out, runErr := cmd.CombinedOutput()
+	stop()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return &DeployResult{Path: abs, Reason: fmt.Sprintf("wusa timed out after %s", timeout), Detail: "wusa timed out"}
+	}
+	if cmd.ProcessState == nil {
+		return &DeployResult{Path: abs, Reason: "could not run wusa", Detail: fmt.Sprintf("%v", runErr)}
+	}
+
+	exitCode := cmd.ProcessState.ExitCode()
+	res := &DeployResult{Path: abs, ExitCode: exitCode, Detail: tail(string(out), 600)}
+	switch exitCode {
+	case 0:
+		res.Success = true
+	case 3010, 1641:
+		res.Success = true
+		res.RebootRequired = true
+	case 0x240006: // WU_S_ALREADY_INSTALLED — already present; treat as success/no-op
+		res.Success = true
+	default:
+		res.Success = false
+		res.Reason = fmt.Sprintf("wusa install failed (exit %d / 0x%X)", exitCode, uint32(exitCode))
+	}
+	if res.Success {
+		slog.Info("deploy: wusa install succeeded", "file", abs, "exit_code", exitCode, "reboot_required", res.RebootRequired)
+	}
+	return res
+}
+
 // classifyDISMFailure turns a DISM exit code and its output into a concise,
 // human failure reason for troubleshooting. The full output stays in Detail
 // (verbose). Matching is best-effort on known HRESULTs/phrases; unknown
