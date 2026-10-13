@@ -50,8 +50,8 @@ func TestClassifyDISMFailure(t *testing.T) {
 		{"not applicable/reboot", 1, "0x800f0923", "package not applicable, or a reboot is pending from a previous update"},
 		{"corruption", 1, "0x80073701 ERROR_SXS_ASSEMBLY_MISSING", "component store corruption (run DISM /RestoreHealth or SFC /scannow)"},
 		{"access denied", 5, "Access is denied.", "access denied — the agent must run elevated (LocalSystem) to install"},
-		{"not supported exit 50", 50, "Error: 50\r\n\r\nThe request is not supported.", "patch not applicable to this OS edition/build (wrong package), or a required servicing stack update (SSU) is missing"},
-		{"not supported hresult", 1, "0x80070032 the request is not supported", "patch not applicable to this OS edition/build (wrong package), or a required servicing stack update (SSU) is missing"},
+		{"not supported exit 50", 50, "Error: 50\r\n\r\nThe request is not supported.", "DISM does not support installing this .msu (exit 50, 'not supported') — handled by the wusa fallback"},
+		{"not supported hresult", 1, "0x80070032 the request is not supported", "DISM does not support installing this .msu (exit 50, 'not supported') — handled by the wusa fallback"},
 		{"not applicable 081e", 1, "0x800f081e CBS_E_NOT_APPLICABLE", "patch not applicable to this system (already superseded, or not for this OS/build)"},
 	}
 	for _, c := range cases {

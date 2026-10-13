@@ -84,7 +84,7 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 	// the manual "install this update" does). Skip when the failure was the disk
 	// pre-flight — wusa needs the same free space, so retrying there is pointless.
 	if !res.Success && !strings.Contains(strings.ToLower(res.Reason), "disk space") {
-		slog.Warn("install_patch: DISM failed — trying wusa fallback", "kb", spec.Kb, "dism_reason", res.Reason)
+		slog.Info("install_patch: DISM could not install this .msu — falling back to wusa (the manual install path)", "kb", spec.Kb, "dism_exit", res.ExitCode, "dism_reason", res.Reason)
 		if wres := patch.RunWUSAInstall(installPath, timeout); wres != nil {
 			if wres.Success {
 				slog.Info("install_patch: installed via wusa fallback", "kb", spec.Kb, "exit_code", wres.ExitCode, "reboot_required", wres.RebootRequired)

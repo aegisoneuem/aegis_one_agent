@@ -164,11 +164,13 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 	}
 
 	if res.Success {
-		slog.Info("deploy: install succeeded", "file", abs, "exit_code", exitCode, "reboot_required", res.RebootRequired)
+		slog.Info("deploy: DISM install succeeded", "file", abs, "exit_code", exitCode, "reboot_required", res.RebootRequired)
 	} else {
 		res.Reason, res.Transient = classifyDISMFailure(exitCode, string(out))
-		// Fail loud with the concise reason + output tail so it is diagnosable.
-		slog.Error("deploy: install FAILED", "file", abs, "exit_code", exitCode, "reason", res.Reason, "transient", res.Transient, "detail", res.Detail)
+		// This is the DISM ATTEMPT result, not the final verdict (the caller may fall
+		// back to wusa and will log the final SUCCESS/FAILED). Log at WARN so a DISM
+		// miss that the fallback recovers doesn't look like a hard failure.
+		slog.Warn("deploy: DISM attempt failed", "file", abs, "exit_code", exitCode, "reason", res.Reason, "transient", res.Transient, "detail", res.Detail)
 	}
 	return res, nil
 }
@@ -237,7 +239,10 @@ func classifyDISMFailure(exitCode int, output string) (reason string, transient 
 	case strings.Contains(o, "0x800f0923"):
 		return "package not applicable, or a reboot is pending from a previous update", false
 	case exitCode == 50 || strings.Contains(o, "0x80070032") || strings.Contains(o, "the request is not supported"):
-		return "patch not applicable to this OS edition/build (wrong package), or a required servicing stack update (SSU) is missing", false
+		// DISM cannot install THIS .msu (it is a Windows-Update-style package). The
+		// patch is usually fine — the install path falls back to wusa.exe. Not a
+		// "wrong package / not applicable" error.
+		return "DISM does not support installing this .msu (exit 50, 'not supported') — handled by the wusa fallback", false
 	case strings.Contains(o, "0x800f081e"):
 		return "patch not applicable to this system (already superseded, or not for this OS/build)", false
 	case strings.Contains(o, "0x80073701") || strings.Contains(o, "0x800f0831"):
