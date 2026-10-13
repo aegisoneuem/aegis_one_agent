@@ -362,9 +362,17 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		fmt.Println("Connect REJECTED -> no verified client certificate (must enroll first)")
 		return status.Error(codes.Unauthenticated, "client certificate required")
 	}
-	fmt.Println("Agent connected!")
+	connectedDevice := clientCertCN(stream.Context())
+	fmt.Printf("Agent connected! device: %s\n", connectedDevice)
 
 	go func() {
+		// Device targeting for testing: if AEGIS_TARGET_DEVICE is set, only send
+		// commands to that device_id (others just stay connected / receive). The
+		// REAL server targets by device; the mock otherwise sends to whoever connects.
+		if target := strings.TrimSpace(os.Getenv("AEGIS_TARGET_DEVICE")); target != "" && !strings.EqualFold(target, connectedDevice) {
+			fmt.Printf("  (AEGIS_TARGET_DEVICE=%s set; connected device=%s — receiving only, NO commands sent)\n", target, connectedDevice)
+			return
+		}
 		time.Sleep(2 * time.Second)
 		payload := []byte("")
 		command := &pb.ServerMessage{
