@@ -60,11 +60,16 @@ at enrollment, so the server can dedup on the strongest one present.
 The stable `device_id` (UUID) is the agent's identity and the server's reconcile
 key. The **console-facing numeric id** is a SEPARATE, server-assigned value (like
 BigFix's ComputerID): the server returns it in the enroll response and the agent
-stores + logs it for cross-reference. Design it to **start at 10 digits and simply
-increment** — 10 digits holds 10 billion ids, so 5 lakh (500k)+ devices is far from
-the ceiling, and it naturally grows to 11+ digits if a tenant ever needs it. Never
-fix the width in a way that can overflow. (The mock server demonstrates this:
-`nextComputerID` starts at `1000000000`, `AEGIS_COMPUTER_ID_START` overrides.)
+stores + logs it for cross-reference.
+
+**Assign a RANDOM 10-digit id, not a sequential one.** A sequential counter leaks
+the enrolled-device count and makes low ids look like "the first computer" — so
+every device gets a random id in `[1000000000, 9999999999]` (always 10 digits),
+checked unique against a DB index with retry on the rare collision. 10 digits holds
+10 billion values, so 5 lakh (500k)+ devices has huge headroom and collisions are
+astronomically unlikely; widen to 11+ digits only if a tenant ever approaches the
+space. (The mock server demonstrates this: `newComputerID()` → random, unique,
+10-digit.)
 
 ---
 

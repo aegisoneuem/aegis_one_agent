@@ -65,10 +65,10 @@ type server struct {
 	byID      map[string]*deviceRecord // device registry keyed by assigned device_id
 	bySysUUID map[string]*deviceRecord // secondary index for dedup (reinstall/reimage)
 	byTPM     map[string]*deviceRecord // strongest dedup index: TPM EK (reinstall/format/clone-proof)
-	// nextComputerID assigns the console-facing numeric id. It starts at 10 digits
-	// and simply increments — at 5 lakh (500k)+ devices it is nowhere near the
-	// 10-digit ceiling (10 billion), and naturally grows to 11+ digits if ever needed.
-	nextComputerID int64
+	// computerIDUsed tracks assigned console ids so a fresh RANDOM 10-digit id never
+	// collides. Ids are random (not sequential) so a customer cannot infer how many
+	// devices have enrolled, and no device looks like "the first computer".
+	computerIDUsed map[string]struct{}
 }
 
 // deviceRecord is one registered device (the real server persists this in a DB;
@@ -130,8 +130,7 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 		computerID = existing.ComputerID
 	}
 	if strings.TrimSpace(computerID) == "" {
-		computerID = strconv.FormatInt(s.nextComputerID, 10)
-		s.nextComputerID++
+		computerID = s.newComputerID() // caller holds s.mu
 	}
 
 	rec := &deviceRecord{
@@ -162,6 +161,32 @@ func (s *server) computerIDFor(deviceID string) string {
 		return r.ComputerID
 	}
 	return ""
+}
+
+// newComputerID returns a fresh, unique, RANDOM 10-digit console id. Random (not
+// sequential) so a customer cannot infer the enrolled-device count and no device
+// looks like "the first computer". Caller holds s.mu. The real server does the
+// same against its DB (unique index + retry on collision).
+func (s *server) newComputerID() string {
+	for {
+		id := randomComputerID()
+		if _, used := s.computerIDUsed[id]; !used {
+			s.computerIDUsed[id] = struct{}{}
+			return id
+		}
+	}
+}
+
+// randomComputerID returns a random 10-digit numeric string in [1000000000,
+// 9999999999] — always 10 digits (never a leading zero).
+func randomComputerID() string {
+	const lo, span = int64(1000000000), int64(9000000000) // [1e9, 1e10)
+	n, err := rand.Int(rand.Reader, big.NewInt(span))
+	if err != nil {
+		// crypto/rand should not fail; fall back to a time-derived value rather than panic.
+		return strconv.FormatInt(lo+time.Now().UnixNano()%span, 10)
+	}
+	return strconv.FormatInt(lo+n.Int64(), 10)
 }
 
 func (s *server) deviceCount() int {
@@ -762,12 +787,7 @@ func main() {
 		byID:           make(map[string]*deviceRecord),
 		bySysUUID:      make(map[string]*deviceRecord),
 		byTPM:          make(map[string]*deviceRecord),
-		nextComputerID: 1000000000, // start at 10 digits; AEGIS_COMPUTER_ID_START overrides
-	}
-	if v := strings.TrimSpace(os.Getenv("AEGIS_COMPUTER_ID_START")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			srv.nextComputerID = n
-		}
+		computerIDUsed: make(map[string]struct{}),
 	}
 
 	// Test helper: pre-seed N dummy devices so a single VM can exercise the
