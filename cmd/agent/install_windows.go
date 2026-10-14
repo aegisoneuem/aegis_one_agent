@@ -115,6 +115,13 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 		st.RebootRequired = false // nothing was installed this time
 	case res.Success:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
+		// Make the terminal status explicit about restart state so the console can
+		// show "Completed" vs "Pending Restart" and the reason is clear in the logs.
+		if st.RebootRequired {
+			st.Reason = fmt.Sprintf("installed — RESTART REQUIRED to complete (exit %d)", res.ExitCode)
+		} else {
+			st.Reason = fmt.Sprintf("installed — completed, no restart needed (exit %d)", res.ExitCode)
+		}
 	default:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_FAILED
 		st.Reason = res.Reason // concise, classified failure cause

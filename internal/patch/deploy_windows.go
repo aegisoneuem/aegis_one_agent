@@ -133,11 +133,12 @@ func RunDISM(path string, timeout time.Duration) (*DeployResult, error) {
 		"/packagepath:"+abs,
 		"/quiet", "/norestart")
 
-	logging.Trace("deploy: running DISM", "command", strings.Join(cmd.Args, " "))
+	// DEBUG shows the exact command run at each stage (operator feedback); TRACE adds
+	// the complete tool output for deep troubleshooting.
+	slog.Debug("deploy: running DISM", "command", strings.Join(cmd.Args, " "))
 	stop := startHeartbeat("DISM install")
 	out, runErr := cmd.CombinedOutput()
 	stop()
-	// Verbose: the COMPLETE DISM output (not just the tail) for deep troubleshooting.
 	logging.Trace("deploy: DISM full output", "file", abs, "output", strings.TrimSpace(string(out)))
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -190,6 +191,7 @@ func RunWUSAInstall(path string, timeout time.Duration) *DeployResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "wusa.exe", abs, "/quiet", "/norestart")
+	slog.Debug("deploy: running wusa", "command", strings.Join(cmd.Args, " "))
 	stop := startHeartbeat("wusa install")
 	out, runErr := cmd.CombinedOutput()
 	stop()

@@ -258,6 +258,11 @@ func (p *patchInstaller) runUninstall(job installJob) {
 	}
 	if res.Success {
 		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
+		if res.RebootRequired {
+			st.Reason = "uninstalled — RESTART REQUIRED to complete"
+		} else {
+			st.Reason = "uninstalled — completed, no restart needed"
+		}
 		// Drop it from the authoritative installed set NOW so a quick reinstall is not
 		// wrongly skipped before the post-uninstall rescan refreshes the set.
 		p.installedSet.remove(kb)
