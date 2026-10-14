@@ -373,7 +373,10 @@ is identical across Win10/11 + Server 2016/2019/2022; only patch **applicability
 | `FULL-SCAN (cab): running at startup / periodic / triggered` | heavy cab scan + why it ran |
 | `FULL-SCAN (cab): result buffered ... kbs=[...]` | missing KBs the scan found |
 | `action status ... type=patch_install phase=..` | unified per-action status |
-| `deploy: install succeeded exit_code=0|3010` | DISM result (3010 = reboot required) |
+| `install_patch: finished ... reason="installed — completed, no restart needed"` | SUCCESS, no reboot → console shows **Completed** |
+| `install_patch: finished ... reboot_required=true reason="installed — RESTART REQUIRED to complete"` | SUCCESS, exit 3010 → console shows **Pending Restart** |
+| `deploy: running DISM/wusa command=...` (DEBUG) | exact command per stage — set `AEGIS_LOG_LEVEL=debug` |
+| full DISM/wusa output (TRACE) | deepest detail — set `AEGIS_LOG_LEVEL=trace` |
 
 Mock-server side prints `Enroll OK`, `Agent connected!`, `patch state report`,
 `patch scan result` (full missing detail), `action status`, `CACHE-FULL report`.

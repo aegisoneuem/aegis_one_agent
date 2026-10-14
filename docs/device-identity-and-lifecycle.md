@@ -22,46 +22,66 @@ Device identity is **not** a single magic number. It is **composite**, and the
 
 ## 2. Identity signals and their stability
 
-| Signal | Restart | Uninstall/Reinstall | Reimage | VM template clone | Rename |
+| Signal | Restart | Uninstall/Reinstall | Reimage/Format | VM template clone | Rename |
 |---|---|---|---|---|---|
 | `device_id` (persisted UUID) | stable | lost if secure dir wiped | lost | **shared if baked into template** | stable |
-| **SMBIOS System UUID** (fingerprint, primary) | stable | stable | **stable** (same HW) | **unique per VM** | stable |
-| MachineGuid (fingerprint, fallback) | stable | stable | **changes** | shared unless sysprep'd | stable |
+| **TPM EK** (fingerprint, primary) | stable | stable | **stable** (firmware) | **unique** (even if SMBIOS dup) | stable |
+| **SMBIOS System UUID** (fingerprint, 2nd) | stable | stable | **stable** (same HW) | usually unique, but **some VMs/OEM batches duplicate or zero it** | stable |
+| MachineGuid (fingerprint, 3rd) | stable | stable | **changes** | shared unless sysprep'd | stable |
 
-The agent prefers **SMBIOS System UUID**, falling back to **MachineGuid**. The
-fingerprint string is prefixed: `smbios:<uuid>` or `machineguid:<guid>`.
+The agent prefers the **TPM Endorsement Key (EK)** — firmware-bound, globally
+unique, survives an OS reinstall/format, and clone-proof — falling back to the
+**SMBIOS System UUID**, then **MachineGuid**. Devices without a TPM fall back to
+SMBIOS automatically. Fingerprint strings are prefixed: `tpm:<hash>`,
+`smbios:<uuid>`, `machineguid:<guid>`. All readable signals are sent to the server
+at enrollment, so the server can dedup on the strongest one present.
 
 ---
 
 ## 3. Agent-side behavior (IMPLEMENTED — what the server can rely on)
 
 - **First run:** generates a v4 UUID `device_id`, persists `SKVC\identity.json`
-  = `{device_id, fingerprint, created_at}`.
-- **Every boot:** reads the current hardware fingerprint and compares it to the
-  stored one:
-  - **match** → reuses the persisted `device_id`.
-  - **changed** → treats it as a **clone/reimage**, generates a **fresh**
-    `device_id` (so a template-baked id does not collide across spun VMs).
-  - **fingerprint unreadable (`""`)** → reuses the persisted id (no false
-    regeneration).
+  = `{device_id, fingerprint, signals[], computer_id, created_at}`.
+- **Every boot:** reads ALL current hardware signals (TPM/SMBIOS/MachineGuid) and
+  compares them to the stored set:
+  - **any signal overlaps** → same machine → reuses the persisted `device_id`.
+    (So adding a NEW signal — e.g. a TPM read that was not available before — does
+    NOT look like a hardware change; the stored set is just refreshed.)
+  - **no signal overlaps** → **clone/reimage** → generates a **fresh** `device_id`
+    (so a template-baked id does not collide across spun VMs).
+  - **no signal readable (`[]`)** → reuses the persisted id (no false regeneration).
+- **Enrollment:** sends `device_id` + `tpm_ek` + `system_uuid` + `machine_guid`
+  (+ hostname/os). The server dedups on these (TPM EK strongest) and may return an
+  `assigned_device_id` (canonical, on dedup) + a **`computer_id`** (console id).
 - **Override:** `AEGIS_DEVICE_ID` (config/env) pins an explicit id for testing;
   it is not persisted.
 
-> Note: the agent today uses the fingerprint for **local clone detection only**.
-> It will **send** `device_id` + fingerprint to the server at **enrollment**
-> (next milestone) — see §6.
+### Server-assigned console id (`computer_id`)
+The stable `device_id` (UUID) is the agent's identity and the server's reconcile
+key. The **console-facing numeric id** is a SEPARATE, server-assigned value (like
+BigFix's ComputerID): the server returns it in the enroll response and the agent
+stores + logs it for cross-reference. Design it to **start at 10 digits and simply
+increment** — 10 digits holds 10 billion ids, so 5 lakh (500k)+ devices is far from
+the ceiling, and it naturally grows to 11+ digits if a tenant ever needs it. Never
+fix the width in a way that can overflow. (The mock server demonstrates this:
+`nextComputerID` starts at `1000000000`, `AEGIS_COMPUTER_ID_START` overrides.)
 
 ---
 
 ## 4. Server-side responsibilities (TO BUILD)
 
 ### 4.1 Reconciliation / de-duplication
-On enrollment and on (re)registration, match in this order:
-1. exact `device_id` match → same logical device;
-2. else fingerprint (SMBIOS UUID) match → **same hardware**, treat as the same
-   device (e.g. reimaged or secure-dir wiped) — reactivate/merge, do not create a
-   duplicate;
-3. else → new device record.
+On enrollment and on (re)registration, match in this order (strongest hardware
+signal first, so a formatted machine with a fresh `device_id` still reconciles):
+1. **`tpm_ek` match** → same hardware (survives format, clone-proof) → same device;
+2. else exact `device_id` match → same logical device;
+3. else `system_uuid` (SMBIOS) match → **same hardware** (reimaged / secure-dir
+   wiped) — reactivate/merge, do not create a duplicate;
+4. else → new device record (assign the next `computer_id`).
+
+Keep the stable `device_id`↔`computer_id` mapping: on dedup, return the EXISTING
+`computer_id`; only a brand-new device gets a new one. (The mock server implements
+exactly this order.)
 
 ### 4.2 Lifecycle states (last-seen driven, all thresholds configurable)
 `online → offline (no heartbeat > N) → stale (> M) → decommissioned → deleted`.
