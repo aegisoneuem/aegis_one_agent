@@ -122,11 +122,14 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 		}
 	}
 
-	// Console computer id: keep the existing one on dedup; assign the next on a new device.
+	// Console computer id: keep the existing one on dedup; assign the next if the
+	// device is new OR the matched record has none yet (e.g. a bare record created
+	// by an earlier connect/heartbeat before enrollment).
 	computerID := ""
 	if existing != nil {
 		computerID = existing.ComputerID
-	} else {
+	}
+	if strings.TrimSpace(computerID) == "" {
 		computerID = strconv.FormatInt(s.nextComputerID, 10)
 		s.nextComputerID++
 	}
