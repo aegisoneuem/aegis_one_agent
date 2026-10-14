@@ -64,6 +64,11 @@ type server struct {
 	mu        sync.Mutex
 	byID      map[string]*deviceRecord // device registry keyed by assigned device_id
 	bySysUUID map[string]*deviceRecord // secondary index for dedup (reinstall/reimage)
+	byTPM     map[string]*deviceRecord // strongest dedup index: TPM EK (reinstall/format/clone-proof)
+	// nextComputerID assigns the console-facing numeric id. It starts at 10 digits
+	// and simply increments — at 5 lakh (500k)+ devices it is nowhere near the
+	// 10-digit ceiling (10 billion), and naturally grows to 11+ digits if ever needed.
+	nextComputerID int64
 }
 
 // deviceRecord is one registered device (the real server persists this in a DB;
@@ -72,6 +77,8 @@ type deviceRecord struct {
 	DeviceID    string
 	SystemUUID  string
 	MachineGUID string
+	TpmEK       string
+	ComputerID  string // server-assigned numeric console id
 	Hostname    string
 	LastSeen    time.Time
 }
@@ -87,13 +94,22 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 	defer s.mu.Unlock()
 
 	isNew := false
+	var existing *deviceRecord
+	// Dedup order, strongest hardware signal first: TPM EK → device_id → SMBIOS UUID.
+	// TPM EK survives reinstall/format and is clone-proof, so it reconciles a formatted
+	// machine back to the same logical device even when device_id + SMBIOS changed.
 	switch {
+	case req.TpmEk != "" && s.byTPM[req.TpmEk] != nil:
+		existing = s.byTPM[req.TpmEk]
 	case req.DeviceId != "" && s.byID[req.DeviceId] != nil:
-		assigned = req.DeviceId // known device_id → same record
+		existing = s.byID[req.DeviceId]
 	case req.SystemUuid != "" && s.bySysUUID[req.SystemUuid] != nil:
-		assigned = s.bySysUUID[req.SystemUuid].DeviceID // same hardware, new id → dedup
+		existing = s.bySysUUID[req.SystemUuid]
+	}
+	if existing != nil {
+		assigned = existing.DeviceID // same hardware → existing record
 		deduped = assigned != req.DeviceId
-	default:
+	} else {
 		assigned = req.DeviceId // brand-new device
 		isNew = true
 	}
@@ -106,10 +122,21 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 		}
 	}
 
+	// Console computer id: keep the existing one on dedup; assign the next on a new device.
+	computerID := ""
+	if existing != nil {
+		computerID = existing.ComputerID
+	} else {
+		computerID = strconv.FormatInt(s.nextComputerID, 10)
+		s.nextComputerID++
+	}
+
 	rec := &deviceRecord{
 		DeviceID:    assigned,
 		SystemUUID:  req.SystemUuid,
 		MachineGUID: req.MachineGuid,
+		TpmEK:       req.TpmEk,
+		ComputerID:  computerID,
 		Hostname:    req.Hostname,
 		LastSeen:    time.Now(),
 	}
@@ -117,7 +144,21 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 	if req.SystemUuid != "" {
 		s.bySysUUID[req.SystemUuid] = rec
 	}
+	if req.TpmEk != "" {
+		s.byTPM[req.TpmEk] = rec
+	}
 	return assigned, deduped, ""
+}
+
+// computerIDFor returns the console numeric id assigned to a device (for the
+// Enroll response). Caller holds no lock.
+func (s *server) computerIDFor(deviceID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.byID[deviceID]; r != nil {
+		return r.ComputerID
+	}
+	return ""
 }
 
 func (s *server) deviceCount() int {
@@ -243,18 +284,28 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 	if max := licenseMax(); max > 0 {
 		lic = fmt.Sprintf(" [license %d/%d]", s.deviceCount(), max)
 	}
+	computerID := s.computerIDFor(assigned)
 	if deduped {
-		fmt.Printf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s system_uuid=%s hostname=%s (same hardware → existing device)%s\n",
-			req.DeviceId, assigned, req.SystemUuid, req.Hostname, lic)
+		fmt.Printf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s computer_id=%s tpm_ek=%s system_uuid=%s hostname=%s (same hardware → existing device)%s\n",
+			req.DeviceId, assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.Hostname, lic)
 	} else {
-		fmt.Printf("Enroll OK -> device_id=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)%s\n",
-			assigned, req.SystemUuid, req.MachineGuid, req.Hostname, req.Os, lic)
+		fmt.Printf("Enroll OK -> device_id=%s computer_id=%s tpm_ek=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)%s\n",
+			assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.MachineGuid, req.Hostname, req.Os, lic)
 	}
 	return &pb.EnrollResponse{
 		ClientCertPem:    string(certPEM),
 		CaChainPem:       string(s.caCertPEM),
 		AssignedDeviceId: assigned,
+		ComputerId:       computerID,
 	}, nil
+}
+
+// shortID trims a long hardware id for readable logging. "" stays "".
+func shortID(s string) string {
+	if len(s) > 20 {
+		return s[:20] + "…"
+	}
+	return s
 }
 
 func pkixName(cn string) pkix.Name { return pkix.Name{CommonName: cn} }
@@ -705,8 +756,15 @@ func main() {
 	}
 	srv := &server{
 		caCert: caCert, caKey: caKey, caCertPEM: caCertPEM,
-		byID:      make(map[string]*deviceRecord),
-		bySysUUID: make(map[string]*deviceRecord),
+		byID:           make(map[string]*deviceRecord),
+		bySysUUID:      make(map[string]*deviceRecord),
+		byTPM:          make(map[string]*deviceRecord),
+		nextComputerID: 1000000000, // start at 10 digits; AEGIS_COMPUTER_ID_START overrides
+	}
+	if v := strings.TrimSpace(os.Getenv("AEGIS_COMPUTER_ID_START")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			srv.nextComputerID = n
+		}
 	}
 
 	// Test helper: pre-seed N dummy devices so a single VM can exercise the

@@ -579,13 +579,15 @@ func runProcess(ctx context.Context) {
 	// Resolve this device's stable unique identity. The hardware fingerprint lets
 	// us detect a clone/reimage (id baked into a template, machine changed) and
 	// issue a fresh id instead of colliding.
+	signals := hardwareSignals()
 	fingerprint := hardwareFingerprint()
-	deviceID, idSource, err := resolveDeviceID(cfg.DeviceID, cfg.SecureDir, fingerprint)
+	deviceID, idSource, err := resolveDeviceID(cfg.DeviceID, cfg.SecureDir, signals)
 	if err != nil {
 		log.Fatalf("device identity: %v", err)
 	}
 	cfg.DeviceID = deviceID
-	slog.Info("device identity resolved", "device_id", deviceID, "source", idSource, "fingerprint", fingerprint)
+	slog.Info("device identity resolved", "device_id", deviceID, "source", idSource,
+		"fingerprint", fingerprint, "signals", len(signals), "computer_id", loadComputerID(cfg.SecureDir))
 
 	// Enrollment (Option B): if no client cert is provisioned, enroll with the
 	// server (keypair+CSR → token-authenticated Enroll → signed per-device cert)
@@ -594,9 +596,9 @@ func runProcess(ctx context.Context) {
 	// Enroll with retry: a service must stay up even if the server is unreachable
 	// at boot (don't exit — SCM would flap it). Retry with backoff until enrolled
 	// or shutdown. No-op once a cert exists.
-	sysUUID, machGUID := hardwareIDs()
+	tpmEK, sysUUID, machGUID := hardwareIDs()
 	for {
-		effectiveID, err := ensureEnrolled(ctx, cfg, cfg.DeviceID, sysUUID, machGUID, fingerprint)
+		effectiveID, err := ensureEnrolled(ctx, cfg, cfg.DeviceID, tpmEK, sysUUID, machGUID, signals)
 		if err == nil {
 			if effectiveID != cfg.DeviceID {
 				slog.Info("device id updated by enrollment reconciliation", "device_id", effectiveID)

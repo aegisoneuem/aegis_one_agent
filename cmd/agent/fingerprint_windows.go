@@ -17,23 +17,39 @@ var (
 	procGetSystemFirmware = fpKernel32.NewProc("GetSystemFirmwareTable")
 )
 
-// hardwareIDs returns the raw hardware identifiers (SMBIOS System UUID, registry
-// MachineGuid) sent to the server at enrollment for de-duplication. Either may be
-// "" if unreadable.
-func hardwareIDs() (systemUUID, machineGUID string) {
-	return systemUUIDValue(), machineGUIDValue()
+// hardwareIDs returns the raw hardware identifiers sent to the server at
+// enrollment for de-duplication, in preference order: TPM EK (strongest), SMBIOS
+// System UUID, registry MachineGuid. Any may be "" if unreadable.
+func hardwareIDs() (tpmEK, systemUUID, machineGUID string) {
+	return tpmEKFingerprint(), systemUUIDValue(), machineGUIDValue()
 }
 
-// hardwareFingerprint returns a stable per-machine fingerprint for clone/reimage
-// detection (and, later, server-side dedup). It prefers the SMBIOS System UUID
-// (unique per physical/virtual machine, survives OS reinstall, differs across VM
-// clones) and falls back to the registry MachineGuid; "" if neither is readable.
-func hardwareFingerprint() string {
+// hardwareSignals returns ALL readable hardware identity signals (TPM EK, SMBIOS
+// UUID, MachineGuid), tagged, best first. Used for robust clone/reimage detection:
+// the device is "the same machine" if ANY signal still matches the persisted set,
+// so adding a new signal (e.g. TPM) to an already-enrolled agent does not look
+// like a hardware change.
+func hardwareSignals() []string {
+	var s []string
+	if t := tpmEKFingerprint(); t != "" {
+		s = append(s, t) // already "tpm:..."
+	}
 	if u := systemUUIDValue(); u != "" {
-		return "smbios:" + u
+		s = append(s, "smbios:"+u)
 	}
 	if g := machineGUIDValue(); g != "" {
-		return "machineguid:" + g
+		s = append(s, "machineguid:"+g)
+	}
+	return s
+}
+
+// hardwareFingerprint returns the strongest available per-machine fingerprint:
+// TPM EK (firmware-bound, unique, survives OS reinstall, clone-proof) → SMBIOS
+// System UUID → registry MachineGuid; "" if none is readable. Devices without a
+// TPM fall back to the SMBIOS UUID (prior behavior).
+func hardwareFingerprint() string {
+	if s := hardwareSignals(); len(s) > 0 {
+		return s[0]
 	}
 	return ""
 }

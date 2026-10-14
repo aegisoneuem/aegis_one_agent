@@ -42,7 +42,7 @@ func hasClientCert(cfg config.Config) bool {
 // Enroll RPC over SERVER-AUTH TLS authenticated by the bootstrap token, and writes
 // the signed cert + key so normal mTLS can proceed. The at-rest protection then
 // seals the key on the next load (see secure.ClientCredentials).
-func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID, machineGUID, fingerprint string) (string, error) {
+func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, tpmEK, systemUUID, machineGUID string, signals []string) (string, error) {
 	if hasClientCert(cfg) {
 		slog.Info("enrollment: client cert already present, skipping")
 		return deviceID, nil
@@ -90,6 +90,7 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 		CsrPem:       string(csrPEM),
 		SystemUuid:   systemUUID,
 		MachineGuid:  machineGUID,
+		TpmEk:        tpmEK,
 		Hostname:     cfg.Hostname,
 		Os:           cfg.OS,
 		AgentVersion: cfg.AgentVersion,
@@ -130,11 +131,21 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, systemUUID
 	//    existing device, persist that canonical id so it survives restarts.
 	effectiveID := deviceID
 	if a := strings.TrimSpace(resp.AssignedDeviceId); a != "" && a != deviceID {
-		if err := persistDeviceID(cfg.SecureDir, a, fingerprint); err != nil {
+		if err := persistDeviceID(cfg.SecureDir, a, signals); err != nil {
 			slog.Warn("enrollment: could not persist reconciled device id", "assigned", a, "error", err.Error())
 		} else {
 			slog.Info("enrollment: server reconciled this device (dedup) — adopting id", "was", deviceID, "now", a)
 			effectiveID = a
+		}
+	}
+	// Store the server-assigned numeric console id (if sent) so it shows in logs and
+	// can be cross-referenced with the console. The agent keys everything off the
+	// stable device_id; this is an echo for operators.
+	if cid := strings.TrimSpace(resp.ComputerId); cid != "" {
+		if err := setComputerID(cfg.SecureDir, effectiveID, signals, cid); err != nil {
+			slog.Warn("enrollment: could not persist computer id", "computer_id", cid, "error", err.Error())
+		} else {
+			slog.Info("enrollment: server assigned console computer id", "computer_id", cid)
 		}
 	}
 	slog.Info("enrollment: success — client cert provisioned",

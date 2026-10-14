@@ -11,24 +11,46 @@ import (
 )
 
 // identity is the persisted device identity record (SKVC\identity.json). It binds
-// the stable device id to the hardware fingerprint it was created under, so a
-// clone/reimage (fingerprint changed) can be detected and a fresh id issued.
+// the stable device id to the hardware signals it was created under, so a
+// clone/reimage (ALL signals changed) can be detected and a fresh id issued, while
+// adding a new signal (e.g. TPM to an already-enrolled agent) is NOT mistaken for
+// a hardware change.
 type identity struct {
-	DeviceID    string `json:"device_id"`
-	Fingerprint string `json:"fingerprint"` // hardware fingerprint at creation time
-	CreatedAt   int64  `json:"created_at"`
+	DeviceID    string   `json:"device_id"`
+	Fingerprint string   `json:"fingerprint"`           // primary (strongest) signal — kept for back-compat
+	Signals     []string `json:"signals,omitempty"`     // ALL hardware signals (tpm/smbios/machineguid)
+	ComputerID  string   `json:"computer_id,omitempty"` // server-assigned numeric console id (echo)
+	CreatedAt   int64    `json:"created_at"`
+}
+
+// signalSet is the union of the record's Signals and its legacy Fingerprint.
+func (i identity) signalSet() []string {
+	set := map[string]struct{}{}
+	for _, s := range i.Signals {
+		if s = strings.TrimSpace(s); s != "" {
+			set[s] = struct{}{}
+		}
+	}
+	if f := strings.TrimSpace(i.Fingerprint); f != "" {
+		set[f] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	return out
 }
 
 // resolveDeviceID returns the agent's stable unique device id and where it came
 // from. Precedence:
 //  1. explicit override (AEGIS_DEVICE_ID) — testing or a server-pinned id;
-//  2. persisted identity whose fingerprint still MATCHES this machine → reuse;
-//  3. persisted identity whose fingerprint CHANGED → clone/reimage → new id;
+//  2. persisted identity that shares ANY hardware signal with this machine → reuse;
+//  3. persisted identity sharing NO signal → clone/reimage → new id;
 //  4. no identity yet → generate a new id.
 //
-// fingerprint is the current hardware fingerprint (may be "" if it could not be
-// read — in that case a persisted id is reused as-is, no clone detection).
-func resolveDeviceID(override, secureDir, fingerprint string) (id, source string, err error) {
+// signals is the current hardware signal set (best first; may be empty if none
+// could be read — then a persisted id is reused as-is, no clone detection).
+func resolveDeviceID(override, secureDir string, signals []string) (id, source string, err error) {
 	if v := strings.TrimSpace(override); v != "" {
 		return v, "config override", nil
 	}
@@ -37,59 +59,119 @@ func resolveDeviceID(override, secureDir, fingerprint string) (id, source string
 	if data, rerr := os.ReadFile(path); rerr == nil {
 		var cur identity
 		if json.Unmarshal(data, &cur) == nil && strings.TrimSpace(cur.DeviceID) != "" {
-			// Clone/reimage detection: a changed fingerprint means this id was
-			// created on a DIFFERENT machine (e.g. a VM cloned from a template that
-			// had the agent baked in) — issue a fresh id so we don't collide.
-			if fingerprint != "" && cur.Fingerprint != "" && cur.Fingerprint != fingerprint {
-				return writeNewIdentity(path, fingerprint, "regenerated (hardware changed — clone/reimage)")
+			persisted := cur.signalSet()
+			// Clone/reimage ONLY when we can read signals now, the record has signals,
+			// and NONE overlap. Overlap on any signal (e.g. SMBIOS still matches after
+			// a TPM signal was added) means the same machine — reuse.
+			if len(signals) > 0 && len(persisted) > 0 && !overlaps(signals, persisted) {
+				return writeNewIdentity(path, signals, "", "regenerated (hardware changed — clone/reimage)")
+			}
+			// Same machine: keep id + computer id. Refresh the stored signals if they
+			// changed (e.g. TPM now readable) so future matches stay robust.
+			if len(signals) > 0 && !sameSet(signals, cur.Signals) {
+				_ = writeIdentity(path, cur.DeviceID, signals, cur.ComputerID)
 			}
 			return cur.DeviceID, "persisted", nil
 		}
 	}
-	return writeNewIdentity(path, fingerprint, "generated")
+	return writeNewIdentity(path, signals, "", "generated")
 }
 
-func writeNewIdentity(path, fingerprint, source string) (string, string, error) {
+// overlaps reports whether a and b share at least one element.
+func overlaps(a, b []string) bool {
+	set := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		set[s] = struct{}{}
+	}
+	for _, s := range a {
+		if _, ok := set[s]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// sameSet reports whether a and b contain the same elements (order-independent).
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		set[s] = struct{}{}
+	}
+	for _, s := range b {
+		if _, ok := set[s]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func writeNewIdentity(path string, signals []string, computerID, source string) (string, string, error) {
 	id, err := newUUID()
 	if err != nil {
 		return "", "", fmt.Errorf("generate device id: %w", err)
 	}
-	rec := identity{DeviceID: id, Fingerprint: fingerprint, CreatedAt: time.Now().Unix()}
-	data, err := json.MarshalIndent(rec, "", "  ")
-	if err != nil {
+	if err := writeIdentity(path, id, signals, computerID); err != nil {
 		return "", "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", "", fmt.Errorf("prepare secure dir: %w", err)
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return "", "", fmt.Errorf("persist identity: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return "", "", fmt.Errorf("install identity: %w", err)
 	}
 	return id, source, nil
 }
 
-// persistDeviceID overwrites identity.json with a specific device id (keeping the
-// current fingerprint). Used when the server reconciles the agent to a canonical
-// id during enrollment (dedup), so the adopted id survives restarts.
-func persistDeviceID(secureDir, id, fingerprint string) error {
-	path := filepath.Join(secureDir, "identity.json")
-	rec := identity{DeviceID: id, Fingerprint: fingerprint, CreatedAt: time.Now().Unix()}
+// writeIdentity atomically persists the identity record.
+func writeIdentity(path, id string, signals []string, computerID string) error {
+	fp := ""
+	if len(signals) > 0 {
+		fp = signals[0]
+	}
+	rec := identity{DeviceID: id, Fingerprint: fp, Signals: signals, ComputerID: computerID, CreatedAt: time.Now().Unix()}
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(secureDir, 0o755); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("prepare secure dir: %w", err)
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
+		return fmt.Errorf("persist identity: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("install identity: %w", err)
+	}
+	return nil
+}
+
+// persistDeviceID overwrites identity.json with a specific device id (keeping the
+// current signals and any server-assigned computer id). Used when the server
+// reconciles the agent to a canonical id during enrollment (dedup).
+func persistDeviceID(secureDir, id string, signals []string) error {
+	path := filepath.Join(secureDir, "identity.json")
+	return writeIdentity(path, id, signals, loadComputerID(secureDir))
+}
+
+// setComputerID records the server-assigned numeric console id (from the enroll
+// response) alongside the existing identity. Best-effort; no-op if there is no id.
+func setComputerID(secureDir, deviceID string, signals []string, computerID string) error {
+	if strings.TrimSpace(computerID) == "" {
+		return nil
+	}
+	path := filepath.Join(secureDir, "identity.json")
+	return writeIdentity(path, deviceID, signals, computerID)
+}
+
+// loadComputerID returns the persisted server-assigned computer id, or "".
+func loadComputerID(secureDir string) string {
+	data, err := os.ReadFile(filepath.Join(secureDir, "identity.json"))
+	if err != nil {
+		return ""
+	}
+	var cur identity
+	if json.Unmarshal(data, &cur) != nil {
+		return ""
+	}
+	return cur.ComputerID
 }
 
 // newUUID returns an RFC 4122 version-4 UUID using crypto/rand (no external dep).
