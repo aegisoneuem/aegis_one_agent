@@ -183,12 +183,12 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdistJobs chan softdistJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
 	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	tlsLogged := false
 	// Extensible command dispatch: one registry of per-type handlers (no hardcoded
 	// switch), so new task types bolt on without touching the receive loop.
-	disp := newDispatcher(cfg, outbox, installJobs, softdistJobs, stg, scanTrigger)
+	disp := newDispatcher(cfg, outbox, installJobs, softdist, stg, scanTrigger)
 	for {
 		if rootCtx.Err() != nil {
 			return nil // graceful shutdown requested
@@ -599,10 +599,6 @@ func runProcess(ctx context.Context) {
 	// jobs) survive reconnects.
 	outbox := make(chan *pb.AgentMessage, 256)
 	installJobs := make(chan installJob, 32)
-	// Software deploys run on their OWN serial queue (independent of patches, so
-	// neither blocks the other's intake); execution still serializes via
-	// machineInstallGate so only one installer touches the machine at a time.
-	softdistJobs := make(chan softdistJob, 32)
 	// Tracks which installed KBs are awaiting a reboot (for the device-level
 	// pending-reboot report). Shared by the installer (writes) and detection (reads).
 	rebootStore := newRebootPendingStore(cfg.SecureDir)
@@ -618,9 +614,11 @@ func runProcess(ctx context.Context) {
 	go inst.patchWorker(installJobs)
 
 	// Software distribution worker: executes signed software_deploy commands
-	// (install/uninstall of catalog packages) on its own serial queue.
-	sdi := newSoftdistInstaller(outbox, cfg.DeviceID)
-	go sdi.worker(softdistJobs)
+	// (install/uninstall of catalog packages) on its own serial queue. It shares
+	// the encrypted patch cache (server-delivered installers are stored sealed at
+	// rest) and the tmp dir (transient decrypt-to-install, secure-deleted after).
+	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir)
+	go sdi.worker()
 
 	// Stager: server-driven pre-caching of patches (stage_patch) ahead of a
 	// scheduled install. Fetches via peer-cache and stores encrypted as staged.
@@ -650,7 +648,7 @@ func runProcess(ctx context.Context) {
 	// timer (event-driven; no-op on non-Windows).
 	go watchServicingForRescan(ctx, scanTrigger)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, softdistJobs, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, sdi, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")

@@ -3,76 +3,225 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
-// softdistJob is a software deploy handed from the receiver to the softdist
-// worker. Software deploys run on their OWN serial queue — independent of the
-// patch queue so neither blocks the other's intake — but both acquire
-// machineInstallGate around the actual OS install, so only one installer ever
-// runs at a time (Windows serializes MSI; CBS + MSI collide — see install.go).
+// softdistJob is a software deploy handed to the serial softdist worker. Software
+// deploys run on their OWN queue (independent of patches so neither blocks the
+// other's intake), but both acquire machineInstallGate around the actual OS
+// install, so only one installer ever runs at a time (see install.go).
+//
+// cacheID non-empty → install the ENCRYPTED, server-delivered installer from the
+// cache (decrypt to a temp, run, secure-delete). Empty → install spec.FilePath
+// directly (a pre-staged / admin-dropped local file; the dev/local option).
 type softdistJob struct {
 	commandID string
 	spec      *pb.SoftwareDeploySpec
+	cacheID   string // non-empty → install from the encrypted cache
+	localPath string // resolved local installer path (when cacheID is empty)
 }
 
-// softdistInstaller carries what the worker needs across deploys.
+// softdistInstaller carries what the worker + delivery need across deploys.
 type softdistInstaller struct {
-	outbox   chan<- *pb.AgentMessage
-	deviceID string
+	outbox      chan<- *pb.AgentMessage
+	deviceID    string
+	cache       *patchcache.Cache // encrypted-at-rest store, shared with patches
+	tmpDir      string            // transient decrypt-to-install dir (secure-deleted after)
+	downloadDir string            // controlled drop zone for pre-staged local installers
+	jobs        chan softdistJob
 }
 
-func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string) *softdistInstaller {
-	return &softdistInstaller{outbox: outbox, deviceID: deviceID}
+func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string) *softdistInstaller {
+	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, jobs: make(chan softdistJob, 32)}
 }
 
-// worker runs software deploys ONE AT A TIME on this queue. Each job is isolated
-// with safeRun so one deploy's panic cannot kill the worker (which would stall
-// every later deploy) — the agent stays up and moves to the next job.
-func (s *softdistInstaller) worker(jobs <-chan softdistJob) {
-	for job := range jobs {
+// resolveLocal resolves a pre-staged installer path. A bare name / relative path
+// is taken under SKVC\download (the controlled drop zone — the documented place
+// for admin/console-dropped installers); an absolute path is honored as-is (dev /
+// explicit). Server-delivered packages never use this — they stream straight into
+// the encrypted cache.
+func (s *softdistInstaller) resolveLocal(fp string) string {
+	if filepath.IsAbs(fp) {
+		return fp
+	}
+	return filepath.Join(s.downloadDir, fp)
+}
+
+// deliver is the dispatch entry (runs on the receiver goroutine) — it must NOT
+// block. It decides how the installer reaches the machine, then enqueues the
+// install job:
+//   - spec.file_path present AND on disk → pre-staged/local file → enqueue now.
+//   - content_id already cached → enqueue now (install from the encrypted cache).
+//   - content_id not cached → STREAM it from the server in the background (peer-
+//     cache / FetchContent), store it encrypted, then enqueue — the real-UEM path.
+func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlPlaneClient, cmdID string, spec *pb.SoftwareDeploySpec) {
+	// 0. Idempotency / detection (Level 1, MSI): if a product_code is given, skip the
+	//    no-op — install of an already-present product, or uninstall of an absent one.
+	//    This avoids even downloading an installer we would not run.
+	action := strings.ToLower(strings.TrimSpace(spec.Action))
+	if action == "" {
+		action = "install"
+	}
+	if pc := strings.TrimSpace(spec.ProductCode); pc != "" {
+		installed := softdist.ProductInstalled(pc)
+		switch {
+		case action == "install" && installed:
+			slog.Info("software_deploy: product already installed, skipping", "command_id", cmdID, "product_code", pc)
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "already installed (skipped)")))
+			return
+		case action == "uninstall" && !installed:
+			slog.Info("software_deploy: product not installed, nothing to uninstall", "command_id", cmdID, "product_code", pc)
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
+			return
+		}
+	}
+
+	// 0b. Uninstall by MSI ProductCode needs NO installer file — Windows Installer
+	//     removes the product from its own database (msiexec /x {GUID}). Reaching here
+	//     on an uninstall with a product_code means the product IS installed (STEP 0
+	//     short-circuits the absent case), so enqueue a fileless uninstall.
+	if action == "uninstall" && strings.TrimSpace(spec.ProductCode) != "" && isMSIType(spec) {
+		slog.Info("software_deploy: uninstall by product_code (no installer file needed)", "command_id", cmdID, "product_code", spec.ProductCode)
+		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
+		return
+	}
+
+	// 1. Pre-staged/local file wins (an admin-dropped file in SKVC\download, or an
+	//    explicit absolute path). A bare name resolves under the controlled download dir.
+	if fp := strings.TrimSpace(spec.FilePath); fp != "" {
+		local := s.resolveLocal(fp)
+		if fileExists(local) {
+			slog.Info("software_deploy: using pre-staged local file", "command_id", cmdID, "file", local)
+			s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec, localPath: local})
+			return
+		}
+		slog.Warn("software_deploy: pre-staged file not found, trying server delivery", "command_id", cmdID, "looked_at", local)
+	}
+
+	// 2. Server-delivered: need a content_id to fetch.
+	id := strings.TrimSpace(spec.ContentId)
+	if id == "" {
+		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+			pb.ActionPhase_ACTION_PHASE_FAILED, "no installer: set file_path (pre-staged) or content_id (server delivery)")))
+		return
+	}
+	if s.cache == nil {
+		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+			pb.ActionPhase_ACTION_PHASE_FAILED, "content delivery unavailable (no cache)")))
+		return
+	}
+	if s.cache.Has(id) {
+		slog.Info("software_deploy: installer already cached, using it", "command_id", cmdID, "content_id", id)
+		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec, cacheID: id})
+		return
+	}
+
+	// 3. Fetch in the background (a large installer must not block the receiver),
+	//    verify integrity, store encrypted, then enqueue the install.
+	go func() {
+		defer recoverLog("softdist-fetch")
+		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+			pb.ActionPhase_ACTION_PHASE_DOWNLOADING, "fetching installer from server")))
+
+		tmp := filepath.Join(s.tmpDir, "softdist-fetch-"+sanitize(cmdID)+installerExt(spec))
+		// fetchContent streams over mTLS and verifies SHA-256 after download.
+		req := &pb.ContentRequest{Kind: "package", Id: id, Sha256: spec.ExpectedHash}
+		if err := fetchContent(ctx, client, req, tmp); err != nil {
+			slog.Error("software_deploy: fetch failed", "command_id", cmdID, "content_id", id, "error", err.Error())
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_FAILED, "fetch failed: "+err.Error())))
+			return
+		}
+		// Store encrypted at rest; remove the plaintext temp (cache holds the sealed copy).
+		err := s.cache.Put(id, tmp, patchcache.StateStaged)
+		if rmErr := secure.SecureDelete(tmp); rmErr != nil {
+			slog.Warn("software_deploy: could not remove fetch temp", "temp", tmp, "error", rmErr.Error())
+		}
+		if err != nil {
+			slog.Error("software_deploy: cache put failed", "command_id", cmdID, "content_id", id, "error", err.Error())
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_FAILED, "cache put failed: "+err.Error())))
+			return
+		}
+		slog.Info("software_deploy: installer fetched + cached (encrypted)", "command_id", cmdID, "content_id", id)
+		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec, cacheID: id})
+	}()
+}
+
+// enqueue hands a ready job to the serial worker (or drops it on shutdown).
+func (s *softdistInstaller) enqueue(ctx context.Context, job softdistJob) {
+	select {
+	case s.jobs <- job:
+	case <-ctx.Done():
+	}
+}
+
+// worker runs software deploys ONE AT A TIME. Each job is isolated with safeRun so
+// one deploy's panic cannot kill the worker (which would stall every later deploy).
+func (s *softdistInstaller) worker() {
+	for job := range s.jobs {
 		job := job
 		safeRun("softdist-deploy", func() { s.run(job) })
 	}
 }
 
-// run executes one deploy and streams its terminal ActionStatus. QUEUED is
-// emitted by the receiver when the job is accepted; this emits RUNNING (it may
-// block on the shared install lane) and then the terminal phase.
+// run executes one deploy and streams its terminal ActionStatus. A cached
+// (server-delivered, encrypted) installer is decrypted to a transient temp that is
+// always secure-deleted; a local file_path is run in place.
 func (s *softdistInstaller) run(job softdistJob) {
 	spec := job.spec
 	cmdID := job.commandID
 	started := time.Now().Unix()
 
-	emitRunning := func(reason string) {
-		sendStatus(s.outbox, &pb.ActionStatus{
-			ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
-			Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: reason, StartedAt: started,
-		})
-	}
+	sendStatus(s.outbox, &pb.ActionStatus{
+		ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
+		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "starting install", StartedAt: started,
+	})
 
-	slog.Info("software_deploy: starting", "command_id", cmdID,
-		"name", spec.Name, "version", spec.Version, "action", spec.Action, "type", spec.InstallerType)
-	emitRunning("starting install")
-
-	// Acquire the single machine-install lane (shared with patches): only one
-	// installer runs at a time. If a patch or another deploy holds it, we wait here.
+	// One installer at a time across the whole machine (shared with patches).
 	machineInstallGate.Lock()
 	defer machineInstallGate.Unlock()
 
+	installPath := job.localPath
+	if job.cacheID != "" {
+		// Decrypt the sealed installer to a transient temp (plaintext exists only
+		// here, only during the install) and secure-delete it afterwards.
+		tmp := filepath.Join(s.tmpDir, "softdist-install-"+sanitize(cmdID)+s.cache.Ext(job.cacheID))
+		if err := s.cache.Decrypt(job.cacheID, tmp); err != nil {
+			slog.Error("software_deploy: cache decrypt failed", "command_id", cmdID, "content_id", job.cacheID, "error", err.Error())
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "cache decrypt failed: " + err.Error()})
+			return
+		}
+		installPath = tmp
+		defer func() {
+			if err := secure.SecureDelete(tmp); err != nil {
+				slog.Warn("software_deploy: could not remove decrypted temp", "temp", tmp, "error", err.Error())
+			}
+		}()
+	}
+
 	res := softdist.Run(context.Background(), softdist.Params{
-		Name:          spec.Name,
-		Action:        spec.Action,
-		InstallerType: spec.InstallerType,
-		FilePath:      spec.FilePath,
-		SilentArgs:    spec.SilentArgs,
-		ExpectedHash:  spec.ExpectedHash,
-		HashAlgorithm: spec.HashAlgorithm,
-		SuccessCodes:  spec.SuccessExitCodes,
-		Timeout:       time.Duration(spec.TimeoutSeconds) * time.Second,
+		Name:             spec.Name,
+		Action:           spec.Action,
+		InstallerType:    spec.InstallerType,
+		FilePath:         installPath,
+		SilentArgs:       spec.SilentArgs,
+		ExpectedHash:     spec.ExpectedHash,
+		HashAlgorithm:    spec.HashAlgorithm,
+		SuccessCodes:     spec.SuccessExitCodes,
+		Timeout:          time.Duration(spec.TimeoutSeconds) * time.Second,
+		RequireSignature: spec.RequireSignature,
+		ProductCode:      spec.ProductCode,
 	})
 
 	var phase pb.ActionPhase
@@ -84,11 +233,61 @@ func (s *softdistInstaller) run(job softdistJob) {
 	default:
 		phase = pb.ActionPhase_ACTION_PHASE_FAILED
 	}
+	// A server-delivered installer is single-use per machine — drop it from the
+	// cache after a successful install (orphans are swept by the cache janitor TTL).
+	if job.cacheID != "" && res.Success {
+		if err := s.cache.Remove(job.cacheID); err != nil {
+			slog.Warn("software_deploy: could not remove installed package from cache", "content_id", job.cacheID, "error", err.Error())
+		}
+	}
+	s.finish(cmdID, spec.Name, started, phase, &res)
+}
+
+// finish streams the terminal ActionStatus and logs the outcome.
+func (s *softdistInstaller) finish(cmdID, name string, started int64, phase pb.ActionPhase, res *softdist.Result) {
 	sendStatus(s.outbox, &pb.ActionStatus{
 		ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
 		Phase: phase, ExitCode: int32(res.ExitCode), RebootRequired: res.RebootRequired,
 		Reason: res.Reason, Detail: res.Detail, StartedAt: started, FinishedAt: time.Now().Unix(),
 	})
-	slog.Info("software_deploy: finished", "command_id", cmdID, "name", spec.Name,
+	slog.Info("software_deploy: finished", "command_id", cmdID, "name", name,
 		"phase", phase.String(), "exit_code", res.ExitCode, "reboot_required", res.RebootRequired, "reason", res.Reason)
+}
+
+// fileExists reports whether path is present on disk.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// isMSIType reports whether the deploy targets an MSI product — an explicit "msi"
+// installer_type, or "" / "auto" with a ProductCode set (a ProductCode is an MSI
+// concept). Used to decide the fileless uninstall-by-ProductCode path.
+func isMSIType(spec *pb.SoftwareDeploySpec) bool {
+	switch strings.ToLower(strings.TrimSpace(spec.InstallerType)) {
+	case "msi":
+		return true
+	case "", "auto":
+		return strings.TrimSpace(spec.ProductCode) != ""
+	default:
+		return false
+	}
+}
+
+// installerExt returns the file extension to give the fetched/decrypted installer
+// so the right tool runs it: the file_path hint first, else from installer_type.
+func installerExt(spec *pb.SoftwareDeploySpec) string {
+	if e := filepath.Ext(strings.TrimSpace(spec.FilePath)); e != "" {
+		return e
+	}
+	switch strings.ToLower(strings.TrimSpace(spec.InstallerType)) {
+	case "msi":
+		return ".msi"
+	case "ps1":
+		return ".ps1"
+	case "bat":
+		return ".bat"
+	default:
+		return ".exe"
+	}
 }

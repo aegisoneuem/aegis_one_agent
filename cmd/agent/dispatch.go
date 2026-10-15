@@ -20,17 +20,17 @@ type taskHandler func(ctx context.Context, client pb.AgentControlPlaneClient, cm
 // dependencies the handlers need (created once in main); the per-connection client
 // + ctx are passed in on each dispatch.
 type dispatcher struct {
-	cfg          config.Config
-	outbox       chan *pb.AgentMessage
-	installJobs  chan installJob
-	softdistJobs chan softdistJob
-	stg          *stager
-	scanTrigger  chan<- struct{}
-	handlers     map[string]taskHandler
+	cfg         config.Config
+	outbox      chan *pb.AgentMessage
+	installJobs chan installJob
+	softdist    *softdistInstaller
+	stg         *stager
+	scanTrigger chan<- struct{}
+	handlers    map[string]taskHandler
 }
 
-func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs chan installJob, softdistJobs chan softdistJob, stg *stager, scanTrigger chan<- struct{}) *dispatcher {
-	d := &dispatcher{cfg: cfg, outbox: outbox, installJobs: installJobs, softdistJobs: softdistJobs, stg: stg, scanTrigger: scanTrigger}
+func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, scanTrigger chan<- struct{}) *dispatcher {
+	d := &dispatcher{cfg: cfg, outbox: outbox, installJobs: installJobs, softdist: softdist, stg: stg, scanTrigger: scanTrigger}
 	d.handlers = map[string]taskHandler{
 		"install_patch":   d.handleInstallPatchCmd,
 		"uninstall_patch": d.handleUninstallPatchCmd,
@@ -92,24 +92,23 @@ func (d *dispatcher) handleUninstallPatchCmd(ctx context.Context, _ pb.AgentCont
 }
 
 // software_deploy runs on the independent softdist worker (thin handler: validate
-// + enqueue, never execute inline — the receiver must not block on a minutes-long
-// installer). Install/uninstall is one type, chosen by spec.action. The actual OS
-// install serializes against patches via machineInstallGate inside the worker.
-func (d *dispatcher) handleSoftwareDeployCmd(ctx context.Context, _ pb.AgentControlPlaneClient, cmd *pb.Command) {
+// + hand to delivery, never execute inline — the receiver must not block on a
+// fetch or a minutes-long installer). Install/uninstall is one type, chosen by
+// spec.action. Delivery streams the installer from the server when needed (or uses
+// a pre-staged local file); the OS install serializes against patches via
+// machineInstallGate inside the worker.
+func (d *dispatcher) handleSoftwareDeployCmd(ctx context.Context, client pb.AgentControlPlaneClient, cmd *pb.Command) {
 	var spec pb.SoftwareDeploySpec
 	if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
 		slog.Error("software_deploy: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
 		send(ctx, d.outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid software_deploy payload"))
 		return
 	}
-	slog.Info("software_deploy: accepted, queued", "command_id", cmd.CommandId,
+	slog.Info("software_deploy: accepted", "command_id", cmd.CommandId,
 		"name", spec.Name, "version", spec.Version, "action", spec.Action)
 	send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionSoftwareDeploy, d.cfg.DeviceID, "",
 		pb.ActionPhase_ACTION_PHASE_QUEUED, "queued")))
-	select {
-	case d.softdistJobs <- softdistJob{commandID: cmd.CommandId, spec: &spec}:
-	case <-ctx.Done():
-	}
+	d.softdist.deliver(ctx, client, cmd.CommandId, &spec)
 }
 
 // stage_patch: pre-cache a patch (encrypted, StateStaged) ahead of a scheduled

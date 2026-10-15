@@ -479,9 +479,13 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 		path = os.Getenv("AEGIS_SERVE_CAB")
 	case "patch":
 		path = os.Getenv("AEGIS_SERVE_PATCH")
+	case "package":
+		// Software distribution: the installer the admin put in the catalog. The
+		// agent streams it (no internet), stores it encrypted, verifies the hash.
+		path = os.Getenv("AEGIS_SERVE_SOFTWARE")
 	}
 	if path == "" {
-		return fmt.Errorf("no file configured to serve for kind %q (set AEGIS_SERVE_CAB/_PATCH)", req.Kind)
+		return fmt.Errorf("no file configured to serve for kind %q (set AEGIS_SERVE_CAB/_PATCH/_SOFTWARE)", req.Kind)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -654,21 +658,33 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		}
 
 		// Optionally push a signed software_deploy command (software distribution).
-		// Set AEGIS_DEPLOY_FILE to a LOCAL installer path on the agent machine; the
-		// server never streams bytes here. Optional: _NAME, _VERSION, _TYPE
-		// (msi|exe|ps1|bat|auto), _ACTION (install|uninstall), _ARGS (silent flags),
-		// _HASH, _HASH_ALGO.
-		if f := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_FILE")); f != "" {
+		// REAL-UEM path: set AEGIS_DEPLOY_CONTENT_ID + AEGIS_SERVE_SOFTWARE (the
+		// installer on the SERVER) — the agent streams the bytes (no local file).
+		// LOCAL/dev path: set AEGIS_DEPLOY_FILE to a path on the AGENT machine (pre-
+		// staged). Optional: _NAME, _VERSION, _TYPE (msi|exe|ps1|bat|auto), _ACTION
+		// (install|uninstall), _ARGS (silent flags), _HASH, _HASH_ALGO,
+		// _REQUIRE_SIG (1 = verify Authenticode publisher before running).
+		deployFile := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_FILE"))
+		deployContentID := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_CONTENT_ID"))
+		deployAction := strings.ToLower(strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_ACTION")))
+		deployProductCode := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"))
+		// Fileless MSI uninstall needs neither a file nor a content_id — just the
+		// ProductCode (msiexec /x {GUID}). Trigger the deploy for that case too.
+		uninstallByCode := deployAction == "uninstall" && deployProductCode != ""
+		if deployFile != "" || deployContentID != "" || uninstallByCode {
 			spec := &pb.SoftwareDeploySpec{
-				PackageId:     os.Getenv("AEGIS_DEPLOY_PACKAGE_ID"),
-				Name:          os.Getenv("AEGIS_DEPLOY_NAME"),
-				Version:       os.Getenv("AEGIS_DEPLOY_VERSION"),
-				Action:        os.Getenv("AEGIS_DEPLOY_ACTION"),
-				InstallerType: os.Getenv("AEGIS_DEPLOY_TYPE"),
-				FilePath:      f,
-				SilentArgs:    os.Getenv("AEGIS_DEPLOY_ARGS"),
-				ExpectedHash:  os.Getenv("AEGIS_DEPLOY_HASH"),
-				HashAlgorithm: os.Getenv("AEGIS_DEPLOY_HASH_ALGO"),
+				PackageId:        os.Getenv("AEGIS_DEPLOY_PACKAGE_ID"),
+				Name:             os.Getenv("AEGIS_DEPLOY_NAME"),
+				Version:          os.Getenv("AEGIS_DEPLOY_VERSION"),
+				Action:           os.Getenv("AEGIS_DEPLOY_ACTION"),
+				InstallerType:    os.Getenv("AEGIS_DEPLOY_TYPE"),
+				FilePath:         deployFile,      // local/pre-staged (dev); empty for server delivery
+				ContentId:        deployContentID, // server-delivered (real UEM); streamed via FetchContent
+				SilentArgs:       os.Getenv("AEGIS_DEPLOY_ARGS"),
+				ExpectedHash:     os.Getenv("AEGIS_DEPLOY_HASH"),
+				HashAlgorithm:    os.Getenv("AEGIS_DEPLOY_HASH_ALGO"),
+				RequireSignature: truthy(os.Getenv("AEGIS_DEPLOY_REQUIRE_SIG")),
+				ProductCode:      os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"), // MSI GUID → idempotency check
 			}
 			specBytes, err := proto.Marshal(spec)
 			if err != nil {
@@ -681,7 +697,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					log.Printf("failed to send software_deploy command: %v", err)
 					return
 				}
-				fmt.Printf("Sent command -> id: deploy-001, type: software_deploy, name=%s, file=%s (signed)\n", spec.Name, f)
+				src := "file=" + deployFile
+				if deployContentID != "" {
+					src = "content_id=" + deployContentID + " (server-delivered)"
+				}
+				fmt.Printf("Sent command -> id: deploy-001, type: software_deploy, name=%s, %s (signed)\n", spec.Name, src)
 			}
 		}
 
@@ -923,6 +943,15 @@ func main() {
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+}
+
+// truthy reports whether an env flag is set to an on-ish value.
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func maskToken(t string) string {

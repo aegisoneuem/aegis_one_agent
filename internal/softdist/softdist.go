@@ -20,6 +20,14 @@ type Params struct {
 	HashAlgorithm string        // "sha256" (default) | "sha512"
 	SuccessCodes  []int32       // extra exit codes to treat as success beyond {0,3010,1641}
 	Timeout       time.Duration // 0 = package default
+	// ProductCode is the MSI ProductCode GUID ("{...}"). When set on an uninstall,
+	// Run removes the product by code (msiexec /x {GUID}) with NO installer file —
+	// Windows Installer removes it from its own database, the standard-UEM uninstall.
+	ProductCode string
+	// RequireSignature, when true, makes Run verify the installer's Authenticode
+	// signature (trusted publisher) and REFUSE to run an unsigned/untrusted file —
+	// the standard-UEM publisher check. Left false for internal/unsigned installers.
+	RequireSignature bool
 }
 
 // Result is the outcome of one deploy: a terminal mapping (Success /

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // defaultTimeout bounds a single installer run when the spec sets none. Software
@@ -27,6 +28,17 @@ const defaultTimeout = 30 * time.Minute
 // (the agent's softdist worker) has already serialized this against patches and
 // other deploys via the shared install lane, so only one installer runs at once.
 func Run(ctx context.Context, p Params) Result {
+	// Fileless MSI uninstall: when we know the MSI ProductCode and no installer file
+	// is present, Windows Installer removes the product from its own database —
+	// msiexec /x {GUID}. No file means no integrity/signature check to run (there is
+	// nothing to verify); this is the standard-UEM way to uninstall an MSI product.
+	if isFilelessMSIUninstall(p) {
+		pc := strings.TrimSpace(p.ProductCode)
+		logPath := filepath.Join(os.TempDir(), "aegis-uninstall-"+sanitizeCode(pc)+".log")
+		bin, args := msiUninstallByCode(p, pc, logPath)
+		return execInstaller(ctx, p, bin, args, logPath)
+	}
+
 	abs, err := filepath.Abs(p.FilePath)
 	if err != nil {
 		return Result{Reason: fmt.Sprintf("resolve installer path %q: %v", p.FilePath, err)}
@@ -52,11 +64,70 @@ func Run(ctx context.Context, p Params) Result {
 		slog.Info("softdist: installer integrity verified", "file", abs)
 	}
 
-	bin, args, err := buildInvocation(p, abs)
+	// Publisher check (standard-UEM): when required, the installer must carry a
+	// valid Authenticode signature trusted by this machine, or we refuse to run it.
+	if p.RequireSignature {
+		if err := verifyAuthenticode(abs); err != nil {
+			slog.Error("softdist: publisher signature check FAILED — refusing to run", "file", abs, "error", err.Error())
+			return Result{Reason: "publisher signature check failed (" + err.Error() + ") — refusing to run"}
+		}
+		slog.Info("softdist: publisher signature verified (Authenticode)", "file", abs)
+	}
+
+	// MSI verbose log: msiexec /qn prints nothing to the console, so without this
+	// a failure (e.g. 1603) has no detail to diagnose. Standard UEM always captures
+	// the MSI log; we write it next to the installer, fold its tail into Detail, and
+	// remove it. buildInvocation adds /l*v only for msi; the file is absent otherwise.
+	logPath := abs + ".aegis-install.log"
+	bin, args, err := buildInvocation(p, abs, logPath)
 	if err != nil {
 		return Result{Reason: err.Error()}
 	}
+	return execInstaller(ctx, p, bin, args, logPath)
+}
 
+// isFilelessMSIUninstall reports whether this is an uninstall we can run by MSI
+// ProductCode alone (no installer file): an MSI-typed deploy with a ProductCode and
+// no local file path. installer_type "" / "auto" is treated as MSI here because a
+// ProductCode is inherently an MSI concept.
+func isFilelessMSIUninstall(p Params) bool {
+	if !strings.EqualFold(strings.TrimSpace(p.Action), "uninstall") {
+		return false
+	}
+	if strings.TrimSpace(p.ProductCode) == "" || strings.TrimSpace(p.FilePath) != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(p.InstallerType)) {
+	case "", "auto", "msi":
+		return true
+	default:
+		return false
+	}
+}
+
+// msiUninstallByCode builds msiexec /x {ProductCode} with the payload's silent args
+// (default /qn /norestart) and a verbose log for diagnosis.
+func msiUninstallByCode(p Params, productCode, logPath string) (bin string, args []string) {
+	extra := strings.Fields(p.SilentArgs)
+	if len(extra) == 0 {
+		extra = []string{"/qn", "/norestart"}
+	}
+	args = append([]string{"/x", productCode}, extra...)
+	if logPath != "" {
+		args = append(args, "/l*v", logPath)
+	}
+	return "msiexec.exe", args
+}
+
+// sanitizeCode strips a ProductCode GUID down to a filename-safe token for the log.
+func sanitizeCode(code string) string {
+	repl := strings.NewReplacer("{", "", "}", "", " ", "")
+	return repl.Replace(code)
+}
+
+// execInstaller runs the chosen installer process, bounds it with a timeout, folds
+// the MSI log tail (when logPath is set) into Detail, and maps the exit code.
+func execInstaller(ctx context.Context, p Params, bin string, args []string, logPath string) Result {
 	timeout := p.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -65,18 +136,60 @@ func Run(ctx context.Context, p Params) Result {
 	defer cancel()
 
 	cmd := exec.CommandContext(rctx, bin, args...)
-	slog.Info("softdist: running installer", "name", p.Name, "bin", bin, "file", abs, "timeout", timeout.String())
-	slog.Debug("softdist: command", "command", strings.Join(cmd.Args, " "))
+	slog.Info("softdist: running installer", "name", p.Name, "bin", bin, "args", strings.Join(args, " "), "timeout", timeout.String())
 	out, runErr := cmd.CombinedOutput()
 
+	// Prefer the MSI log tail over the (empty) console output for Detail.
+	detail := tail(string(out), 600)
+	if logPath != "" {
+		if logTail := readInstallLog(logPath); logTail != "" {
+			detail = logTail
+		}
+		_ = os.Remove(logPath)
+	}
+
 	if rctx.Err() == context.DeadlineExceeded {
-		return Result{Reason: fmt.Sprintf("installer timed out after %s", timeout), Detail: tail(string(out), 600)}
+		return Result{Reason: fmt.Sprintf("installer timed out after %s", timeout), Detail: detail}
 	}
 	if cmd.ProcessState == nil {
 		// The installer failed to even start (missing binary, bad path, etc.).
 		return Result{Reason: "could not start installer", Detail: fmt.Sprintf("%v", runErr)}
 	}
-	return classify(p, cmd.ProcessState.ExitCode(), string(out))
+	res := classify(p, cmd.ProcessState.ExitCode(), string(out))
+	res.Detail = detail
+	return res
+}
+
+// readInstallLog returns the tail of an MSI log (where the failing action and
+// return codes appear). MSI logs are commonly UTF-16LE; decode before tailing.
+func readInstallLog(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return tail(decodeLog(data), 2000)
+}
+
+// decodeLog turns an MSI log file's bytes into text, handling the UTF-16LE that
+// msiexec usually writes (with or without a BOM).
+func decodeLog(b []byte) string {
+	if len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE {
+		b = b[2:]
+	}
+	nul := 0
+	for i := 0; i < len(b) && i < 400; i++ {
+		if b[i] == 0 {
+			nul++
+		}
+	}
+	if nul > 40 { // mostly NULs in the ASCII range → UTF-16LE
+		u := make([]uint16, len(b)/2)
+		for i := 0; i+1 < len(b); i += 2 {
+			u[i/2] = uint16(b[i]) | uint16(b[i+1])<<8
+		}
+		return string(utf16.Decode(u))
+	}
+	return string(b)
 }
 
 // classify maps an installer exit code to the terminal result. 0 succeeds;
@@ -111,6 +224,12 @@ func classify(p Params, exit int, out string) Result {
 	case exit == 1605 && strings.EqualFold(strings.TrimSpace(p.Action), "uninstall"):
 		res.NotApplicable = true
 		res.Reason = "product not installed (nothing to uninstall)"
+	case exit == 1638:
+		// Another version of this product is already installed — the install did not
+		// happen, but it is not a hard failure (idempotency / detection should have
+		// caught it; treat as not-applicable).
+		res.NotApplicable = true
+		res.Reason = "another version of this product is already installed (exit 1638)"
 	case exit == 1618:
 		res.Reason = "another installer is already running on this machine (Windows allows one MSI at a time, exit 1618)"
 	case exit == 1619:
@@ -126,7 +245,7 @@ func classify(p Params, exit int, out string) Result {
 // buildInvocation chooses the process + args for the installer type. "auto" (or
 // empty) infers from the file extension. Silent/unattended flags come from the
 // payload (vendor-specific); only msi gets a sane default when none are given.
-func buildInvocation(p Params, abs string) (bin string, args []string, err error) {
+func buildInvocation(p Params, abs, logPath string) (bin string, args []string, err error) {
 	typ := strings.ToLower(strings.TrimSpace(p.InstallerType))
 	if typ == "" || typ == "auto" {
 		switch strings.ToLower(filepath.Ext(abs)) {
@@ -155,7 +274,11 @@ func buildInvocation(p Params, abs string) (bin string, args []string, err error
 		if len(extra) == 0 {
 			extra = []string{"/qn", "/norestart"} // default MSI silent + no auto-reboot
 		}
-		return "msiexec.exe", append([]string{flag, abs}, extra...), nil
+		msiArgs := append([]string{flag, abs}, extra...)
+		if logPath != "" {
+			msiArgs = append(msiArgs, "/l*v", logPath) // verbose log for diagnosis
+		}
+		return "msiexec.exe", msiArgs, nil
 	case "ps1":
 		// Executing a .ps1 PAYLOAD the server shipped — a deploy action, not the
 		// agent using PowerShell for its own logic (which it never does).

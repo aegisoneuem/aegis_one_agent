@@ -34,7 +34,7 @@ func TestBuildInvocation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			bin, args, err := buildInvocation(c.p, c.abs)
+			bin, args, err := buildInvocation(c.p, c.abs, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -49,8 +49,44 @@ func TestBuildInvocation(t *testing.T) {
 }
 
 func TestBuildInvocationUnknownType(t *testing.T) {
-	if _, _, err := buildInvocation(Params{InstallerType: "rpm"}, `C:\p\x`); err == nil {
+	if _, _, err := buildInvocation(Params{InstallerType: "rpm"}, `C:\p\x`, ""); err == nil {
 		t.Fatal("expected an error for an unknown installer_type")
+	}
+}
+
+func TestIsFilelessMSIUninstall(t *testing.T) {
+	code := "{23170F69-40C1-2702-2604-000001000000}"
+	cases := []struct {
+		name string
+		p    Params
+		want bool
+	}{
+		{"uninstall by code, no file, msi", Params{Action: "uninstall", InstallerType: "msi", ProductCode: code}, true},
+		{"uninstall by code, no file, auto", Params{Action: "uninstall", InstallerType: "auto", ProductCode: code}, true},
+		{"uninstall by code, no file, empty type", Params{Action: "uninstall", ProductCode: code}, true},
+		{"uninstall with a file present → file-based", Params{Action: "uninstall", ProductCode: code, FilePath: `C:\p\app.msi`}, false},
+		{"uninstall without a code", Params{Action: "uninstall", InstallerType: "msi"}, false},
+		{"install is never fileless", Params{Action: "install", InstallerType: "msi", ProductCode: code}, false},
+		{"exe uninstall is not MSI", Params{Action: "uninstall", InstallerType: "exe", ProductCode: code}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isFilelessMSIUninstall(c.p); got != c.want {
+				t.Errorf("isFilelessMSIUninstall = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestMSIUninstallByCode(t *testing.T) {
+	code := "{23170F69-40C1-2702-2604-000001000000}"
+	bin, args := msiUninstallByCode(Params{}, code, `C:\t\u.log`)
+	if bin != "msiexec.exe" {
+		t.Errorf("bin = %q, want msiexec.exe", bin)
+	}
+	want := `/x {23170F69-40C1-2702-2604-000001000000} /qn /norestart /l*v C:\t\u.log`
+	if got := strings.Join(args, " "); got != want {
+		t.Errorf("args = %q, want %q", got, want)
 	}
 }
 
