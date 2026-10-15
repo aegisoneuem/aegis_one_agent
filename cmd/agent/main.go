@@ -21,10 +21,10 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
 	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
+	"github.com/aegisoneuem/aegis_one_proto/commandsign"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
-	"google.golang.org/protobuf/proto"
 )
 
 func buildHeartbeatMessage(deviceID, version, osName, hostname string, now time.Time) *pb.AgentMessage {
@@ -109,11 +109,16 @@ func loadCommandVerifyKey(cfg config.Config) error {
 	return nil
 }
 
-func verifyCommand(payload, signature []byte) bool {
+// verifyCommand checks the signature over the WHOLE command envelope — type,
+// command_id and payload — not just the payload. Dispatch routes on cmd.Type,
+// so binding the type (and id) means a valid signature for one command cannot
+// be replayed under a different type/id. Server and agent share the exact
+// canonical encoding via the commandsign package, so they cannot drift.
+func verifyCommand(cmd *pb.Command) bool {
 	if len(cmdVerifyKey) != ed25519.PublicKeySize {
 		return false // no key loaded → trust nothing (fail-loud)
 	}
-	return ed25519.Verify(cmdVerifyKey, payload, signature)
+	return commandsign.Verify(cmdVerifyKey, cmd.Type, cmd.CommandId, cmd.Payload, cmd.Signature)
 }
 
 func executeCommand(cfg config.Config, commandType string, payload string) (string, error) {
@@ -178,9 +183,12 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
-	connFail := 0   // consecutive connection failures, to throttle reconnect logging
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdistJobs chan softdistJob, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
+	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	tlsLogged := false
+	// Extensible command dispatch: one registry of per-type handlers (no hardcoded
+	// switch), so new task types bolt on without touching the receive loop.
+	disp := newDispatcher(cfg, outbox, installJobs, softdistJobs, stg, scanTrigger)
 	for {
 		if rootCtx.Err() != nil {
 			return nil // graceful shutdown requested
@@ -316,104 +324,16 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 					continue
 				}
 				slog.Info("command received", "command_id", cmd.CommandId, "type", cmd.Type)
-				if !verifyCommand(cmd.Payload, cmd.Signature) {
+				if !verifyCommand(cmd) {
 					slog.Warn("command signature invalid — rejecting", "command_id", cmd.CommandId)
 					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "rejected", "signature verification failed"))
 					continue
 				}
 
-				// install_patch runs on the serial patch worker and reports phased
-				// InstallStatus; it must not block the receiver (DISM takes minutes).
-				if strings.EqualFold(strings.TrimSpace(cmd.Type), "install_patch") {
-					var spec pb.InstallPatchSpec
-					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
-						slog.Error("install_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
-						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid install payload"))
-						continue
-					}
-					slog.Info("install_patch: accepted, queued", "command_id", cmd.CommandId, "kb", spec.Kb)
-					send(ctx, outbox, actionStatusMsg(&pb.ActionStatus{
-						ActionId: cmd.CommandId, ActionType: actionPatchInstall, DeviceId: cfg.DeviceID,
-						Kb: spec.Kb, Phase: pb.ActionPhase_ACTION_PHASE_QUEUED}))
-					select {
-					case installJobs <- installJob{commandID: cmd.CommandId, spec: &spec}:
-					case <-ctx.Done():
-						return
-					}
-					continue
-				}
-
-				// uninstall_patch: remove an installed KB (wusa) on the serial worker.
-				if strings.EqualFold(strings.TrimSpace(cmd.Type), "uninstall_patch") {
-					var spec pb.InstallPatchSpec
-					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
-						slog.Error("uninstall_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
-						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid uninstall payload"))
-						continue
-					}
-					slog.Info("uninstall_patch: accepted, queued", "command_id", cmd.CommandId, "kb", spec.Kb)
-					send(ctx, outbox, actionStatusMsg(&pb.ActionStatus{
-						ActionId: cmd.CommandId, ActionType: actionPatchUninstall, DeviceId: cfg.DeviceID,
-						Kb: spec.Kb, Phase: pb.ActionPhase_ACTION_PHASE_QUEUED}))
-					select {
-					case installJobs <- installJob{commandID: cmd.CommandId, spec: &spec, uninstall: true}:
-					case <-ctx.Done():
-						return
-					}
-					continue
-				}
-
-				// stage_patch: pre-cache a patch (encrypted, StateStaged) ahead of a
-				// scheduled install. Fetched via peer-cache; runs in the background so
-				// it does not block the receiver.
-				if strings.EqualFold(strings.TrimSpace(cmd.Type), "stage_patch") {
-					var spec pb.InstallPatchSpec
-					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
-						slog.Error("stage_patch: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
-						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid stage payload"))
-						continue
-					}
-					slog.Info("stage_patch: accepted", "command_id", cmd.CommandId, "kb", spec.Kb)
-					stg.stage(ctx, client, cmd.CommandId, &spec)
-					continue
-				}
-
-				// reboot / cancel_reboot: server-driven (signed) system reboot.
-				if strings.EqualFold(strings.TrimSpace(cmd.Type), "reboot") {
-					var spec pb.RebootSpec
-					if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
-						send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid reboot payload"))
-						continue
-					}
-					status, message := handleReboot(&spec)
-					send(ctx, outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionReboot, cfg.DeviceID, "", rebootPhase(status), message)))
-					continue
-				}
-				if strings.EqualFold(strings.TrimSpace(cmd.Type), "cancel_reboot") {
-					status, message := handleCancelReboot()
-					send(ctx, outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionReboot, cfg.DeviceID, "", rebootPhase(status), message)))
-					continue
-				}
-
-				// scan_now: server/console-driven on-demand compliance scan. Fire the
-				// same trigger a new cab uses; the scan runs in the detection goroutine
-				// and streams its own scan ActionStatus. Ack receipt here.
-				if strings.EqualFold(strings.TrimSpace(cmd.Type), "scan_now") || strings.EqualFold(strings.TrimSpace(cmd.Type), "scan") {
-					slog.Info("scan_now: on-demand compliance scan requested", "command_id", cmd.CommandId)
-					signalDrain(scanTrigger)
-					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "accepted", "compliance scan triggered"))
-					continue
-				}
-
-				output, execErr := executeCommand(cfg, cmd.Type, string(cmd.Payload))
-				status, message := "success", "command received and acknowledged"
-				if execErr != nil {
-					status, message = "failed", execErr.Error()
-				} else if output != "" {
-					message = strings.TrimSpace(output)
-				}
-				slog.Info("command executed", "command_id", cmd.CommandId, "type", cmd.Type, "status", status)
-				send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, status, message))
+				// Route to the per-type handler (registry; no hardcoded switch). Patch
+				// install/uninstall queue on the serial worker; stage/reboot/scan run their
+				// own path; unknown types fall through to executeCommand.
+				disp.dispatch(ctx, client, cmd)
 			}
 		}()
 
@@ -579,6 +499,10 @@ func runProcess(ctx context.Context) {
 	// Resolve this device's stable unique identity. The hardware fingerprint lets
 	// us detect a clone/reimage (id baked into a template, machine changed) and
 	// issue a fresh id instead of colliding.
+	// Durable identity: if a prior uninstall/reinstall wiped SKVC\identity.json,
+	// restore it from the machine store (HKLM) BEFORE resolving — so the device
+	// keeps its id instead of regenerating. No-op when the file is present.
+	restoreIdentityIfMissing(cfg.SecureDir)
 	signals := hardwareSignals()
 	fingerprint := hardwareFingerprint()
 	deviceID, idSource, err := resolveDeviceID(cfg.DeviceID, cfg.SecureDir, signals)
@@ -612,6 +536,9 @@ func runProcess(ctx context.Context) {
 			return // graceful shutdown requested while retrying
 		}
 	}
+	// Identity is now final (device_id + any server-assigned computer_id). Mirror it
+	// to the durable machine store so it survives a future uninstall/reinstall.
+	mirrorIdentityToDurable(cfg.SecureDir)
 
 	// Local health/status endpoint (localhost only) for monitoring/troubleshooting.
 	agentHealth.update(func(h *healthState) {
@@ -672,6 +599,10 @@ func runProcess(ctx context.Context) {
 	// jobs) survive reconnects.
 	outbox := make(chan *pb.AgentMessage, 256)
 	installJobs := make(chan installJob, 32)
+	// Software deploys run on their OWN serial queue (independent of patches, so
+	// neither blocks the other's intake); execution still serializes via
+	// machineInstallGate so only one installer touches the machine at a time.
+	softdistJobs := make(chan softdistJob, 32)
 	// Tracks which installed KBs are awaiting a reboot (for the device-level
 	// pending-reboot report). Shared by the installer (writes) and detection (reads).
 	rebootStore := newRebootPendingStore(cfg.SecureDir)
@@ -685,6 +616,11 @@ func runProcess(ctx context.Context) {
 		maxAttempts:  cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
 	}
 	go inst.patchWorker(installJobs)
+
+	// Software distribution worker: executes signed software_deploy commands
+	// (install/uninstall of catalog packages) on its own serial queue.
+	sdi := newSoftdistInstaller(outbox, cfg.DeviceID)
+	go sdi.worker(softdistJobs)
 
 	// Stager: server-driven pre-caching of patches (stage_patch) ahead of a
 	// scheduled install. Fetches via peer-cache and stores encrypted as staged.
@@ -714,7 +650,7 @@ func runProcess(ctx context.Context) {
 	// timer (event-driven; no-op on non-Windows).
 	go watchServicingForRescan(ctx, scanTrigger)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, softdistJobs, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")

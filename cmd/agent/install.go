@@ -41,6 +41,18 @@ var servicingBusy atomic.Bool
 // servicing op touches WU at a time.
 var servicingGate sync.Mutex
 
+// machineInstallGate serializes EVERY machine-mutating install on this endpoint —
+// patch install/uninstall AND software deploy — down to one at a time. This is an
+// OS constraint, not ours: Windows Installer allows only one MSI transaction at a
+// time (the global _MSIExecute mutex → exit 1618), and a CBS/TrustedInstaller
+// servicing op plus a concurrent MSI collide via pending-reboot state and file
+// locks. Patches and software deploys run on SEPARATE queues (so neither blocks
+// the other's intake), but both acquire this gate around the actual OS execution,
+// so only one installer ever touches the machine at once. Lock order is always
+// machineInstallGate → servicingGate (softdist never takes servicingGate; the
+// compliance scan never takes this gate) → no deadlock.
+var machineInstallGate sync.Mutex
+
 // phaseEmitter streams an ActionPhase for the current job (QUEUED is emitted by
 // the receiver; VERIFYING/RUNNING by the platform install handler).
 type phaseEmitter func(pb.ActionPhase)
@@ -117,6 +129,10 @@ func cacheID(spec *pb.InstallPatchSpec) string {
 }
 
 func (p *patchInstaller) runInstall(job installJob) {
+	// One installer at a time across the whole machine (patch + softdist). Acquired
+	// first so it is released last (see machineInstallGate).
+	machineInstallGate.Lock()
+	defer machineInstallGate.Unlock()
 	servicingBusy.Store(true)
 	// Serialize against the compliance scan: wait out any in-flight scan, and keep
 	// scans from starting while we install (they contend on WU/TrustedInstaller).
@@ -223,6 +239,9 @@ func (p *patchInstaller) runInstall(job installJob) {
 // installed, it reports NOT_APPLICABLE without running wusa). Runs on the same
 // serial worker as installs (the servicing stack is single-operation).
 func (p *patchInstaller) runUninstall(job installJob) {
+	// One installer at a time across the whole machine (patch + softdist).
+	machineInstallGate.Lock()
+	defer machineInstallGate.Unlock()
 	servicingBusy.Store(true)
 	servicingGate.Lock()
 	defer func() {

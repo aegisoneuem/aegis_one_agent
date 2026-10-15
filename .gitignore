@@ -15,6 +15,9 @@ private*.txt
 /agent
 /mockserver
 /cachetest
+# mockserver runtime device registry (persisted dedup state; created at runtime)
+mockserver-devices.json
+mockserver-devices.json.tmp
 # installer build artifacts (branding assets ARE tracked)
 installer/*.msi
 installer/*.wixpdb

@@ -66,15 +66,52 @@ func resolveDeviceID(override, secureDir string, signals []string) (id, source s
 			if len(signals) > 0 && len(persisted) > 0 && !overlaps(signals, persisted) {
 				return writeNewIdentity(path, signals, "", "regenerated (hardware changed — clone/reimage)")
 			}
-			// Same machine: keep id + computer id. Refresh the stored signals if they
-			// changed (e.g. TPM now readable) so future matches stay robust.
-			if len(signals) > 0 && !sameSet(signals, cur.Signals) {
-				_ = writeIdentity(path, cur.DeviceID, signals, cur.ComputerID)
+			// Same machine: keep id + computer id. ACCUMULATE signals — merge any
+			// newly-readable signal into the stored set and NEVER drop a known one
+			// (union, never shrink). Hardware signals are stable ids; a signal that
+			// reads intermittently (TPM EK can be unreadable at boot; some VMs drop
+			// the SMBIOS UUID) must not erode the match anchor, or a later boot where
+			// that lone remaining signal fails would look like a clone and regenerate
+			// the device id (wiping the computer id with it). With a growing union, a
+			// regeneration needs ALL previously-seen signals to stop matching at once
+			// (= genuine hardware replacement).
+			if len(signals) > 0 {
+				merged := unionSignals(signals, persisted)
+				if !sameSet(merged, persisted) {
+					_ = writeIdentity(path, cur.DeviceID, merged, cur.ComputerID)
+				}
 			}
 			return cur.DeviceID, "persisted", nil
 		}
 	}
 	return writeNewIdentity(path, signals, "", "generated")
+}
+
+// unionSignals returns the union of a and b — a's order first, then b's extras,
+// de-duplicated and blanks dropped. The persisted signal set only ever grows via
+// this: once a hardware signal is seen for a device it is kept, so an
+// intermittently-readable signal can never shrink the match anchor.
+func unionSignals(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, s := range a {
+		add(s)
+	}
+	for _, s := range b {
+		add(s)
+	}
+	return out
 }
 
 // overlaps reports whether a and b share at least one element.

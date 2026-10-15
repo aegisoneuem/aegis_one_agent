@@ -124,6 +124,40 @@ func TestResolveDeviceID_AddedSignalDoesNotRegenerate(t *testing.T) {
 	}
 }
 
+// Intermittently-readable signals (TPM EK can fail at boot; some VMs drop the
+// SMBIOS UUID) must NOT erode the stored match set and cause a later false clone.
+// The persisted set accumulates (union, never shrinks), so the id stays stable
+// even when a different subset of signals reads on each boot.
+func TestResolveDeviceID_IntermittentSignalDoesNotRegenerate(t *testing.T) {
+	dir := t.TempDir()
+	tpm, smbios, mguid := "tpm:T", "smbios:S", "machineguid:M"
+
+	// Boot 1: all three readable → generate.
+	id1, _, err := resolveDeviceID("", dir, []string{tpm, smbios, mguid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Boot 2: only MachineGuid readable (TPM + SMBIOS failed this boot) → reuse.
+	id2, src2, err := resolveDeviceID("", dir, []string{mguid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id2 != id1 || src2 != "persisted" {
+		t.Fatalf("boot2: got %q/%q, want %q/persisted", id2, src2, id1)
+	}
+	// Boot 3: TPM + SMBIOS readable but MachineGuid failed. With the OLD
+	// "replace" behavior the stored set would have shrunk to [machineguid] on boot 2,
+	// so boot 3 would NOT overlap → false clone → new id. The union keeps all three,
+	// so TPM/SMBIOS still match → same id.
+	id3, src3, err := resolveDeviceID("", dir, []string{tpm, smbios})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id3 != id1 || src3 != "persisted" {
+		t.Fatalf("boot3: id regenerated after an intermittent signal read: got %q/%q, want %q/persisted", id3, src3, id1)
+	}
+}
+
 func TestNewUUID_Unique(t *testing.T) {
 	a, err := newUUID()
 	if err != nil {

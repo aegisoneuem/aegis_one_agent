@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
+	"github.com/aegisoneuem/aegis_one_proto/commandsign"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -45,14 +47,22 @@ func nth(list []string, i int) string {
 
 const privateKeyB64 = "+KSVnrEXSXNsyCL0FVZ0TLOB28gKyL0L7KRxzjtUAXqyW5fNX8seQt4BH7WV2GUBn6EGh+QlaAKtUCRWJxgs+A=="
 
-func signPayload(payload []byte) []byte {
-
+func loadSignKey() ed25519.PrivateKey {
 	privBytes, err := base64.StdEncoding.DecodeString(privateKeyB64)
 	if err != nil {
 		log.Fatalf("invalid private key: %v", err)
 	}
-	priv := ed25519.PrivateKey(privBytes)
-	return ed25519.Sign(priv, payload)
+	return ed25519.PrivateKey(privBytes)
+}
+
+// sign fills cmd.Signature over the canonical (type + command_id + payload)
+// bytes and returns cmd, so each call site wraps its literal: sign(&pb.Command{...}).
+// Reading type/id/payload back off the struct means the signed envelope can
+// never drift from what is actually sent. The agent verifies with the same
+// commandsign package.
+func sign(cmd *pb.Command) *pb.Command {
+	cmd.Signature = commandsign.Sign(loadSignKey(), cmd.Type, cmd.CommandId, cmd.Payload)
+	return cmd
 }
 
 type server struct {
@@ -62,6 +72,7 @@ type server struct {
 	caCertPEM []byte            // CA cert PEM returned in the enroll response chain
 
 	mu        sync.Mutex
+	statePath string                   // JSON file the registry persists to (DB stand-in)
 	byID      map[string]*deviceRecord // device registry keyed by assigned device_id
 	bySysUUID map[string]*deviceRecord // secondary index for dedup (reinstall/reimage)
 	byTPM     map[string]*deviceRecord // strongest dedup index: TPM EK (reinstall/format/clone-proof)
@@ -74,13 +85,75 @@ type server struct {
 // deviceRecord is one registered device (the real server persists this in a DB;
 // the mock keeps it in memory). hostname is a mutable attribute, never the key.
 type deviceRecord struct {
-	DeviceID    string
-	SystemUUID  string
-	MachineGUID string
-	TpmEK       string
-	ComputerID  string // server-assigned numeric console id
-	Hostname    string
-	LastSeen    time.Time
+	DeviceID    string    `json:"device_id"`
+	SystemUUID  string    `json:"system_uuid,omitempty"`
+	MachineGUID string    `json:"machine_guid,omitempty"`
+	TpmEK       string    `json:"tpm_ek,omitempty"`
+	ComputerID  string    `json:"computer_id"` // server-assigned numeric console id
+	Hostname    string    `json:"hostname,omitempty"`
+	LastSeen    time.Time `json:"last_seen"`
+}
+
+// loadRegistry restores the device registry from the persistence file. The REAL
+// server keeps this in a DB; the mock used to keep it only in memory, so every
+// restart lost it — a reinstalled agent then failed to dedup and was issued a NEW
+// device_id + computer_id. Persisting fixes exactly that (dedup survives restart).
+func (s *server) loadRegistry() {
+	if s.statePath == "" {
+		return
+	}
+	data, err := os.ReadFile(s.statePath)
+	if err != nil {
+		return // no state yet — first run
+	}
+	var recs []*deviceRecord
+	if err := json.Unmarshal(data, &recs); err != nil {
+		log.Printf("mock state: could not parse %s: %v", s.statePath, err)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range recs {
+		if r.DeviceID == "" {
+			continue
+		}
+		s.byID[r.DeviceID] = r
+		if r.SystemUUID != "" {
+			s.bySysUUID[r.SystemUUID] = r
+		}
+		if r.TpmEK != "" {
+			s.byTPM[r.TpmEK] = r
+		}
+		if r.ComputerID != "" {
+			s.computerIDUsed[r.ComputerID] = struct{}{}
+		}
+	}
+	fmt.Printf("mock state: loaded %d device(s) from %s (dedup survives restart)\n", len(recs), s.statePath)
+}
+
+// saveLocked persists the whole registry to disk atomically. Caller holds s.mu.
+// byID holds every record (the other maps are secondary indexes onto the same
+// records), so iterating it captures the full set.
+func (s *server) saveLocked() {
+	if s.statePath == "" {
+		return
+	}
+	recs := make([]*deviceRecord, 0, len(s.byID))
+	for _, r := range s.byID {
+		recs = append(recs, r)
+	}
+	data, err := json.MarshalIndent(recs, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := s.statePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		log.Printf("mock state: could not write %s: %v", s.statePath, err)
+		return
+	}
+	if err := os.Rename(tmp, s.statePath); err != nil {
+		log.Printf("mock state: could not install %s: %v", s.statePath, err)
+	}
 }
 
 // reconcile resolves an enrollment to a single logical device, de-duplicating by
@@ -149,6 +222,7 @@ func (s *server) reconcile(req *pb.EnrollRequest) (assigned string, deduped bool
 	if req.TpmEk != "" {
 		s.byTPM[req.TpmEk] = rec
 	}
+	s.saveLocked() // durable, so the dedup survives a restart (DB stand-in)
 	return assigned, deduped, ""
 }
 
@@ -456,13 +530,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		payload := []byte("")
 		command := &pb.ServerMessage{
 			Payload: &pb.ServerMessage_Command{
-				Command: &pb.Command{
+				Command: sign(&pb.Command{
 					CommandId: "cmd-001",
 					Type:      "hostname",
 					Payload:   payload,
-					Signature: signPayload(payload),
-					//Signature: signPayload([]byte("wrong-payload")),
-				},
+				}),
 			},
 		}
 		if err := stream.Send(command); err != nil {
@@ -500,12 +572,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				cmdID := fmt.Sprintf("install-%03d", i+1)
 				installCmd := &pb.ServerMessage{
 					Payload: &pb.ServerMessage_Command{
-						Command: &pb.Command{
+						Command: sign(&pb.Command{
 							CommandId: cmdID,
 							Type:      "install_patch",
 							Payload:   specBytes,
-							Signature: signPayload(specBytes),
-						},
+						}),
 					},
 				}
 				if err := stream.Send(installCmd); err != nil {
@@ -531,9 +602,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					continue
 				}
 				cmdID := fmt.Sprintf("uninstall-%03d", i+1)
-				cmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
-					CommandId: cmdID, Type: "uninstall_patch", Payload: specBytes, Signature: signPayload(specBytes),
-				}}}
+				cmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+					CommandId: cmdID, Type: "uninstall_patch", Payload: specBytes,
+				})}}
 				if err := stream.Send(cmd); err != nil {
 					log.Printf("failed to send uninstall command: %v", err)
 					return
@@ -569,17 +640,48 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					continue
 				}
 				cmdID := fmt.Sprintf("stage-%03d", i+1)
-				stageCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+				stageCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 					CommandId: cmdID,
 					Type:      "stage_patch",
 					Payload:   specBytes,
-					Signature: signPayload(specBytes),
-				}}}
+				})}}
 				if err := stream.Send(stageCmd); err != nil {
 					log.Printf("failed to send stage command: %v", err)
 					return
 				}
 				fmt.Printf("Sent command -> id: %s, type: stage_patch, kb=%s (signed)\n", cmdID, kb)
+			}
+		}
+
+		// Optionally push a signed software_deploy command (software distribution).
+		// Set AEGIS_DEPLOY_FILE to a LOCAL installer path on the agent machine; the
+		// server never streams bytes here. Optional: _NAME, _VERSION, _TYPE
+		// (msi|exe|ps1|bat|auto), _ACTION (install|uninstall), _ARGS (silent flags),
+		// _HASH, _HASH_ALGO.
+		if f := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_FILE")); f != "" {
+			spec := &pb.SoftwareDeploySpec{
+				PackageId:     os.Getenv("AEGIS_DEPLOY_PACKAGE_ID"),
+				Name:          os.Getenv("AEGIS_DEPLOY_NAME"),
+				Version:       os.Getenv("AEGIS_DEPLOY_VERSION"),
+				Action:        os.Getenv("AEGIS_DEPLOY_ACTION"),
+				InstallerType: os.Getenv("AEGIS_DEPLOY_TYPE"),
+				FilePath:      f,
+				SilentArgs:    os.Getenv("AEGIS_DEPLOY_ARGS"),
+				ExpectedHash:  os.Getenv("AEGIS_DEPLOY_HASH"),
+				HashAlgorithm: os.Getenv("AEGIS_DEPLOY_HASH_ALGO"),
+			}
+			specBytes, err := proto.Marshal(spec)
+			if err != nil {
+				log.Printf("failed to marshal software_deploy spec: %v", err)
+			} else {
+				deploy := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+					CommandId: "deploy-001", Type: "software_deploy", Payload: specBytes,
+				})}}
+				if err := stream.Send(deploy); err != nil {
+					log.Printf("failed to send software_deploy command: %v", err)
+					return
+				}
+				fmt.Printf("Sent command -> id: deploy-001, type: software_deploy, name=%s, file=%s (signed)\n", spec.Name, f)
 			}
 		}
 
@@ -621,9 +723,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			delay, _ := strconv.Atoi(rd)
 			spec := &pb.RebootSpec{DelaySeconds: int32(delay), Message: "Aegis One: scheduled reboot for patching"}
 			b, _ := proto.Marshal(spec)
-			reboot := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
-				CommandId: "reboot-001", Type: "reboot", Payload: b, Signature: signPayload(b),
-			}}}
+			reboot := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "reboot-001", Type: "reboot", Payload: b,
+			})}}
 			if err := stream.Send(reboot); err != nil {
 				log.Printf("failed to send reboot command: %v", err)
 				return
@@ -635,9 +737,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// on-demand compliance scan on the endpoint (what a console "Scan now" does).
 		if os.Getenv("AEGIS_SCAN_NOW") != "" {
 			payload := []byte("")
-			scan := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
-				CommandId: "scan-now-001", Type: "scan_now", Payload: payload, Signature: signPayload(payload),
-			}}}
+			scan := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "scan-now-001", Type: "scan_now", Payload: payload,
+			})}}
 			if err := stream.Send(scan); err != nil {
 				log.Printf("failed to send scan_now: %v", err)
 				return
@@ -648,9 +750,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// Optionally send a signed cancel_reboot command (set AEGIS_CANCEL_REBOOT=1).
 		if os.Getenv("AEGIS_CANCEL_REBOOT") != "" {
 			payload := []byte("")
-			cancel := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
-				CommandId: "cancel-reboot-001", Type: "cancel_reboot", Payload: payload, Signature: signPayload(payload),
-			}}}
+			cancel := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "cancel-reboot-001", Type: "cancel_reboot", Payload: payload,
+			})}}
 			if err := stream.Send(cancel); err != nil {
 				log.Printf("failed to send cancel_reboot: %v", err)
 				return
@@ -667,12 +769,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			for i := 1; i <= count; i++ {
 				time.Sleep(8 * time.Second)
 				payload := []byte("")
-				ping := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: &pb.Command{
+				ping := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 					CommandId: fmt.Sprintf("ping-%03d", i),
 					Type:      "hostname",
 					Payload:   payload,
-					Signature: signPayload(payload),
-				}}}
+				})}}
 				if err := stream.Send(ping); err != nil {
 					log.Printf("failed to send parallel ping: %v", err)
 					return
@@ -784,11 +885,15 @@ func main() {
 	}
 	srv := &server{
 		caCert: caCert, caKey: caKey, caCertPEM: caCertPEM,
+		statePath:      getenv("AEGIS_MOCK_STATE", "mockserver-devices.json"),
 		byID:           make(map[string]*deviceRecord),
 		bySysUUID:      make(map[string]*deviceRecord),
 		byTPM:          make(map[string]*deviceRecord),
 		computerIDUsed: make(map[string]struct{}),
 	}
+	// Restore the registry from disk so device dedup (and the assigned computer_id)
+	// survive a mock restart — a reinstalled agent then reconciles to its SAME ids.
+	srv.loadRegistry()
 
 	// Test helper: pre-seed N dummy devices so a single VM can exercise the
 	// license cap (AEGIS_PRESEED_DEVICES). Each consumes a seat.

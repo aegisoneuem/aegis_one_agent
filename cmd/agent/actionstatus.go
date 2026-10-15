@@ -12,8 +12,9 @@ const (
 	actionPatchInstall   = "patch_install"
 	actionPatchUninstall = "patch_uninstall"
 	actionStage          = "stage"
-	actionScan         = "scan"
-	actionReboot       = "reboot"
+	actionScan           = "scan"
+	actionReboot         = "reboot"
+	actionSoftwareDeploy = "software_deploy"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.
