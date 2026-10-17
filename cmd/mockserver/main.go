@@ -664,14 +664,19 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// staged). Optional: _NAME, _VERSION, _TYPE (msi|exe|ps1|bat|auto), _ACTION
 		// (install|uninstall), _ARGS (silent flags), _HASH, _HASH_ALGO,
 		// _REQUIRE_SIG (1 = verify Authenticode publisher before running).
+		// FILELESS UNINSTALL (no file/content_id): MSI by _PRODUCT_CODE ({GUID}), or a
+		// non-MSI app by _UNINSTALL_KEY (registry subkey) or _DISPLAY_NAME (substring).
 		deployFile := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_FILE"))
 		deployContentID := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_CONTENT_ID"))
 		deployAction := strings.ToLower(strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_ACTION")))
 		deployProductCode := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"))
-		// Fileless MSI uninstall needs neither a file nor a content_id — just the
-		// ProductCode (msiexec /x {GUID}). Trigger the deploy for that case too.
-		uninstallByCode := deployAction == "uninstall" && deployProductCode != ""
-		if deployFile != "" || deployContentID != "" || uninstallByCode {
+		deployUninstallKey := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_UNINSTALL_KEY"))
+		deployDisplayName := strings.TrimSpace(os.Getenv("AEGIS_DEPLOY_DISPLAY_NAME"))
+		// Fileless uninstall needs neither a file nor a content_id: by MSI ProductCode
+		// (msiexec /x {GUID}) or by a non-MSI registry entry (uninstall_key /
+		// display_name → the vendor's (Quiet)UninstallString). Trigger for those too.
+		uninstallFileless := deployAction == "uninstall" && (deployProductCode != "" || deployUninstallKey != "" || deployDisplayName != "")
+		if deployFile != "" || deployContentID != "" || uninstallFileless {
 			spec := &pb.SoftwareDeploySpec{
 				PackageId:        os.Getenv("AEGIS_DEPLOY_PACKAGE_ID"),
 				Name:             os.Getenv("AEGIS_DEPLOY_NAME"),
@@ -685,6 +690,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				HashAlgorithm:    os.Getenv("AEGIS_DEPLOY_HASH_ALGO"),
 				RequireSignature: truthy(os.Getenv("AEGIS_DEPLOY_REQUIRE_SIG")),
 				ProductCode:      os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"), // MSI GUID → idempotency check
+				UninstallKey:     deployUninstallKey,                     // non-MSI registry subkey
+				DisplayName:      deployDisplayName,                      // non-MSI DisplayName match
 			}
 			specBytes, err := proto.Marshal(spec)
 			if err != nil {

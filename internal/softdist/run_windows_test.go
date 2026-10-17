@@ -90,6 +90,61 @@ func TestMSIUninstallByCode(t *testing.T) {
 	}
 }
 
+func TestIsFilelessRegistryUninstall(t *testing.T) {
+	code := "{23170F69-40C1-2702-2604-000001000000}"
+	cases := []struct {
+		name string
+		p    Params
+		want bool
+	}{
+		{"uninstall by registry key, no file", Params{Action: "uninstall", UninstallKey: "7-Zip"}, true},
+		{"uninstall by display name, no file", Params{Action: "uninstall", DisplayName: "7-Zip"}, true},
+		{"uninstall with a file present → file-based", Params{Action: "uninstall", UninstallKey: "7-Zip", FilePath: `C:\p\u.exe`}, false},
+		{"MSI by code takes precedence", Params{Action: "uninstall", ProductCode: code, DisplayName: "7-Zip"}, false},
+		{"install is never fileless registry", Params{Action: "install", DisplayName: "7-Zip"}, false},
+		{"uninstall without key or name", Params{Action: "uninstall"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isFilelessRegistryUninstall(c.p); got != c.want {
+				t.Errorf("isFilelessRegistryUninstall = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestCommandLineToArgv(t *testing.T) {
+	cases := []struct {
+		name    string
+		cmdline string
+		want    []string
+	}{
+		{"quoted path with silent flag", `"C:\Program Files\7-Zip\Uninstall.exe" /S`,
+			[]string{`C:\Program Files\7-Zip\Uninstall.exe`, "/S"}},
+		{"unquoted single token", `C:\app\setup.exe`, []string{`C:\app\setup.exe`}},
+		{"msiexec uninstall string", `MsiExec.exe /X{23170F69-40C1-2702-2604-000001000000}`,
+			[]string{"MsiExec.exe", "/X{23170F69-40C1-2702-2604-000001000000}"}},
+		{"multiple args", `"C:\a b\u.exe" --mode silent /q`,
+			[]string{`C:\a b\u.exe`, "--mode", "silent", "/q"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := commandLineToArgv(c.cmdline)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("argv = %#v, want %#v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("argv[%d] = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestClassify(t *testing.T) {
 	cases := []struct {
 		name      string

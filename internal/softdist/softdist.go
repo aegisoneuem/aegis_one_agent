@@ -24,6 +24,13 @@ type Params struct {
 	// Run removes the product by code (msiexec /x {GUID}) with NO installer file —
 	// Windows Installer removes it from its own database, the standard-UEM uninstall.
 	ProductCode string
+	// UninstallKey / DisplayName locate a non-MSI (EXE/script-installed) product in the
+	// Windows registry Uninstall hive. When set on an uninstall, Run reads the product's
+	// QuietUninstallString (vendor-silent, preferred) or UninstallString + SilentArgs
+	// and runs it — no installer file needed. UninstallKey is the exact subkey name;
+	// DisplayName is a case-insensitive substring fallback.
+	UninstallKey string
+	DisplayName  string
 	// RequireSignature, when true, makes Run verify the installer's Authenticode
 	// signature (trusted publisher) and REFUSE to run an unsigned/untrusted file —
 	// the standard-UEM publisher check. Left false for internal/unsigned installers.

@@ -86,12 +86,41 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		}
 	}
 
+	// 0a. Idempotency / detection for NON-MSI apps (registry Uninstall hive): same
+	//     behavior as MSI but matched by uninstall_key / display_name — skip installing
+	//     an app that is already present, and skip uninstalling one that is absent.
+	if key := strings.TrimSpace(spec.UninstallKey); key != "" || strings.TrimSpace(spec.DisplayName) != "" {
+		app := softdist.FindInstalledApp(key, spec.DisplayName)
+		switch {
+		case action == "install" && app != nil:
+			slog.Info("software_deploy: app already installed, skipping", "command_id", cmdID, "app", app.DisplayName)
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "already installed (skipped)")))
+			return
+		case action == "uninstall" && app == nil:
+			slog.Info("software_deploy: app not installed, nothing to uninstall", "command_id", cmdID, "key", key, "display_name", spec.DisplayName)
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
+			return
+		}
+	}
+
 	// 0b. Uninstall by MSI ProductCode needs NO installer file — Windows Installer
 	//     removes the product from its own database (msiexec /x {GUID}). Reaching here
 	//     on an uninstall with a product_code means the product IS installed (STEP 0
 	//     short-circuits the absent case), so enqueue a fileless uninstall.
 	if action == "uninstall" && strings.TrimSpace(spec.ProductCode) != "" && isMSIType(spec) {
 		slog.Info("software_deploy: uninstall by product_code (no installer file needed)", "command_id", cmdID, "product_code", spec.ProductCode)
+		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
+		return
+	}
+
+	// 0c. Uninstall a NON-MSI app from the registry Uninstall hive needs NO installer
+	//     file either — the agent runs the vendor's registered (Quiet)UninstallString.
+	//     Reaching here on an uninstall with a key/display_name means the app IS
+	//     installed (0a short-circuits the absent case), so enqueue a fileless job.
+	if action == "uninstall" && (strings.TrimSpace(spec.UninstallKey) != "" || strings.TrimSpace(spec.DisplayName) != "") {
+		slog.Info("software_deploy: uninstall by registry entry (no installer file needed)", "command_id", cmdID, "key", spec.UninstallKey, "display_name", spec.DisplayName)
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
 		return
 	}
@@ -222,6 +251,8 @@ func (s *softdistInstaller) run(job softdistJob) {
 		Timeout:          time.Duration(spec.TimeoutSeconds) * time.Second,
 		RequireSignature: spec.RequireSignature,
 		ProductCode:      spec.ProductCode,
+		UninstallKey:     spec.UninstallKey,
+		DisplayName:      spec.DisplayName,
 	})
 
 	var phase pb.ActionPhase

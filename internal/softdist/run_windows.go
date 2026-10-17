@@ -17,6 +17,9 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // defaultTimeout bounds a single installer run when the spec sets none. Software
@@ -37,6 +40,12 @@ func Run(ctx context.Context, p Params) Result {
 		logPath := filepath.Join(os.TempDir(), "aegis-uninstall-"+sanitizeCode(pc)+".log")
 		bin, args := msiUninstallByCode(p, pc, logPath)
 		return execInstaller(ctx, p, bin, args, logPath)
+	}
+
+	// Fileless registry uninstall: a non-MSI product is removed by running the
+	// command the vendor registered in the Windows Uninstall hive — no installer file.
+	if isFilelessRegistryUninstall(p) {
+		return runRegistryUninstall(ctx, p)
 	}
 
 	abs, err := filepath.Abs(p.FilePath)
@@ -117,6 +126,77 @@ func msiUninstallByCode(p Params, productCode, logPath string) (bin string, args
 		args = append(args, "/l*v", logPath)
 	}
 	return "msiexec.exe", args
+}
+
+// isFilelessRegistryUninstall reports whether this is a non-MSI uninstall we can run
+// from the registry Uninstall hive (no installer file): an uninstall with an
+// uninstall_key or display_name and no local file. MSI-by-ProductCode takes
+// precedence (checked first in Run).
+func isFilelessRegistryUninstall(p Params) bool {
+	if !strings.EqualFold(strings.TrimSpace(p.Action), "uninstall") {
+		return false
+	}
+	if strings.TrimSpace(p.FilePath) != "" || isFilelessMSIUninstall(p) {
+		return false
+	}
+	return strings.TrimSpace(p.UninstallKey) != "" || strings.TrimSpace(p.DisplayName) != ""
+}
+
+// runRegistryUninstall removes a non-MSI product using the command the vendor
+// registered in the Windows Uninstall hive. QuietUninstallString (vendor-silent) is
+// preferred; otherwise UninstallString runs with the admin-supplied SilentArgs
+// appended. The agent is a faithful executor — it runs the registered command and the
+// admin's args, it does not invent silent switches. An absent product is a no-op
+// (NOT_APPLICABLE), matching the MSI idempotency behavior.
+func runRegistryUninstall(ctx context.Context, p Params) Result {
+	app := FindInstalledApp(p.UninstallKey, p.DisplayName)
+	if app == nil {
+		return Result{NotApplicable: true, Reason: "product not installed (nothing to uninstall)"}
+	}
+
+	cmdline := strings.TrimSpace(app.QuietUninstallString)
+	vendorSilent := cmdline != ""
+	if !vendorSilent {
+		cmdline = strings.TrimSpace(app.UninstallString)
+	}
+	if cmdline == "" {
+		return Result{Reason: fmt.Sprintf("no uninstall command registered for %q", app.DisplayName)}
+	}
+
+	argv, err := commandLineToArgv(cmdline)
+	if err != nil || len(argv) == 0 {
+		return Result{Reason: fmt.Sprintf("could not parse uninstall command %q", cmdline), Detail: fmt.Sprintf("%v", err)}
+	}
+	bin, args := argv[0], argv[1:]
+	// Only append admin silent args when the vendor did not give a silent command —
+	// QuietUninstallString is already unattended.
+	if !vendorSilent {
+		args = append(args, strings.Fields(p.SilentArgs)...)
+	}
+	slog.Info("softdist: uninstalling by registry entry", "name", app.DisplayName, "key", app.Key, "vendor_silent", vendorSilent)
+	return execInstaller(ctx, p, bin, args, "")
+}
+
+// commandLineToArgv splits a Windows command-line string into argv using the OS's own
+// CommandLineToArgvW (shell32) — the same parser CreateProcess/cmd use — so quoted
+// paths and embedded spaces are handled correctly. The command is then executed
+// directly (never via a shell), so there is no shell-injection surface.
+func commandLineToArgv(cmdline string) ([]string, error) {
+	p, err := windows.UTF16PtrFromString(cmdline)
+	if err != nil {
+		return nil, err
+	}
+	var argc int32
+	argv, err := windows.CommandLineToArgv(p, &argc)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(argv))) //nolint:errcheck
+	out := make([]string, 0, argc)
+	for i := int32(0); i < argc; i++ {
+		out = append(out, windows.UTF16PtrToString(&argv[i][0]))
+	}
+	return out, nil
 }
 
 // sanitizeCode strips a ProductCode GUID down to a filename-safe token for the log.
