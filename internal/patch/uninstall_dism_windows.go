@@ -45,30 +45,28 @@ func UninstallKBviaDISM(kb, osBuild string, timeout time.Duration) (*DeployResul
 		return &DeployResult{Reason: "no KB specified for uninstall"}, true
 	}
 
-	pkgs, err := listCBSPackages(timeout)
-	if err != nil {
-		// Could not even enumerate packages — environmental; let the WUA path try.
-		slog.Warn("deploy: DISM get-packages failed, will fall back to WUA", "error", err.Error())
-		return nil, false
+	// PRIMARY: resolve the CBS package from the registry (KB → Owners → RollupFix /
+	// DotNetRollup, or the standalone Package_for_KB key). This finds a cumulative
+	// update's package even though its name carries no KB, and needs no os_build.
+	pkg, found := resolvePackageFromRegistry(kb)
+
+	// SECONDARY: if the registry lookup found nothing and the server supplied the OS
+	// build, match the RollupFix package from the DISM package list by that build.
+	if !found && strings.TrimSpace(osBuild) != "" {
+		if pkgs, err := listCBSPackages(timeout); err == nil {
+			if p, ok := matchCBSPackage(pkgs, kb, osBuild); ok {
+				pkg, found = p.Identity, true
+			}
+		}
 	}
-	pkg, found := matchCBSPackage(pkgs, kb, osBuild)
+
 	if !found {
-		slog.Info("deploy: KB has no matching CBS package (standalone KB name or RollupFix build) — falling back to WUA",
-			"kb", "KB"+kb, "os_build", osBuild)
+		slog.Info("deploy: no CBS package references this KB — not DISM-removable (will check QFE/wusa)", "kb", "KB"+kb)
 		return nil, false
 	}
 
-	// CBS state gate (the DISM equivalent of wusa's applicability check): only an
-	// Installed package can be removed. Superseded means a newer update already
-	// replaced it — removing it is meaningless and Windows refuses anyway.
-	if !strings.EqualFold(pkg.State, "Installed") {
-		return &DeployResult{
-			Reason: fmt.Sprintf("CBS package %q is %s, not removable (a later update supersedes it)", pkg.Identity, pkg.State),
-		}, true
-	}
-
-	slog.Info("deploy: uninstalling via DISM /remove-package (CBS)", "kb", "KB"+kb, "package", pkg.Identity)
-	return removeCBSPackage(pkg.Identity, timeout), true
+	slog.Info("deploy: uninstalling via DISM /remove-package (CBS)", "kb", "KB"+kb, "package", pkg)
+	return removeCBSPackage(pkg, timeout), true
 }
 
 // listCBSPackages enumerates the CBS package store via

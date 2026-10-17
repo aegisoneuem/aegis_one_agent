@@ -12,7 +12,12 @@ import (
 )
 
 // UninstallKB removes an installed update by KB using the Windows Update Agent
-// (WUA) COM API — deliberately NOT wusa.exe. wusa's silent uninstall
+// (WUA) COM API. NOTE: it is no longer in the default uninstall chain — runUninstall
+// uses DISM (registry-resolved package) then wusa, matching BigFix, because the WUA
+// COM Uninstall call is synchronous and can BLOCK for 30+ minutes (or hang) on a
+// cumulative update. UninstallKB is retained as a tested, manual/future fallback.
+//
+// It is deliberately NOT wusa.exe for its own mechanism. wusa's silent uninstall
 // (`/uninstall /kb:N /quiet`) returns ERROR_INVALID_PARAMETER (0x57) when run from
 // the agent's non-interactive LocalSystem service (session 0), even though the
 // exact same command works in an interactive admin session. The WUA API works in
@@ -60,7 +65,9 @@ func UninstallKB(kb string, timeout time.Duration) *DeployResult {
 
 	match, reason := findInstalledUpdateByKB(searcher, kb)
 	if match == nil {
-		return &DeployResult{Reason: reason}
+		// Not among installed updates → nothing to uninstall (idempotent no-op), not a
+		// failure. The caller maps this to NOT_APPLICABLE.
+		return &DeployResult{NotApplicable: true, Reason: reason}
 	}
 	defer match.Release()
 

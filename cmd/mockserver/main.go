@@ -237,6 +237,27 @@ func (s *server) computerIDFor(deviceID string) string {
 	return ""
 }
 
+// identify returns a compact "device / computer_id / host" label for a device_id,
+// resolved from the registry. Every agent message carries the device_id; the SERVER
+// owns the mapping to the console computer_id and the current hostname (like a real
+// UEM console), so it prints all three for any command/action without the agent
+// having to repeat them on the wire. Unknown fields show "?" until enroll/heartbeat
+// populates them.
+func (s *server) identify(deviceID string) string {
+	cid, host := "?", "?"
+	s.mu.Lock()
+	if r := s.byID[deviceID]; r != nil {
+		if r.ComputerID != "" {
+			cid = r.ComputerID
+		}
+		if r.Hostname != "" {
+			host = r.Hostname
+		}
+	}
+	s.mu.Unlock()
+	return fmt.Sprintf("device=%s computer_id=%s host=%s", deviceID, cid, host)
+}
+
 // newComputerID returns a fresh, unique, RANDOM 10-digit console id. Random (not
 // sequential) so a customer cannot infer the enrolled-device count and no device
 // looks like "the first computer". Caller holds s.mu. The real server does the
@@ -837,16 +858,21 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			s.mu.Unlock()
 		}
 		if result := msg.GetCommandResult(); result != nil {
-			fmt.Printf("Received command result -> command_id: %s, status: %s, message: %s\n",
-				result.CommandId, result.Status, result.Message)
+			// CommandResult carries no device_id, but this stream belongs to one agent —
+			// resolve all three identifiers from the connected device.
+			fmt.Printf("Received command result -> %s | command_id: %s, status: %s, message: %s\n",
+				s.identify(connectedDevice), result.CommandId, result.Status, result.Message)
 		}
 		if st := msg.GetActionStatus(); st != nil {
-			fmt.Printf("Received action status -> action_id: %s, type: %s, device: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
-				st.ActionId, st.ActionType, st.DeviceId, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
+			fmt.Printf("Received action status -> %s | action_id: %s, type: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
+				s.identify(st.DeviceId), st.ActionId, st.ActionType, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
+			if st.Detail != "" {
+				fmt.Printf("  detail: %s\n", st.Detail)
+			}
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			fmt.Printf("Received patch state report -> device: %s, product: %s, build: %s, arch: %s, reboot_pending: %v",
-				ds.DeviceId, ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending)
+			fmt.Printf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v",
+				s.identify(ds.DeviceId), ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending)
 			if ds.RebootPending {
 				fmt.Printf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}

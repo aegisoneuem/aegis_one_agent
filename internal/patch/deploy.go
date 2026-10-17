@@ -6,6 +6,7 @@ type DeployResult struct {
 	Path             string
 	Success          bool
 	AlreadyInstalled bool // the installer reported the KB is already present (no-op)
+	NotApplicable    bool // nothing to do (not installed / superseded) → NOT_APPLICABLE
 	RebootRequired   bool
 	ExitCode         int
 	Reason           string // concise, human failure cause (empty on success)

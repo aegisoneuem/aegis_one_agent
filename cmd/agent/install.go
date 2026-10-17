@@ -251,16 +251,6 @@ func (p *patchInstaller) runUninstall(job installJob) {
 	cmdID, kb := job.commandID, job.spec.Kb
 	started := time.Now().Unix()
 
-	if !p.isInstalled(kb) {
-		slog.Info("uninstall_patch: not installed, nothing to do", "command_id", cmdID, "kb", kb)
-		sendStatus(p.outbox, &pb.ActionStatus{
-			ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
-			Phase: pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, Reason: "not installed (nothing to uninstall)",
-			StartedAt: started, FinishedAt: time.Now().Unix(),
-		})
-		return
-	}
-
 	sendStatus(p.outbox, &pb.ActionStatus{
 		ActionId: cmdID, ActionType: actionPatchUninstall, DeviceId: p.deviceID, Kb: kb,
 		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, StartedAt: started,
@@ -271,10 +261,48 @@ func (p *patchInstaller) runUninstall(job installJob) {
 	// front-end on modern Windows (wusa's quiet uninstall is gone) and the only one
 	// that can remove cumulative updates. WUA remains the fallback for updates that
 	// have no CBS package of their own (e.g. some MSI-based/.NET updates).
+	//
+	// Applicability (is the KB actually present?) is decided HERE, by the real
+	// servicing sources — DISM's CBS package list and WUA's installed-update store —
+	// NOT by the installed-KB scan cache: that cache is empty until a full WUA scan
+	// runs (needs the offline cab), and it never lists a cumulative update by KB
+	// (CBS tracks LCUs by OS build), so gating on it wrongly reported LCUs as "not
+	// installed". An absent KB surfaces as NotApplicable from the search below.
+	// Engine chain (modern Windows — matches BigFix's patch-uninstall fixlets):
+	//   DISM /remove-package — the removable CBS package, resolved from the registry
+	//                          (KB → Owners → RollupFix/DotNetRollup, or standalone);
+	//   wusa /uninstall /kb  — Control Panel's engine; removes a cumulative update
+	//                          (LCU) that DISM refuses with 0x800f0825 by design;
+	//   QFE list             — honesty: a KB present only in the hotfix list is
+	//                          "installed but not removable", NOT "not installed".
+	// WUA COM uninstall is deliberately NOT used — it can block for 30+ min on an
+	// LCU and BigFix does not use it either.
 	res, attempted := patch.UninstallKBviaDISM(kb, job.spec.OsBuild, p.timeout)
-	if !attempted {
-		slog.Info("uninstall_patch: no CBS package match, falling back to WUA", "command_id", cmdID, "kb", kb)
-		res = patch.UninstallKB(kb, p.timeout)
+	switch {
+	case attempted && (res.Success || res.NotApplicable):
+		// DISM settled it (removed, or nothing to do).
+	case attempted:
+		// DISM found the package but Windows refused (LCU → 0x800f0825). wusa is the
+		// engine Control Panel uses for exactly these.
+		slog.Info("uninstall_patch: DISM refused, trying wusa (Control Panel's engine)", "command_id", cmdID, "kb", kb)
+		if wres := patch.UninstallKBviaWusa(kb, p.timeout); wres.Success || wres.NotApplicable {
+			res = wres
+		} else {
+			res.Reason += " | wusa: " + wres.Reason
+		}
+	default:
+		// No CBS package references this KB. Is it installed at all (QFE/hotfix list)?
+		if patch.QFEInstalled(kb) {
+			slog.Info("uninstall_patch: KB installed (QFE) but no CBS package — trying wusa", "command_id", cmdID, "kb", kb)
+			if wres := patch.UninstallKBviaWusa(kb, p.timeout); wres.Success || wres.NotApplicable {
+				res = wres
+			} else {
+				res = &patch.DeployResult{ExitCode: wres.ExitCode, Detail: wres.Detail,
+					Reason: kb + " is installed, but Windows does not allow uninstalling it (OS limitation — wusa: " + wres.Reason + ")"}
+			}
+		} else {
+			res = &patch.DeployResult{NotApplicable: true, Reason: "not installed (nothing to uninstall)"}
+		}
 	}
 	stopPings()
 
@@ -283,7 +311,15 @@ func (p *patchInstaller) runUninstall(job installJob) {
 		ExitCode: int32(res.ExitCode), RebootRequired: res.RebootRequired, Detail: res.Detail,
 		StartedAt: started, FinishedAt: time.Now().Unix(),
 	}
-	if res.Success {
+	switch {
+	case res.NotApplicable:
+		st.Phase = pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE
+		st.Reason = res.Reason
+		if st.Reason == "" {
+			st.Reason = "not installed (nothing to uninstall)"
+		}
+		slog.Info("uninstall_patch: not applicable", "command_id", cmdID, "kb", kb, "reason", st.Reason)
+	case res.Success:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
 		if res.RebootRequired {
 			st.Reason = "uninstalled — RESTART REQUIRED to complete"
@@ -298,7 +334,7 @@ func (p *patchInstaller) runUninstall(job installJob) {
 		if res.RebootRequired && p.rebootStore != nil {
 			p.rebootStore.add(kb)
 		}
-	} else {
+	default:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_FAILED
 		st.Reason = res.Reason
 	}

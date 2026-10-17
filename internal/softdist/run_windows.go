@@ -335,6 +335,8 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 			typ = "ps1"
 		case ".bat", ".cmd":
 			typ = "bat"
+		case ".py":
+			typ = "python"
 		default:
 			typ = "exe"
 		}
@@ -363,12 +365,16 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 		// Executing a .ps1 PAYLOAD the server shipped — a deploy action, not the
 		// agent using PowerShell for its own logic (which it never does).
 		return "powershell.exe", append([]string{"-NonInteractive", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", abs}, extra...), nil
-	case "bat":
+	case "bat", "cmd":
 		return "cmd.exe", append([]string{"/c", abs}, extra...), nil
+	case "py", "python":
+		// Run a .py PAYLOAD through the Python interpreter (must be on the machine's
+		// PATH — the agent runs as LocalSystem). A deploy action, like any script.
+		return "python.exe", append([]string{abs}, extra...), nil
 	case "exe":
 		return abs, extra, nil
 	default:
-		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|auto)", p.InstallerType)
+		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|cmd|python|auto)", p.InstallerType)
 	}
 }
 

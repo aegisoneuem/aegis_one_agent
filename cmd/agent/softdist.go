@@ -316,8 +316,10 @@ func installerExt(spec *pb.SoftwareDeploySpec) string {
 		return ".msi"
 	case "ps1":
 		return ".ps1"
-	case "bat":
+	case "bat", "cmd":
 		return ".bat"
+	case "py", "python":
+		return ".py"
 	default:
 		return ".exe"
 	}
