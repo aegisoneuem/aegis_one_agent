@@ -593,14 +593,18 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 
 		// Optionally push one or more signed uninstall_patch commands. Set
 		// AEGIS_UNINSTALL_KB (comma-separated for multiple). The agent removes each
-		// installed KB via wusa on the serial worker and reports ActionStatus.
+		// installed KB via DISM/CBS (WUA fallback) on the serial worker and reports
+		// ActionStatus. AEGIS_UNINSTALL_BUILD (e.g. "22621.7584") identifies a
+		// cumulative update's CBS package (RollupFix carries the build, not the KB) —
+		// the real server supplies it from the catalog.
 		if kbEnv := os.Getenv("AEGIS_UNINSTALL_KB"); kbEnv != "" {
+			osBuild := strings.TrimSpace(os.Getenv("AEGIS_UNINSTALL_BUILD"))
 			for i, kb := range strings.Split(kbEnv, ",") {
 				kb = strings.TrimSpace(kb)
 				if kb == "" {
 					continue
 				}
-				specBytes, err := proto.Marshal(&pb.InstallPatchSpec{Kb: kb})
+				specBytes, err := proto.Marshal(&pb.InstallPatchSpec{Kb: kb, OsBuild: osBuild})
 				if err != nil {
 					log.Printf("failed to marshal uninstall spec: %v", err)
 					continue

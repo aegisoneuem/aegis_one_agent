@@ -267,7 +267,15 @@ func (p *patchInstaller) runUninstall(job installJob) {
 	})
 	slog.Info("uninstall_patch: running", "command_id", cmdID, "kb", kb)
 	stopPings := p.startProgressPings(cmdID, actionPatchUninstall, kb, started)
-	res := patch.UninstallKB(kb, p.timeout)
+	// DISM (CBS-level) is the PRIMARY uninstall path: it is the only silent removal
+	// front-end on modern Windows (wusa's quiet uninstall is gone) and the only one
+	// that can remove cumulative updates. WUA remains the fallback for updates that
+	// have no CBS package of their own (e.g. some MSI-based/.NET updates).
+	res, attempted := patch.UninstallKBviaDISM(kb, job.spec.OsBuild, p.timeout)
+	if !attempted {
+		slog.Info("uninstall_patch: no CBS package match, falling back to WUA", "command_id", cmdID, "kb", kb)
+		res = patch.UninstallKB(kb, p.timeout)
+	}
 	stopPings()
 
 	st := &pb.ActionStatus{
