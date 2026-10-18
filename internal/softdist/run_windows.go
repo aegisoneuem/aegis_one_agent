@@ -293,10 +293,14 @@ func classify(p Params, exit int, out string) Result {
 		}
 	}
 	if res.Success {
+		verb := "installed"
+		if strings.EqualFold(strings.TrimSpace(p.Action), "uninstall") {
+			verb = "uninstalled"
+		}
 		if res.RebootRequired {
-			res.Reason = "installed — RESTART REQUIRED to complete"
+			res.Reason = verb + " — RESTART REQUIRED to complete"
 		} else {
-			res.Reason = "installed — completed, no restart needed"
+			res.Reason = verb + " — completed, no restart needed"
 		}
 		return res
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -86,18 +87,37 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		}
 	}
 
-	// 0a. Idempotency / detection for NON-MSI apps (registry Uninstall hive): same
-	//     behavior as MSI but matched by uninstall_key / display_name — skip installing
-	//     an app that is already present, and skip uninstalling one that is absent.
+	// 0a. Idempotency / detection for apps in the registry Uninstall hive, matched by
+	//     uninstall_key / display_name — VERSION-AWARE when spec.version is set:
+	//     absent → install; OLDER version installed → proceed (upgrade); same/newer →
+	//     skip. Without a target version, any installed copy skips (plain idempotency).
+	//     Uninstall of an absent app is always skipped.
 	if key := strings.TrimSpace(spec.UninstallKey); key != "" || strings.TrimSpace(spec.DisplayName) != "" {
 		app := softdist.FindInstalledApp(key, spec.DisplayName)
-		switch {
-		case action == "install" && app != nil:
-			slog.Info("software_deploy: app already installed, skipping", "command_id", cmdID, "app", app.DisplayName)
-			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
-				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "already installed (skipped)")))
-			return
-		case action == "uninstall" && app == nil:
+		if action == "install" && app != nil {
+			target := strings.TrimSpace(spec.Version)
+			// Skip only when we can CONFIRM the installed copy already satisfies the
+			// request: no target version (plain idempotency), or a known installed
+			// version that is the same or newer. If a target is set but the installed
+			// version is unknown or older, proceed (upgrade / ensure the version) — never
+			// silently skip a requested upgrade just because the version can't be read.
+			skip := target == "" ||
+				(app.DisplayVersion != "" && softdist.CompareVersions(app.DisplayVersion, target) >= 0)
+			if skip {
+				reason := "already installed (skipped)"
+				if app.DisplayVersion != "" {
+					reason = "already installed (version " + app.DisplayVersion + ", skipped)"
+				}
+				slog.Info("software_deploy: app already installed, skipping",
+					"command_id", cmdID, "app", app.DisplayName, "installed_version", app.DisplayVersion, "target_version", target)
+				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+					pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, reason)))
+				return
+			}
+			slog.Info("software_deploy: proceeding as upgrade/ensure-version",
+				"command_id", cmdID, "app", app.DisplayName, "installed", app.DisplayVersion, "target", target)
+		}
+		if action == "uninstall" && app == nil {
 			slog.Info("software_deploy: app not installed, nothing to uninstall", "command_id", cmdID, "key", key, "display_name", spec.DisplayName)
 			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
 				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
@@ -264,6 +284,25 @@ func (s *softdistInstaller) run(job softdistJob) {
 	default:
 		phase = pb.ActionPhase_ACTION_PHASE_FAILED
 	}
+
+	// Post-action VERIFICATION (BigFix's "Fixed" determination): an installer's exit
+	// code says the process ran, not that the product landed (or left). When the spec
+	// carries detection identifiers, re-detect and only then confirm SUCCESS; a
+	// contradiction is reported honestly as FAILED. Specs without identifiers (plain
+	// scripts) are trusted on exit code alone.
+	if phase == pb.ActionPhase_ACTION_PHASE_SUCCESS {
+		action := strings.ToLower(strings.TrimSpace(spec.Action))
+		if action == "" {
+			action = "install"
+		}
+		if ok, note := verifyOutcome(spec, action); !ok {
+			phase = pb.ActionPhase_ACTION_PHASE_FAILED
+			res.Reason = fmt.Sprintf("installer exited %d but verification failed: %s", res.ExitCode, note)
+			slog.Warn("software_deploy: post-action verification FAILED", "command_id", cmdID, "name", spec.Name, "note", note)
+		} else if note != "" {
+			res.Reason += " — " + note
+		}
+	}
 	// A server-delivered installer is single-use per machine — drop it from the
 	// cache after a successful install (orphans are swept by the cache janitor TTL).
 	if job.cacheID != "" && res.Success {
@@ -289,6 +328,66 @@ func (s *softdistInstaller) finish(cmdID, name string, started int64, phase pb.A
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// verifyOutcome re-detects the product after a successful install/uninstall and
+// reports whether reality matches the action. It retries a few times because some
+// uninstallers (notably NSIS) exit before the removal fully completes, and MSI
+// registry entries can lag a moment. When the spec carries no detection identifiers
+// there is nothing to check — the exit code stands (ok, no note).
+func verifyOutcome(spec *pb.SoftwareDeploySpec, action string) (ok bool, note string) {
+	hasIDs := strings.TrimSpace(spec.ProductCode) != "" ||
+		strings.TrimSpace(spec.UninstallKey) != "" || strings.TrimSpace(spec.DisplayName) != ""
+	if !hasIDs {
+		return true, ""
+	}
+	wantPresent := action != "uninstall"
+
+	var present bool
+	var version string
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second) // settle: NSIS uninstallers finish after exiting
+		}
+		present, version = detectProduct(spec)
+		if present == wantPresent {
+			break
+		}
+	}
+
+	switch {
+	case wantPresent && present:
+		// Install verified. When a target version was requested, confirm it took.
+		target := strings.TrimSpace(spec.Version)
+		if target != "" && version != "" && softdist.CompareVersions(version, target) < 0 {
+			return false, fmt.Sprintf("product present but still version %s (target %s) — upgrade did not apply", version, target)
+		}
+		if version != "" {
+			return true, "verified installed (version " + version + ")"
+		}
+		return true, "verified installed"
+	case !wantPresent && !present:
+		return true, "verified removed"
+	case wantPresent:
+		return false, "product not detected after install"
+	default:
+		return false, "product still detected after uninstall"
+	}
+}
+
+// detectProduct reports whether the spec's product is present (MSI ProductCode or
+// registry Uninstall hive) and its registry DisplayVersion when known.
+func detectProduct(spec *pb.SoftwareDeploySpec) (present bool, version string) {
+	if pc := strings.TrimSpace(spec.ProductCode); pc != "" && softdist.ProductInstalled(pc) {
+		present = true
+	}
+	key, name := strings.TrimSpace(spec.UninstallKey), strings.TrimSpace(spec.DisplayName)
+	if key != "" || name != "" {
+		if app := softdist.FindInstalledApp(key, name); app != nil {
+			return true, app.DisplayVersion
+		}
+	}
+	return present, ""
 }
 
 // isMSIType reports whether the deploy targets an MSI product — an explicit "msi"
