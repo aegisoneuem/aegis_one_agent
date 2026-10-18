@@ -27,8 +27,16 @@
            Scope="perMachine"
            Compressed="yes">
 
-    <!-- Block downgrades; replace older versions in place. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of AegisOne Client is already installed." />
+    <!-- Block downgrades; replace an existing install in place instead of adding a
+         second Add/Remove Programs entry. AllowSameVersionUpgrades is required
+         because ProductCode is auto-generated (*) per build while Version stays the
+         same during development: without it, reinstalling the SAME version is seen
+         as a separate product (different ProductCode) and MajorUpgrade — which by
+         default only removes STRICTLY older versions — leaves both, producing the
+         duplicate appwiz.cpl entry. With it, a reinstall (same or newer version)
+         removes the prior AegisOne Client first, so there is always exactly one. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of AegisOne Client is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Add/Remove Programs icon + metadata. -->
