@@ -74,7 +74,9 @@
     <!-- The agent binary + the Windows service (LocalSystem, auto-start,
          restart-on-failure). Service lifecycle is handled by the MSI. -->
     <ComponentGroup Id="ProductComponents" Directory="ClientDir">
-      <Component Id="AgentExeComponent" Guid="*">
+      <!-- Agent binary installs INSIDE SKVC (Client\SKVC\AegisOneClient.exe) so the
+           whole agent footprint lives under one SKVC tree. -->
+      <Component Id="AgentExeComponent" Directory="SKVCDir" Guid="*">
         <File Id="AgentExeFile" Name="AegisOneClient.exe" Source="..\build\AegisOneClient.exe" KeyPath="yes" />
 
         <ServiceInstall Id="AegisOneSvcInstall"
