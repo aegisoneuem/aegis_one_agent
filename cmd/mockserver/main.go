@@ -714,9 +714,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				ExpectedHash:     os.Getenv("AEGIS_DEPLOY_HASH"),
 				HashAlgorithm:    os.Getenv("AEGIS_DEPLOY_HASH_ALGO"),
 				RequireSignature: truthy(os.Getenv("AEGIS_DEPLOY_REQUIRE_SIG")),
-				ProductCode:      os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"), // MSI GUID → idempotency check
-				UninstallKey:     deployUninstallKey,                     // non-MSI registry subkey
-				DisplayName:      deployDisplayName,                      // non-MSI DisplayName match
+				ProductCode:      os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"),        // MSI GUID → idempotency check
+				UninstallKey:     deployUninstallKey,                            // non-MSI registry subkey
+				DisplayName:      deployDisplayName,                             // non-MSI DisplayName match
+				Parameters:       parseParams(os.Getenv("AEGIS_DEPLOY_PARAMS")), // ${name} substitution, e.g. "LICENSE=ABC,INSTALLDIR=C:\app"
 			}
 			specBytes, err := proto.Marshal(spec)
 			if err != nil {
@@ -989,6 +990,24 @@ func truthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// parseParams turns "k1=v1,k2=v2" into a map for SoftwareDeploySpec.parameters
+// (test harness for ${name} substitution). Empty input → nil.
+func parseParams(v string) map[string]string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	m := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		if k, val, ok := strings.Cut(pair, "="); ok {
+			if k = strings.TrimSpace(k); k != "" {
+				m[k] = val
+			}
+		}
+	}
+	return m
 }
 
 func maskToken(t string) string {

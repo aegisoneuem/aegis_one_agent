@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -145,6 +146,19 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		return
 	}
 
+	// 0d. Generic "command" type runs an arbitrary command (file_path) directly — no
+	//     installer file to deliver or verify. Enqueue it straight to the worker.
+	if strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+		if strings.TrimSpace(spec.FilePath) == "" {
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+				pb.ActionPhase_ACTION_PHASE_FAILED, `installer_type "command" needs file_path set to the command to run`)))
+			return
+		}
+		slog.Info("software_deploy: generic command (no file delivery)", "command_id", cmdID, "command", spec.FilePath)
+		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
+		return
+	}
+
 	// 1. Pre-staged/local file wins (an admin-dropped file in SKVC\download, or an
 	//    explicit absolute path). A bare name resolves under the controlled download dir.
 	if fp := strings.TrimSpace(spec.FilePath); fp != "" {
@@ -259,11 +273,18 @@ func (s *softdistInstaller) run(job softdistJob) {
 		}()
 	}
 
+	// For the generic "command" type the raw command is in file_path (no delivered
+	// file); otherwise use the resolved/decrypted installer path.
+	filePath := installPath
+	if strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+		filePath = spec.FilePath
+	}
+
 	res := softdist.Run(context.Background(), softdist.Params{
 		Name:             spec.Name,
 		Action:           spec.Action,
 		InstallerType:    spec.InstallerType,
-		FilePath:         installPath,
+		FilePath:         filePath,
 		SilentArgs:       spec.SilentArgs,
 		ExpectedHash:     spec.ExpectedHash,
 		HashAlgorithm:    spec.HashAlgorithm,
@@ -273,6 +294,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 		ProductCode:      spec.ProductCode,
 		UninstallKey:     spec.UninstallKey,
 		DisplayName:      spec.DisplayName,
+		Parameters:       s.buildParams(spec),
 	})
 
 	var phase pb.ActionPhase
@@ -328,6 +350,27 @@ func (s *softdistInstaller) finish(cmdID, name string, started int64, phase pb.A
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// buildParams merges the built-in RUNTIME variables (resolved on this endpoint) with
+// the author-supplied spec.parameters. Author values override a built-in of the same
+// name. These feed ${name} substitution and the AEGIS_PARAM_<NAME> child env vars.
+func (s *softdistInstaller) buildParams(spec *pb.SoftwareDeploySpec) map[string]string {
+	p := map[string]string{
+		"device_id":    s.deviceID,
+		"download_dir": s.downloadDir,
+		"temp_dir":     s.tmpDir,
+		"arch":         runtime.GOARCH,
+	}
+	if h, err := os.Hostname(); err == nil {
+		p["hostname"] = h
+	}
+	for k, v := range spec.Parameters {
+		if k = strings.TrimSpace(k); k != "" {
+			p[k] = v
+		}
+	}
+	return p
 }
 
 // verifyOutcome re-detects the product after a successful install/uninstall and

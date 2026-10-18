@@ -48,6 +48,19 @@ func Run(ctx context.Context, p Params) Result {
 		return runRegistryUninstall(ctx, p)
 	}
 
+	// Generic "command" type: run ANY command the admin specifies — a system tool
+	// (netsh, reg), an interpreter (java -jar ...), choco, etc. No file is required
+	// and no delivery/hash/signature is enforced (the admin owns the command). This is
+	// the no-limit escape hatch for software types without a dedicated handler.
+	if strings.EqualFold(strings.TrimSpace(p.InstallerType), "command") {
+		bin := Substitute(strings.TrimSpace(p.FilePath), p.Parameters)
+		if bin == "" {
+			return Result{Reason: `installer_type "command" requires file_path to be the command to run`}
+		}
+		args := strings.Fields(Substitute(p.SilentArgs, p.Parameters))
+		return execInstaller(ctx, p, bin, args, "")
+	}
+
 	abs, err := filepath.Abs(p.FilePath)
 	if err != nil {
 		return Result{Reason: fmt.Sprintf("resolve installer path %q: %v", p.FilePath, err)}
@@ -216,6 +229,11 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 	defer cancel()
 
 	cmd := exec.CommandContext(rctx, bin, args...)
+	// Export parameters to child scripts as AEGIS_PARAM_<NAME> env vars (in addition
+	// to ${name} substitution in the args), so a .ps1/.py/.bat payload can read them.
+	if env := paramEnv(p.Parameters); len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	slog.Info("softdist: running installer", "name", p.Name, "bin", bin, "args", strings.Join(args, " "), "timeout", timeout.String())
 	out, runErr := cmd.CombinedOutput()
 
@@ -341,14 +359,16 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 			typ = "bat"
 		case ".py":
 			typ = "python"
+		case ".vbs":
+			typ = "vbs"
 		default:
 			typ = "exe"
 		}
 	}
-	// Simple whitespace split: silent args are flags, not quoted paths. The
-	// installer PATH is passed as its own arg (not via a shell), so spaces in the
-	// path are safe regardless.
-	extra := strings.Fields(p.SilentArgs)
+	// Substitute ${name} parameters into the silent args, then split. Simple
+	// whitespace split: silent args are flags, not quoted paths. The installer PATH is
+	// passed as its own arg (not via a shell), so spaces in the path are safe.
+	extra := strings.Fields(Substitute(p.SilentArgs, p.Parameters))
 	uninstall := strings.EqualFold(strings.TrimSpace(p.Action), "uninstall")
 
 	switch typ {
@@ -375,10 +395,13 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 		// Run a .py PAYLOAD through the Python interpreter (must be on the machine's
 		// PATH — the agent runs as LocalSystem). A deploy action, like any script.
 		return "python.exe", append([]string{abs}, extra...), nil
+	case "vbs":
+		// VBScript payload via the console host (cscript), no banner.
+		return "cscript.exe", append([]string{"//nologo", "//B", abs}, extra...), nil
 	case "exe":
 		return abs, extra, nil
 	default:
-		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|cmd|python|auto)", p.InstallerType)
+		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|cmd|python|vbs|command|auto)", p.InstallerType)
 	}
 }
 

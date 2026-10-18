@@ -31,6 +31,10 @@ type Params struct {
 	// DisplayName is a case-insensitive substring fallback.
 	UninstallKey string
 	DisplayName  string
+	// Parameters are name→value pairs (built-in runtime vars + author-supplied)
+	// substituted as ${name} into SilentArgs and the "command" invocation, and also
+	// exported to child scripts as AEGIS_PARAM_<NAME> environment variables.
+	Parameters map[string]string
 	// RequireSignature, when true, makes Run verify the installer's Authenticode
 	// signature (trusted publisher) and REFUSE to run an unsigned/untrusted file —
 	// the standard-UEM publisher check. Left false for internal/unsigned installers.
