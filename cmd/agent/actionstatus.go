@@ -15,6 +15,7 @@ const (
 	actionScan           = "scan"
 	actionReboot         = "reboot"
 	actionSoftwareDeploy = "software_deploy"
+	actionCollectFile    = "collect_file"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.

@@ -40,6 +40,7 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 		"scan_now":        d.handleScanNowCmd,
 		"scan":            d.handleScanNowCmd,
 		"software_deploy": d.handleSoftwareDeployCmd,
+		"collect_file":    d.handleCollectFileCmd,
 	}
 	return d
 }

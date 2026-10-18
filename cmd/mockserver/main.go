@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -535,6 +538,100 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 	return nil
 }
 
+// UploadContent receives one endpoint file from an agent (the collect_file task) —
+// the on-demand reverse of FetchContent. Stored under
+// uploads/<device>/<action_id>/<name>; the end-to-end SHA-256 the agent sent on the
+// final chunk is verified. The real server persists these in its artifact store.
+func (s *server) UploadContent(stream pb.AgentControlPlane_UploadContentServer) error {
+	if !clientVerified(stream.Context()) {
+		return status.Error(codes.Unauthenticated, "client certificate required")
+	}
+	device := clientCertCN(stream.Context())
+
+	// Folder is the console computer_id (unique, stable) — hostnames can collide
+	// across a fleet, so the server team keys collected files by computer_id and
+	// resolves which machine it is from the console inventory.
+	folder := sanitizePathSeg(device)
+	s.mu.Lock()
+	if r := s.byID[device]; r != nil && r.ComputerID != "" {
+		folder = sanitizePathSeg(r.ComputerID)
+	}
+	s.mu.Unlock()
+
+	var (
+		f        *os.File
+		path     string
+		h        = sha256.New()
+		total    int64
+		wantSha  string
+		actionID string
+	)
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if f != nil {
+				f.Close()
+				os.Remove(path)
+			}
+			return err
+		}
+		if f == nil {
+			// First chunk carries the header. Sanitize the name against path
+			// traversal: only the base file name is honored.
+			actionID = sanitizePathSeg(chunk.ActionId)
+			name := sanitizePathSeg(chunk.Name)
+			if name == "" {
+				return stream.SendAndClose(&pb.UploadAck{Error: "missing file name on first chunk"})
+			}
+			dir := filepath.Join("uploads", folder, actionID)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return stream.SendAndClose(&pb.UploadAck{Error: "store dir: " + err.Error()})
+			}
+			path = filepath.Join(dir, name)
+			if f, err = os.Create(path); err != nil {
+				return stream.SendAndClose(&pb.UploadAck{Error: "create: " + err.Error()})
+			}
+			defer f.Close()
+		}
+		if len(chunk.Data) > 0 {
+			if _, err := f.Write(chunk.Data); err != nil {
+				return stream.SendAndClose(&pb.UploadAck{Error: "write: " + err.Error()})
+			}
+			h.Write(chunk.Data)
+			total += int64(len(chunk.Data))
+		}
+		if chunk.Sha256Full != "" {
+			wantSha = chunk.Sha256Full
+		}
+	}
+	if f == nil {
+		return stream.SendAndClose(&pb.UploadAck{Error: "no chunks received"})
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	ok := wantSha != "" && strings.EqualFold(got, wantSha)
+	fmt.Printf("Collected file -> %s | action_id: %s, stored: %s, bytes: %d, integrity: %v\n",
+		s.identify(device), actionID, path, total, ok)
+	ack := &pb.UploadAck{StoredPath: path, ReceivedBytes: total, IntegrityOk: ok}
+	if !ok {
+		ack.Error = "sha256 mismatch (or missing) on upload"
+	}
+	return stream.SendAndClose(ack)
+}
+
+// sanitizePathSeg makes one path segment safe for local storage: path separators
+// and parent references are stripped so an uploaded name cannot escape uploads/.
+func sanitizePathSeg(s string) string {
+	s = strings.ReplaceAll(s, "\\", "/")
+	s = filepath.Base(s) // keeps only the last element; "." for empty/dot paths
+	if s == "." || s == ".." {
+		return ""
+	}
+	return s
+}
+
 func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	if !clientVerified(stream.Context()) {
 		fmt.Println("Connect REJECTED -> no verified client certificate (must enroll first)")
@@ -735,6 +832,39 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					src = "content_id=" + deployContentID + " (server-delivered)"
 				}
 				fmt.Printf("Sent command -> id: deploy-001, type: software_deploy, name=%s, %s (signed)\n", spec.Name, src)
+			}
+		}
+
+		// Optionally push a signed collect_file command (on-demand log/file pickup —
+		// the agent uploads the named endpoint files via UploadContent). Set
+		// AEGIS_COLLECT_PATHS (';'-separated paths/globs on the AGENT machine, e.g.
+		// "C:\temp\*.log;C:\Program Files\App\app.log"). Optional:
+		// AEGIS_COLLECT_TAIL (last N bytes of each file), AEGIS_COLLECT_MAX_EACH,
+		// AEGIS_COLLECT_MAX_TOTAL (byte caps). Files land under uploads/<computer_id>/<id>/.
+		if cp := strings.TrimSpace(os.Getenv("AEGIS_COLLECT_PATHS")); cp != "" {
+			var paths []string
+			for _, p := range strings.Split(cp, ";") {
+				if p = strings.TrimSpace(p); p != "" {
+					paths = append(paths, p)
+				}
+			}
+			spec := &pb.CollectFileSpec{
+				Paths:         paths,
+				TailBytes:     int64FromEnv("AEGIS_COLLECT_TAIL"),
+				MaxBytesEach:  int64FromEnv("AEGIS_COLLECT_MAX_EACH"),
+				MaxTotalBytes: int64FromEnv("AEGIS_COLLECT_MAX_TOTAL"),
+			}
+			if specBytes, err := proto.Marshal(spec); err != nil {
+				log.Printf("failed to marshal collect_file spec: %v", err)
+			} else {
+				collect := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+					CommandId: "collect-001", Type: "collect_file", Payload: specBytes,
+				})}}
+				if err := stream.Send(collect); err != nil {
+					log.Printf("failed to send collect_file command: %v", err)
+					return
+				}
+				fmt.Printf("Sent command -> id: collect-001, type: collect_file, paths=%v (signed)\n", paths)
 			}
 		}
 
@@ -990,6 +1120,19 @@ func truthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// int64FromEnv parses an integer env var; empty/invalid → 0 (agent defaults apply).
+func int64FromEnv(name string) int64 {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // parseParams turns "k1=v1,k2=v2" into a map for SoftwareDeploySpec.parameters
