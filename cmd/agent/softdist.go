@@ -159,6 +159,21 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		return
 	}
 
+	// 0e. SUPPLY-CHAIN GATE: every file-based payload must be hash-pinned in the
+	//     signed command (BigFix prefetch model). The download folder is untrusted
+	//     staging — anyone/anything can drop a file there under the expected name, so
+	//     the file is trusted only if it matches the sha pinned in the Ed25519-signed
+	//     spec. No bypass: an unpinned file-based deploy is refused outright.
+	//     (Fileless uninstalls and the "command" type carry no file — they returned
+	//     above; the signed command text itself is their integrity.)
+	if strings.TrimSpace(spec.ExpectedHash) == "" {
+		slog.Error("software_deploy: refusing unpinned file-based payload (no expected_hash)", "command_id", cmdID, "name", spec.Name)
+		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+			pb.ActionPhase_ACTION_PHASE_FAILED,
+			"unverified payload refused — expected_hash (sha256) is required for file-based deploys; the console computes it at package upload")))
+		return
+	}
+
 	// 1. Pre-staged/local file wins (an admin-dropped file in SKVC\download, or an
 	//    explicit absolute path). A bare name resolves under the controlled download dir.
 	if fp := strings.TrimSpace(spec.FilePath); fp != "" {

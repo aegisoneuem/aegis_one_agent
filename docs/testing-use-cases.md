@@ -95,6 +95,33 @@ set AEGIS_DEPLOY_PRODUCT_CODE={GUID}               (MSI idempotency / fileless u
 delivery). Hash verified before run; optional Authenticode check
 (`AEGIS_DEPLOY_REQUIRE_SIG=1`).
 
+- **Hash is MANDATORY for every file-based deploy (supply-chain gate, BigFix
+  prefetch model).** The download folder is untrusted staging: a file there is
+  trusted only if it matches the sha256 pinned inside the Ed25519-signed
+  command. A file-based deploy without `expected_hash` is **refused** —
+  `FAILED: unverified payload refused`. No bypass. Fileless uninstalls and
+  `type=command` carry no file, so no hash applies (the signed command text is
+  their integrity).
+- **CONSOLE CONTRACT: compute the sha256 automatically at package upload** and
+  put it in the spec — the admin never types a hash (BigFix wizard behavior).
+  The mock does the same: with no `AEGIS_DEPLOY_HASH` it auto-computes sha256
+  from `AEGIS_SERVE_SOFTWARE` (the package it serves), or from
+  `AEGIS_DEPLOY_FILE` when that path is readable on the mock machine. Only
+  when the file exists solely on the agent machine must you supply
+  `AEGIS_DEPLOY_HASH` yourself (`certutil -hashfile <file> SHA256`).
+
+**Hash-gate test cases (run all three):**
+
+| # | Setup | Expected result |
+|---|---|---|
+| 6a **Refusal (negative)** | File pre-staged ONLY on the agent machine (`AEGIS_DEPLOY_FILE=C:\...\setup.exe` not readable on the server box), no `AEGIS_DEPLOY_HASH` | Mock prints `WARNING: ... cannot read ... to auto-hash`; agent reports `FAILED — unverified payload refused — expected_hash (sha256) is required for file-based deploys` and nothing executes |
+| 6b **Auto-hash (positive)** | `AEGIS_DEPLOY_CONTENT_ID=pkg-x` + `AEGIS_SERVE_SOFTWARE=C:\pkg\setup.msi` on the server box, no `AEGIS_DEPLOY_HASH` | Mock prints `Auto-computed package sha256 (...)`; agent verifies (`installer integrity verified`), installs, post-action verify SUCCESS |
+| 6c **Tamper (negative)** | Valid hash pinned in the command, then REPLACE/modify the staged file on the agent machine before it runs | Agent reports `FAILED — integrity check failed (hash mismatch) — refusing to run`; nothing executes |
+
+6c is the attack this gate exists for: a malicious file dropped into
+`SKVC\download` under the expected name can never run, because trust lives in
+the hash inside the signed command — never in the file on disk.
+
 - **Idempotency + version-aware upgrade:** MSI → `MsiQueryProductState` by
   ProductCode; non-MSI → registry DisplayName/DisplayVersion. If installed
   version < target, the agent proceeds **as an upgrade** (verified 7-Zip

@@ -621,6 +621,24 @@ func (s *server) UploadContent(stream pb.AgentControlPlane_UploadContentServer) 
 	return stream.SendAndClose(ack)
 }
 
+// fileSHA256 returns the hex sha256 of a local file — the mock's stand-in for the
+// console computing the package hash at upload time (the admin never types it).
+func fileSHA256(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("no file to hash")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // sanitizePathSeg makes one path segment safe for local storage: path separators
 // and parent references are stripped so an uploaded name cannot escape uploads/.
 func sanitizePathSeg(s string) string {
@@ -815,6 +833,25 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				UninstallKey:     deployUninstallKey,                            // non-MSI registry subkey
 				DisplayName:      deployDisplayName,                             // non-MSI DisplayName match
 				Parameters:       parseParams(os.Getenv("AEGIS_DEPLOY_PARAMS")), // ${name} substitution, e.g. "LICENSE=ABC,INSTALLDIR=C:\app"
+			}
+			// AUTO-HASH (BigFix model — the console computes the SHA at package upload,
+			// the admin never types it): when no AEGIS_DEPLOY_HASH is given for a
+			// file-based deploy, compute sha256 from the package the server is about to
+			// serve (AEGIS_SERVE_SOFTWARE), or from AEGIS_DEPLOY_FILE when that path is
+			// readable on THIS machine (same-box dev). The agent REFUSES unpinned
+			// file-based payloads, so without a hash the deploy will fail by design.
+			isCommandType := strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command")
+			if spec.ExpectedHash == "" && !uninstallFileless && !isCommandType {
+				src := strings.TrimSpace(os.Getenv("AEGIS_SERVE_SOFTWARE"))
+				if src == "" {
+					src = deployFile
+				}
+				if sum, err := fileSHA256(src); err == nil {
+					spec.ExpectedHash, spec.HashAlgorithm = sum, "sha256"
+					fmt.Printf("Auto-computed package sha256 (%s): %s\n", src, sum)
+				} else {
+					log.Printf("WARNING: no AEGIS_DEPLOY_HASH and cannot read %q to auto-hash (%v) — the agent will REFUSE this unpinned deploy; set AEGIS_DEPLOY_HASH (file is on the agent machine)", src, err)
+				}
 			}
 			specBytes, err := proto.Marshal(spec)
 			if err != nil {

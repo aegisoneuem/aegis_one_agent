@@ -71,20 +71,24 @@ func Run(ctx context.Context, p Params) Result {
 		return Result{Reason: fmt.Sprintf("installer not present at %q (delivery problem)", abs), Detail: err.Error()}
 	}
 
-	// Integrity: when the server supplies a hash, the file must match before we run
-	// anything — fail loud on mismatch. An empty hash skips the check (dev/test only).
-	if strings.TrimSpace(p.ExpectedHash) != "" {
-		got, herr := fileHash(abs, p.HashAlgorithm)
-		if herr != nil {
-			return Result{Reason: "could not hash installer for integrity check", Detail: herr.Error()}
-		}
-		if !strings.EqualFold(got, strings.TrimSpace(p.ExpectedHash)) {
-			slog.Error("softdist: installer integrity check FAILED — refusing to run",
-				"file", abs, "expected", p.ExpectedHash, "actual", got)
-			return Result{Reason: "integrity check failed (hash mismatch) — refusing to run"}
-		}
-		slog.Info("softdist: installer integrity verified", "file", abs)
+	// Integrity (MANDATORY for every file-based payload, BigFix prefetch model): the
+	// file on disk is trusted only if it matches the hash pinned in the signed
+	// command. The download folder is untrusted staging — a payload without a pinned
+	// hash, or with a mismatch, is refused outright. Fail loud, no bypass.
+	want := strings.TrimSpace(p.ExpectedHash)
+	if want == "" {
+		return Result{Reason: "unverified payload refused — expected_hash is required for file-based deploys"}
 	}
+	got, herr := fileHash(abs, p.HashAlgorithm)
+	if herr != nil {
+		return Result{Reason: "could not hash installer for integrity check", Detail: herr.Error()}
+	}
+	if !strings.EqualFold(got, want) {
+		slog.Error("softdist: installer integrity check FAILED — refusing to run",
+			"file", abs, "expected", want, "actual", got)
+		return Result{Reason: "integrity check failed (hash mismatch) — refusing to run"}
+	}
+	slog.Info("softdist: installer integrity verified", "file", abs)
 
 	// Publisher check (standard-UEM): when required, the installer must carry a
 	// valid Authenticode signature trusted by this machine, or we refuse to run it.
