@@ -16,6 +16,8 @@ const (
 	actionReboot         = "reboot"
 	actionSoftwareDeploy = "software_deploy"
 	actionCollectFile    = "collect_file"
+	actionOpenShell      = "open_shell"
+	actionRunCommand     = "run_command"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.

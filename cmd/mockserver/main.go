@@ -83,6 +83,37 @@ type server struct {
 	// collides. Ids are random (not sequential) so a customer cannot infer how many
 	// devices have enrolled, and no device looks like "the first computer".
 	computerIDUsed map[string]struct{}
+
+	// shellPending tracks open_shell commands we have sent that have not yet been
+	// dialed back by the agent's ShellSession RPC. Keyed by session_id; a dial
+	// consumes the entry (single-use), so a replayed session_id is refused.
+	shellMu      sync.Mutex
+	shellPending map[string]*shellSession
+
+	// liveAgents is the connected-agent registry the NSH REPL targets. Keyed by
+	// device_id (the cert CN); carries the Connect stream so the REPL can push
+	// signed commands directly. Register on Connect, deregister on return.
+	liveMu     sync.Mutex
+	liveAgents map[string]*liveAgent
+
+	// pending correlates signed command_ids with the REPL goroutines waiting on
+	// their terminal ActionStatus. The ActionStatus receive loop forwards a
+	// terminal phase to the channel and closes it; non-REPL (regular) traffic
+	// prints normally.
+	pendingMu sync.Mutex
+	pending   map[string]chan *pb.ActionStatus
+}
+
+// liveAgent is one currently-connected agent, discoverable by the REPL.
+type liveAgent struct {
+	deviceID string
+	stream   pb.AgentControlPlane_ConnectServer
+	since    time.Time
+}
+
+// shellSession is a parked remote-shell session the agent is expected to dial.
+type shellSession struct {
+	started time.Time
 }
 
 // deviceRecord is one registered device (the real server persists this in a DB;
@@ -639,6 +670,114 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// randomShellSessionID returns a fresh 32-byte hex session_id for an open_shell
+// command. One-time: never reused across sessions (replay would be refused).
+func randomShellSessionID() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// int64FromEnvDefault parses an integer env var; empty/invalid → the fallback.
+func int64FromEnvDefault(name string, fallback int64) int64 {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// ShellSession is the live remote-shell pipe (BladeLogic nexec model, not RDP).
+// The agent dials in with the session_id we gave it on open_shell; the mock
+// console (local stdin) becomes the admin, and shell output prints live. This
+// is the EXECUTABLE CONTRACT for the real server + console UI.
+func (s *server) ShellSession(stream pb.AgentControlPlane_ShellSessionServer) error {
+	if !clientVerified(stream.Context()) {
+		return status.Error(codes.Unauthenticated, "client certificate required")
+	}
+	device := clientCertCN(stream.Context())
+
+	// First chunk MUST carry the session_id. Match it against a parked open_shell
+	// (single-use; a replayed session_id is refused).
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	sid := first.SessionId
+	if sid == "" {
+		return status.Error(codes.InvalidArgument, "first ShellOutput must carry session_id")
+	}
+	s.shellMu.Lock()
+	parked, ok := s.shellPending[sid]
+	if ok {
+		delete(s.shellPending, sid) // single-use — consume on dial
+	}
+	s.shellMu.Unlock()
+	if !ok {
+		fmt.Printf("ShellSession REFUSED (unknown or already-consumed session_id) -> %s\n", s.identify(device))
+		return status.Error(codes.PermissionDenied, "unknown or already-consumed session_id")
+	}
+	fmt.Printf("ShellSession OPEN -> %s (session=%s, since open_shell=%s)\n",
+		s.identify(device), sid[:12]+"...", time.Since(parked.started).Round(time.Millisecond))
+	fmt.Println("---- type commands below (end with Ctrl+Z then Enter to close) ----")
+
+	// agent → mock (stdout/stderr/close): print live, mark the session closed on
+	// the terminal chunk so our stdin reader bails out.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			out, err := stream.Recv()
+			if err != nil {
+				if err != io.EOF {
+					fmt.Printf("ShellSession recv error: %v\n", err)
+				}
+				return
+			}
+			if len(out.Stdout) > 0 {
+				os.Stdout.Write(out.Stdout)
+			}
+			if len(out.Stderr) > 0 {
+				os.Stderr.Write(out.Stderr)
+			}
+			if out.Closed {
+				fmt.Printf("\n---- shell closed (exit=%d, reason=%s) ----\n", out.ExitCode, out.Reason)
+				return
+			}
+		}
+	}()
+
+	// mock stdin → agent (stdin). One blocking read loop; terminates when the
+	// agent closes the stream (done signaled) or stdin hits EOF.
+	in := make([]byte, 4096)
+	for {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		n, rerr := os.Stdin.Read(in)
+		if n > 0 {
+			if serr := stream.Send(&pb.ShellInput{Stdin: append([]byte{}, in[:n]...)}); serr != nil {
+				fmt.Printf("ShellSession send error: %v\n", serr)
+				return serr
+			}
+		}
+		if rerr != nil {
+			// Ctrl+Z (Windows EOF on stdin) → send clean close signal.
+			_ = stream.Send(&pb.ShellInput{Control: "close"})
+			<-done
+			return nil
+		}
+	}
+}
+
 // sanitizePathSeg makes one path segment safe for local storage: path separators
 // and parent references are stripped so an uploaded name cannot escape uploads/.
 func sanitizePathSeg(s string) string {
@@ -657,6 +796,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	}
 	connectedDevice := clientCertCN(stream.Context())
 	fmt.Printf("Agent connected! device: %s\n", connectedDevice)
+
+	// Register this connection in the live-agent registry so the NSH REPL can
+	// target it by hostname / device_id / computer_id. Deregister on return.
+	s.registerLiveAgent(connectedDevice, stream)
+	defer s.deregisterLiveAgent(connectedDevice)
 
 	go func() {
 		// Device targeting for testing: if AEGIS_TARGET_DEVICE is set, only send
@@ -905,6 +1049,12 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// NOTE: shell / run_command / collect_file are no longer triggered from
+		// this per-connect block. They are driven on-demand from the NSH REPL
+		// (see runNSH / mockserver.exe nsh) — the real console pattern. Env
+		// triggers for soft deploy, collect_file, baseline etc. stay (regression
+		// tests the server team already relies on).
+
 		// Optionally push a patch baseline for the agent's offline self-diff. Set
 		// AEGIS_BASELINE_BUILD (the device build) and AEGIS_BASELINE_KBS
 		// (comma-separated expected KBs) to simulate the server's snapshot.
@@ -1032,6 +1182,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				s.identify(connectedDevice), result.CommandId, result.Status, result.Message)
 		}
 		if st := msg.GetActionStatus(); st != nil {
+			// Forward to any NSH REPL waiting on this action_id — the REPL
+			// consumes terminal phases quietly so command output is clean.
+			if s.deliverActionStatus(st) {
+				continue
+			}
 			fmt.Printf("Received action status -> %s | action_id: %s, type: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
 				s.identify(st.DeviceId), st.ActionId, st.ActionType, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 			if st.Detail != "" {
@@ -1115,6 +1270,9 @@ func main() {
 		bySysUUID:      make(map[string]*deviceRecord),
 		byTPM:          make(map[string]*deviceRecord),
 		computerIDUsed: make(map[string]struct{}),
+		shellPending:   make(map[string]*shellSession),
+		liveAgents:     make(map[string]*liveAgent),
+		pending:        make(map[string]chan *pb.ActionStatus),
 	}
 	// Restore the registry from disk so device dedup (and the assigned computer_id)
 	// survive a mock restart — a reinstalled agent then reconciles to its SAME ids.
@@ -1145,6 +1303,14 @@ func main() {
 	)
 	pb.RegisterAgentControlPlaneServer(s, srv)
 	fmt.Printf("Mock server listening on :50051 (single port: mTLS ops + enrollment; token=%s)\n", maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
+
+	// NSH REPL: start the console operator shell in-process when asked. The real
+	// console UI will drive the same engine from a web terminal; here the REPL
+	// uses the mockserver's own stdin for ad-hoc operator work and script runs.
+	if truthy(os.Getenv("AEGIS_NSH")) || strings.TrimSpace(os.Getenv("AEGIS_NSH_SCRIPT")) != "" {
+		go runNSH(srv)
+	}
+
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
