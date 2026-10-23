@@ -81,6 +81,9 @@ func (d *dispatcher) runCommandWorker(ctx context.Context, client pb.AgentContro
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out := runOneCommand(runCtx, expanded, spec.Shell, cwd, spec.Parameters, maxOut)
+	if out.FullStdoutPath != "" {
+		defer os.Remove(out.FullStdoutPath)
+	}
 	out.DurationMs = time.Since(started).Milliseconds()
 
 	// Local transcript — append-only audit record of every run_command on this

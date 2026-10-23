@@ -100,8 +100,9 @@ type server struct {
 	// their terminal ActionStatus. The ActionStatus receive loop forwards a
 	// terminal phase to the channel and closes it; non-REPL (regular) traffic
 	// prints normally.
-	pendingMu sync.Mutex
-	pending   map[string]chan *pb.ActionStatus
+	pendingMu  sync.Mutex
+	pending    map[string]chan *pb.ActionStatus
+	nshUploads map[string]nshUploadTarget // protected by pendingMu
 }
 
 // liveAgent is one currently-connected agent, discoverable by the REPL.
@@ -610,19 +611,29 @@ func (s *server) UploadContent(stream pb.AgentControlPlane_UploadContentServer) 
 			return err
 		}
 		if f == nil {
-			// First chunk carries the header. Sanitize the name against path
-			// traversal: only the base file name is honored.
+			// NSH destinations are chosen by the operator and bound to this device.
+			// Other collection tasks retain the action-ID storage layout.
 			actionID = sanitizePathSeg(chunk.ActionId)
 			name := sanitizePathSeg(chunk.Name)
+			dir := filepath.Join("uploads", folder, actionID)
+			s.pendingMu.Lock()
+			target, nsh := s.nshUploads[chunk.ActionId]
+			s.pendingMu.Unlock()
+			if nsh && target.deviceID == device {
+				rel, err := safeNSHUploadPath(target.path)
+				if err != nil {
+					return stream.SendAndClose(&pb.UploadAck{Error: err.Error()})
+				}
+				dir = filepath.Join("uploads", folder, filepath.Dir(rel))
+				name = filepath.Base(rel)
+			}
 			if name == "" {
 				return stream.SendAndClose(&pb.UploadAck{Error: "missing file name on first chunk"})
 			}
-			dir := filepath.Join("uploads", folder, actionID)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return stream.SendAndClose(&pb.UploadAck{Error: "store dir: " + err.Error()})
 			}
-			path = filepath.Join(dir, name)
-			if f, err = os.Create(path); err != nil {
+			if f, path, err = createUploadFile(dir, name); err != nil {
 				return stream.SendAndClose(&pb.UploadAck{Error: "create: " + err.Error()})
 			}
 			defer f.Close()
@@ -1176,6 +1187,23 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			s.mu.Unlock()
 		}
 		if result := msg.GetCommandResult(); result != nil {
+			// If the REPL is waiting on this command_id (e.g. a stale agent
+			// returned "unsupported command type" via CommandResult instead of
+			// ActionStatus), forward it as a synthetic terminal FAILED status
+			// so the REPL fails FAST (< 1s) instead of waiting 310s for an
+			// ActionStatus that will never come. Also fed to the normal print
+			// path when NOT NSH-matched.
+			synth := &pb.ActionStatus{
+				ActionId: result.CommandId, DeviceId: connectedDevice,
+				Phase:  pb.ActionPhase_ACTION_PHASE_FAILED,
+				Reason: result.Message,
+			}
+			if result.Status == "success" {
+				synth.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
+			}
+			if s.deliverActionStatus(synth) {
+				continue
+			}
 			// CommandResult carries no device_id, but this stream belongs to one agent —
 			// resolve all three identifiers from the connected device.
 			fmt.Printf("Received command result -> %s | command_id: %s, status: %s, message: %s\n",

@@ -2,6 +2,15 @@
 
 Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
+2026-10-22 NSH test build: refresh BOTH the agent and mockserver (the MSI bundles
+the matching agent). Includes zero-byte stdout upload fix, quoted Windows command
+paths, native file `pull`, and readable NSH output folders with `set output-dir`.
+Run [../docs/nsh-test-plan.md](../docs/nsh-test-plan.md), especially B1/B2/B4/B5.
+Uploads are stored on the mockserver machine relative to its launch directory:
+`uploads/<computer_id>/<output-dir>/<hostname>/<filename>` (default output-dir
+`nsh`). Existing folders are retained. Automated checks passed; VM acceptance
+retest is pending.
+
 | File | What it is |
 |---|---|
 | `mockserver.exe` | Reference server. Run it to exercise the agent. See [../docs/mockserver-guide.md](../docs/mockserver-guide.md). |

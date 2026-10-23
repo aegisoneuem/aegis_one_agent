@@ -179,7 +179,7 @@ func uploadFile(ctx context.Context, client pb.AgentControlPlaneClient, actionID
 	if tailBytes > 0 && length > tailBytes {
 		length = tailBytes
 	}
-	if length > maxEach {
+	if maxEach > 0 && length > maxEach {
 		length = maxEach
 	}
 	if start := size - length; start > 0 {

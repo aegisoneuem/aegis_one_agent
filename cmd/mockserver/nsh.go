@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -35,6 +36,11 @@ func (s *server) deregisterLiveAgent(deviceID string) {
 
 // ===== ActionStatus correlation (REPL waits on terminal phase for a cmd id) =====
 
+type nshUploadTarget struct {
+	deviceID string
+	path     string
+}
+
 func (s *server) waitFor(commandID string) <-chan *pb.ActionStatus {
 	ch := make(chan *pb.ActionStatus, 4)
 	s.pendingMu.Lock()
@@ -45,6 +51,7 @@ func (s *server) waitFor(commandID string) <-chan *pb.ActionStatus {
 
 func (s *server) cancelWait(commandID string) {
 	s.pendingMu.Lock()
+	delete(s.nshUploads, commandID)
 	if ch, ok := s.pending[commandID]; ok {
 		delete(s.pending, commandID)
 		close(ch)
@@ -71,6 +78,7 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 		st.Phase == pb.ActionPhase_ACTION_PHASE_FAILED ||
 		st.Phase == pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE {
 		delete(s.pending, st.ActionId)
+		delete(s.nshUploads, st.ActionId)
 		close(ch)
 	}
 	s.pendingMu.Unlock()
@@ -82,16 +90,17 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 // nshSession is the REPL state (per-process). The console (future web UI) will
 // keep this per logged-in operator; the mock has one.
 type nshSession struct {
-	srv       *server
-	targets   []string // device_ids resolved from `cd \\host`
-	shell     string   // cmd | powershell | pwsh (nothing on this OS == default)
-	timeout   int32    // seconds
-	maxOutput int64    // bytes
-	capture   bool     // auto-save every command's stdout as a server-side file
-	outputDir string   // default upload path prefix for grab / capture
-	history   []string
-	out       *bufio.Writer
-	engine    *scriptEngine
+	srv        *server
+	targets    []string // device_ids resolved from `cd \\host`
+	workingDir string   // endpoint CWD for subsequent run_commands ("" = SKVC\tmp)
+	shell      string   // cmd | powershell | pwsh (nothing on this OS == default)
+	timeout    int32    // seconds
+	maxOutput  int64    // bytes
+	capture    bool     // auto-save every command's stdout as a server-side file
+	outputDir  string   // default upload path prefix for grab / capture
+	history    []string
+	out        *bufio.Writer
+	engine     *scriptEngine
 }
 
 // runNSH starts the interactive REPL on stdin (or non-interactive from a
@@ -379,26 +388,71 @@ func (s *nshSession) verbGrab(rest string) {
 		upload := path
 		if upload == "" {
 			upload = s.autoCapturePath(cmdText, s.srv.hostnameOf(id))
+		} else {
+			upload = s.namedUploadPath(id, path)
 		}
 		s.dispatchOne(id, cmdText, upload)
 	}
 }
 
 func (s *nshSession) verbPull(rest string) {
-	remote, savePath := splitFirst(rest)
+	remote, savePath := splitPullArgs(rest)
 	if remote == "" {
 		fmt.Println("nsh: usage: pull <remote-path> [server-path]")
 		return
 	}
-	// Simple compose: "type <remote>" runs on the agent, stdout → server file.
-	cmdText := fmt.Sprintf(`type "%s"`, remote)
+	if len(s.targets) == 0 {
+		fmt.Println("nsh: no target — pick one with cd \\\\<host>")
+		return
+	}
 	for _, id := range s.targets {
 		up := savePath
 		if up == "" {
-			up = s.autoCapturePath(remote, s.srv.hostnameOf(id))
+			up = time.Now().Format("20060102-150405.000000000") + "-" + filepath.Base(strings.ReplaceAll(remote, "\\", "/"))
 		}
-		s.dispatchOne(id, cmdText, up)
+		up = s.namedUploadPath(id, up)
+		fmt.Printf("---- %s pull %s\n", s.srv.hostnameOf(id), remote)
+		st, _ := s.sendTask(id, "collect_file", &pb.CollectFileSpec{Paths: []string{remote}, MaxBytesEach: 1<<63 - 1, MaxTotalBytes: 1<<63 - 1}, up)
+		if st == nil {
+			continue
+		}
+		if st.Detail != "" {
+			fmt.Println(st.Detail)
+		}
+		fmt.Printf("---- %s %s: %s\n", s.srv.hostnameOf(id), phaseWord(st.Phase), st.Reason)
+		if s.engine != nil {
+			exit := 0
+			if st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
+				exit = 1
+			}
+			s.engine.recordLastResult(s.srv.hostnameOf(id), st.Detail, "", st.Reason, exit, 0)
+		}
 	}
+}
+
+// Quoted endpoint paths may contain spaces. Wildcards are deliberately refused
+// by pull: one requested destination corresponds to exactly one source file.
+func splitPullArgs(rest string) (string, string) {
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, `"`) {
+		if end := strings.Index(rest[1:], `"`); end >= 0 {
+			p := rest[1 : end+1]
+			if strings.ContainsAny(p, "*?[") {
+				return "", ""
+			}
+			return p, strings.Trim(strings.TrimSpace(rest[end+2:]), `"`)
+		}
+		return "", ""
+	}
+	p, name := splitFirst(rest)
+	if strings.ContainsAny(p, "*?[") {
+		return "", ""
+	}
+	return p, strings.Trim(name, `"`)
+}
+
+func (s *nshSession) namedUploadPath(id, name string) string {
+	return strings.TrimRight(s.outputDir, "/\\") + "/" + slugify(s.srv.hostnameOf(id)) + "/" + strings.TrimLeft(name, "/\\")
 }
 
 func (s *nshSession) verbShell() {
@@ -567,16 +621,12 @@ func (s *nshSession) dispatchOne(id, cmdText, uploadAs string) {
 		fmt.Printf("---- saved to %s\n", up)
 	}
 	fmt.Printf("---- %s %s  (exit=%d, %dms)\n", host, phaseWord(st.Phase), st.ExitCode, parseDuration(st.Detail))
+	if st.Reason != "" {
+		fmt.Printf("     reason: %s\n", st.Reason)
+	}
 }
 
 func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.ActionStatus, string) {
-	s.srv.liveMu.Lock()
-	la, ok := s.srv.liveAgents[deviceID]
-	s.srv.liveMu.Unlock()
-	if !ok {
-		fmt.Printf("nsh: %s is not currently connected\n", s.srv.hostnameOf(deviceID))
-		return nil, ""
-	}
 	// Forward NSH variables to the agent as command parameters: the agent
 	// (a) runs ${name} substitution on the command text (idempotent — the REPL
 	// already substituted known names), and (b) exports every param to the
@@ -596,6 +646,24 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 		MaxOutputBytes: s.maxOutput,
 		UploadAs:       uploadAs,
 		Parameters:     params,
+		WorkingDir:     s.workingDir,
+	}
+	return s.sendTask(deviceID, "run_command", spec, uploadAs)
+}
+
+func (s *nshSession) sendTask(deviceID, taskType string, spec proto.Message, uploadAs string) (*pb.ActionStatus, string) {
+	s.srv.liveMu.Lock()
+	la, ok := s.srv.liveAgents[deviceID]
+	s.srv.liveMu.Unlock()
+	if !ok {
+		fmt.Printf("nsh: %s is not currently connected\n", s.srv.hostnameOf(deviceID))
+		return nil, ""
+	}
+	if uploadAs != "" {
+		if _, err := safeNSHUploadPath(uploadAs); err != nil {
+			fmt.Printf("nsh: %v\n", err)
+			return nil, ""
+		}
 	}
 	payload, err := proto.Marshal(spec)
 	if err != nil {
@@ -604,8 +672,16 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 	}
 	cmdID := "nsh-" + nshRandomID()
 	ch := s.srv.waitFor(cmdID)
+	if uploadAs != "" {
+		s.srv.pendingMu.Lock()
+		if s.srv.nshUploads == nil {
+			s.srv.nshUploads = make(map[string]nshUploadTarget)
+		}
+		s.srv.nshUploads[cmdID] = nshUploadTarget{deviceID: deviceID, path: uploadAs}
+		s.srv.pendingMu.Unlock()
+	}
 	msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
-		CommandId: cmdID, Type: "run_command", Payload: payload,
+		CommandId: cmdID, Type: taskType, Payload: payload,
 	})}}
 	if err := la.stream.Send(msg); err != nil {
 		s.srv.cancelWait(cmdID)
@@ -638,12 +714,42 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 // ===== Helpers =====
 
 func (s *nshSession) autoCapturePath(cmdText, host string) string {
-	ts := time.Now().UTC().Format("20060102-150405")
+	ts := time.Now().Format("20060102-150405.000000000")
 	slug := slugify(cmdText)
 	if host == "" {
 		return fmt.Sprintf("%s/%s-%s.out", s.outputDir, ts, slug)
 	}
-	return fmt.Sprintf("%s/%s/%s-%s.out", s.outputDir, host, ts, slug)
+	return fmt.Sprintf("%s/%s/%s-%s.out", s.outputDir, slugify(host), ts, slug)
+}
+
+func safeNSHUploadPath(name string) (string, error) {
+	name = strings.TrimLeft(strings.ReplaceAll(name, "\\", "/"), "/")
+	parts := strings.Split(name, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "<>:\"|?*\x00") || strings.TrimRight(part, " .") != part {
+			return "", fmt.Errorf("invalid upload path %q", name)
+		}
+	}
+	return filepath.Join(parts...), nil
+}
+
+// Exclusive creation preserves earlier reports even when an explicit grab name
+// is reused or several hosts/operators submit concurrently.
+func createUploadFile(dir, name string) (*os.File, string, error) {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		candidate := name
+		if i > 1 {
+			candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		path := filepath.Join(dir, candidate)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		return f, path, err
+	}
 }
 
 var slugRE = regexp.MustCompile(`[^A-Za-z0-9._-]+`)

@@ -99,20 +99,35 @@ phase `NOT_APPLICABLE`.
 
 ## B. Output capture + file collection
 
+After A8, run `use cmd` before continuing: `use` persists until changed.
+Windows refuses `bash`/`sh`/`zsh` commands as `NOT_APPLICABLE`; they do not
+execute or upload stdout. The footer must show the refusal reason.
+
+Uploads are saved on the **mockserver machine**, relative to the directory
+from which `mockserver.exe` was started. NSH files live under
+`uploads/<computer_id>/<output-dir>/<host>/` (default output-dir: `nsh`).
+Action IDs remain in logs, not folder names. Repeated explicit filenames get
+numbered suffixes to preserve earlier files. Auto capture uses timestamps.
+
 ### B1 — `grab` saves stdout as a server-side file
 ```
 nsh> cd \\win11-vm
+win11-vm> use cmd
 win11-vm> grab \out\winini.txt type C:\Windows\win.ini
 ```
-**PASS:** footer line `---- saved to uploads/<computer_id>/\out\winini.txt`.
+**PASS:** footer line `---- saved to uploads/<computer_id>/nsh/win11-vm/out/winini.txt`.
 File exists on the mock host at that path, contains the `win.ini` text.
 
 ### B2 — `set capture on` auto-saves every subsequent command
 ```
 win11-vm> set capture on
-win11-vm> tasklist | findstr skvc
+win11-vm> use cmd
+win11-vm> echo capture-check
 ```
-**PASS:** footer `saved to uploads/<cid>/nsh/win11-vm/<ts>-tasklist__.out`.
+**PASS:** output contains `capture-check` and footer
+`saved to uploads/<cid>/nsh/win11-vm/<ts>-echo_capture-check.out`.
+Then try `tasklist` (or `tasklist | findstr /i AegisOneClient`).
+`findstr skvc` can match no process: the executable is `AegisOneClient.exe`.
 
 ### B3 — Multi-host capture → per-host files, no collision
 Requires two agents online.
@@ -128,8 +143,11 @@ nsh> set capture on
 ```
 win11-vm> pull C:\Windows\System32\drivers\etc\hosts \hosts.txt
 ```
-**PASS:** `hosts.txt` lands at `uploads/<cid>/\hosts.txt` and matches the
-endpoint file byte-for-byte.
+**PASS:** `hosts.txt` lands at `uploads/<cid>/nsh/win11-vm/hosts.txt` and matches
+the endpoint file byte-for-byte. `pull` uses signed `collect_file`, independent
+of the selected shell. Try a binary file and a quoted path containing spaces
+too: `pull "C:\temp\with spaces.bin" copy.bin`. Missing files report no match.
+One source file per pull; wildcard paths are refused.
 
 ### B5 — `set output-dir` changes the default save prefix
 ```
@@ -138,6 +156,7 @@ nsh> set capture on
 win11-vm> hostname
 ```
 **PASS:** file lands under `uploads/<cid>/reports/daily/win11-vm/*.out`.
+Reset `set output-dir nsh` after this test if you want the default layout.
 
 ---
 

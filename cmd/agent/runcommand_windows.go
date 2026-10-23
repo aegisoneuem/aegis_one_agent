@@ -37,6 +37,11 @@ func runOneCommand(ctx context.Context, text, shell, cwd string, params map[stri
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	if picked == "cmd" {
+		// cmd.exe parses /C text itself. Go's default argv quoting inserts
+		// backslash escapes for embedded quotes, which cmd treats literally.
+		cmd.SysProcAttr.CmdLine = `cmd.exe /D /S /C "` + text + `"`
+	}
 	// Author/author-forwarded params go into the child env as AEGIS_PARAM_<name>
 	// so scripts can read them (same convention as softdist).
 	if len(params) > 0 {
