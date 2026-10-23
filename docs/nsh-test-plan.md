@@ -357,6 +357,12 @@ nsh> exec C:\does\not\exist.ps1
 
 ## G. HEREDOC — inline multi-line script (BigFix `createfile until` ergonomic)
 
+Type the `script ... until ...` opener **once**, then enter only the script
+body lines. The prompt changes to `... [EOT]>` (or your chosen delimiter).
+Finish by typing the delimiter alone on its own line. Do not type the prompt
+text or repeat the opener: a repeated opener becomes part of the script body.
+No local file needs to be created for these tests.
+
 ### G1 — PowerShell inline block with `${VAR}` substitution
 ```
 nsh> let REGION = us-west-1

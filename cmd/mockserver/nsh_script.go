@@ -39,10 +39,10 @@ type scriptEngine struct {
 	contLoop   bool              // true = jump to next iteration (`continue`)
 	// HEREDOC state (top-level only; inside a for/if block the opener is
 	// captured as body text and replayed through execLine per iteration).
-	inHeredoc     bool
-	heredocShell  string
-	heredocDelim  string
-	heredocLines  []string
+	inHeredoc    bool
+	heredocShell string
+	heredocDelim string
+	heredocLines []string
 }
 
 // blockFrame is one active block (for, foreach, if). The engine buffers body
@@ -82,7 +82,7 @@ func (e *scriptEngine) execLine(raw string) bool {
 	line := strings.TrimSpace(raw)
 	// At top level, blank lines and `#` comments are skipped. Inside a heredoc
 	// they are PART OF THE SCRIPT and must be preserved verbatim.
-	if !e.inHeredoc && (line == "" || strings.HasPrefix(line, "#")) {
+	if !e.inHeredoc && len(e.blocks) == 0 && (line == "" || strings.HasPrefix(line, "#")) {
 		return true
 	}
 	e.writeSessionLog(raw)
@@ -583,10 +583,13 @@ func buildShellCommand(shell, content string) (cmdText, agentShell string) {
 	switch s {
 	case "powershell", "ps", "pwsh":
 		enc := utf16LEBase64(content)
+		// The agent already launches this interpreter with -Command. Supply a
+		// PowerShell expression, not process startup flags as script text.
+		text := "& ([ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + enc + "'))))"
 		if s == "pwsh" {
-			return "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + enc, "pwsh"
+			return text, "pwsh"
 		}
-		return "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + enc, "powershell"
+		return text, "powershell"
 	case "cmd":
 		// cmd.exe through /C accepts a single command line; join a multi-line
 		// script with ` & `, drop :: / rem comments. Rich .bat (labels, GOTO)

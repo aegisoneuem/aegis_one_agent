@@ -141,6 +141,9 @@ func (s *nshSession) printBanner() {
 }
 
 func (s *nshSession) prompt() string {
+	if s.engine != nil && s.engine.inHeredoc {
+		return "... [" + s.engine.heredocDelim + "]> "
+	}
 	// Inside an open for/foreach/if block → continuation prompt.
 	if s.engine != nil && len(s.engine.blocks) > 0 {
 		dots := strings.Repeat("..", len(s.engine.blocks))
@@ -166,17 +169,8 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 			return
 		}
 		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			if err != nil {
-				return
-			}
-			continue
-		}
 		if !interactive {
 			fmt.Printf("# %s\n", line)
-		}
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
 		}
 		s.history = append(s.history, line)
 		if cont := s.engine.execLine(line); !cont {

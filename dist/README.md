@@ -2,6 +2,11 @@
 
 Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
+2026-10-23 mockserver update: fixes F1/G1 PowerShell `exec` and HEREDOC dispatch
+(`-NoLogo` was incorrectly treated as script text). HEREDOC collection shows
+the closing delimiter in its continuation prompt and preserves comments/blank
+lines. Replace/restart mockserver for this update; the agent/MSI are unchanged.
+
 2026-10-22 NSH test build: refresh BOTH the agent and mockserver (the MSI bundles
 the matching agent). Includes zero-byte stdout upload fix, quoted Windows command
 paths, native file `pull`, and readable NSH output folders with `set output-dir`.
