@@ -43,6 +43,7 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 		"collect_file":    d.handleCollectFileCmd,
 		"open_shell":      d.handleOpenShellCmd,
 		"run_command":     d.handleRunCommandCmd,
+		"file_operation":  d.handleFileOperationCmd,
 	}
 	return d
 }

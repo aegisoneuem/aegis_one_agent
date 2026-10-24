@@ -2,6 +2,34 @@
 
 Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
+**Today's replay guide:**
+[NSH acceptance — 24 October](../docs/nsh-server-acceptance-2026-10-24.md).
+Vijay reports the NSH suite passed; the server team should replay the documented
+cases with these matching artifacts. Reusable Script Job integration is the next
+coding block, separate from this accepted handoff.
+
+2026-10-24 file-operations build: replace BOTH agent and mockserver (or install
+the matching MSI). Native/bulk copy, move, mkdir/touch/delete and bounded host
+search/pagination are now implemented. See
+[file operations and search](../docs/nsh-file-operations.md) for syntax and test
+cases. Defaults: 4 file workers, 500 MiB/bundle, 10k entries; hosts prints 20 rows,
+maximum 100. No automatic host-list dump on terminal open. Automated tests pass;
+new multi-VM file-operation acceptance remains pending.
+
+2026-10-24 mockserver update: NSH background fleet events now go to
+`logs/mockserver.log` (override `AEGIS_MOCK_LOG_FILE`); terminal output stays
+focused on operator commands. PowerShell exec/HEREDOC blocks fail on unhandled
+errors. G2 explicitly imports REGION from the server environment. See
+[console integration notes](../docs/nsh-console-integration.md) for Live
+Dashboard/device NSH, Software Distribution workflows and persistent shell work.
+Automated G2 and logging checks passed; VM retest of this update is pending.
+
+Also includes known-offline target selection (no fleet-list prerequisite),
+ONLINE/OFFLINE inventory status, endpoint cd/pwd with per-device working_dir,
+ambiguous-hostname rejection, and caller target restoration after foreach.
+See nsh-test-plan.md A9/A10 for navigation and cold-start tests. G2 was verified
+by Vijay; these newer navigation changes still need VM acceptance.
+
 2026-10-23 mockserver update: fixes F1/G1 PowerShell `exec` and HEREDOC dispatch
 (`-NoLogo` was incorrectly treated as script text). HEREDOC collection shows
 the closing delimiter in its continuation prompt and preserves comments/blank

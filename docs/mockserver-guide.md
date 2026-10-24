@@ -1,5 +1,12 @@
 # Mockserver — Deploy & Test Guide (Server Team)
 
+For NSH, enabling AEGIS_NSH or AEGIS_NSH_SCRIPT keeps background server events
+out of the terminal and writes them to `logs/mockserver.log` (relative to launch
+directory). Override with `AEGIS_MOCK_LOG_FILE`. Command output stays in the
+terminal; no second window is needed. See
+[NSH console integration](nsh-console-integration.md) for Live Dashboard/device
+actions, Software Distribution workflows and the persistent-shell contract.
+
 **Audience:** Aegis One server team.
 **Purpose:** run the reference `mockserver` (`cmd/mockserver`), drive every agent
 scenario (enroll, single/multi patch, caching/staging, status, cab, reboot,

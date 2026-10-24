@@ -35,12 +35,14 @@ anything else is a FAIL to flag.
 
 ## A. REPL basics
 
-### A1 — `hosts` lists connected agents
+### A1 — `hosts` lists known devices with connection status
 ```
 nsh> hosts
 ```
-**PASS:** at least one row with `HOST`, `DEVICE_ID`, `COMPUTER_ID` columns. If
-a second agent VM is up, it is listed too.
+**PASS:** known devices appear with HOST, DEVICE_ID, COMPUTER_ID and STATUS
+(ONLINE/OFFLINE). Inventory can be listed before agents reconnect after a server
+restart. `hosts host=win11` filters the output. You do not need to run hosts or
+wait for the full fleet before selecting a known target.
 
 ### A2 — `cd \\<host>` sets a single target
 ```
@@ -68,7 +70,7 @@ nsh> cd *
 ```
 nsh> cd \\does-not-exist
 ```
-**PASS:** `nsh: no such online host: does-not-exist`.
+**PASS:** `nsh: unknown device: does-not-exist`. Existing selection is preserved.
 
 ### A6 — `use` switches interpreter
 ```
@@ -96,6 +98,37 @@ win11-vm> ls
 phase `NOT_APPLICABLE`.
 
 ---
+
+### A9 — Endpoint directory navigation persists across commands and host switches
+Requires an existing C:\temp folder on the selected Windows endpoint.
+```
+nsh> cd \\win11-vm
+win11-vm> use powershell
+win11-vm> cd C:\temp
+win11-vm> pwd
+win11-vm> Get-Location
+win11-vm> cd ..
+win11-vm> pwd
+```
+**PASS:** CWD is C:\temp, then C:\. Repeat using `use cmd`, `cd /d C:\temp`
+and `dir`. Relative paths and quoted paths containing spaces work. A nonexistent
+directory fails and retains the previous CWD. Switch to another host: it has its
+own CWD, not the first host's directory. Switch back: the first CWD is retained.
+`cd` without arguments displays the selected endpoint's CWD; `cd \\` clears
+targets and returns to nsh>. Each OS command remains a fresh process: this
+persists the configured working_dir, not arbitrary environment/process state.
+
+### A10 — Known offline target selection does not wait for fleet connections
+After a mock restart with an existing mockserver-devices.json registry, run:
+```
+nsh> cd \\win11-vm
+win11-vm> hostname
+```
+**PASS:** selection succeeds even if the device is OFFLINE. Its command is
+immediately refused as offline (no queue, fleet barrier or heartbeat wait).
+After that endpoint reconnects, `hostname` works without reselecting it, even
+if other devices are still offline. Duplicate hostnames must be refused as
+ambiguous; use `cd \\<device_id>` or `cd \\<computer_id>` instead.
 
 ## B. Output capture + file collection
 
@@ -380,6 +413,7 @@ status line. No file was dropped on the endpoint (confirm nothing new under
 ### G2 — HEREDOC inside a `foreach` block runs per host
 Requires 2 agents. Save `C:\tests\fleet-herdoc.nsh`:
 ```nsh
+let REGION = ${env:REGION}
 use powershell
 on-error continue
 set capture on
@@ -398,6 +432,15 @@ mockserver.exe
 ```
 **PASS:** every host prints its name + the engine version; per-host files
 land under `uploads/<cid>/nsh/<host>/*.out` without collision.
+
+`REGION` above is imported explicitly from the **mockserver process** environment;
+`set REGION=apac` alone does not create an NSH variable. For interactive testing,
+use `let REGION = apac`. Ensure the names are `Get-MpComputerStatus` and
+`AMEngineVersion`. A missing cmdlet or other unhandled PowerShell error must
+produce `FAIL` with nonzero exit, even when a later command would succeed.
+`on-error continue` continues to the next host; it does not turn a failed
+endpoint command into success. The Defender command requires Defender support
+on that endpoint; unavailable cmdlets should fail honestly.
 
 ### G3 — `.bat` HEREDOC flattens correctly
 ```
@@ -448,12 +491,16 @@ validated.
 
 ### H3 — Service-context CWD does NOT bite us
 ```
-win11-vm> cd /d C:\temp\checkpath && echo %CD%
+win11-vm> use cmd
+win11-vm> pwd
+win11-vm> cd C:\temp
+win11-vm> dir
+win11-vm> pwd
 ```
 Default `working_dir` for `run_command` is `<SKVC>\tmp`, so an unqualified
 command runs inside `<SKVC>\tmp`, NOT `C:\Windows\System32`.
-**PASS:** output path reflects a path under `SKVC\tmp` unless admin set a
-`working_dir`.
+**PASS:** before explicit navigation on a fresh session, pwd shows SKVC\tmp.
+After `cd C:\temp`, commands use C:\temp (which must already exist on endpoint).
 
 ---
 
@@ -543,6 +590,28 @@ mockserver.exe
 line; files exist on the endpoints.
 
 ---
+
+## K — Native file jobs and bounded inventory search
+
+See [nsh-file-operations.md](nsh-file-operations.md) for the full manual and
+acceptance cases. Use disposable test folders and updated agent + mockserver.
+
+```text
+search win11
+hosts --status offline --page 1 --limit 20
+hosts --page 2
+mkdir \\vm1,vm2\c\temp\nsh-test
+copy \\srv1\c\temp\loop.txt \\vm1,vm2\c\temp\nsh-test\
+touch \\vm1,vm2\c\temp\nsh-test\empty.txt
+delete \\vm1,vm2\c\temp\nsh-test\empty.txt
+```
+
+**PASS:** host list is bounded (default 20, max 100 rows); status and total/next
+page are visible; copy preserves the source and exact bytes on both targets.
+Verify existing-file refusal, explicit --overwrite, binary/recursive/glob copy,
+one-to-one move, offline/permission failures and per-host status. No manual
+foreach loop or SMB credentials are required. Source/destination endpoints must
+be managed agents. A no-target right-click/session open must not print any list.
 
 ## Hand-off note for the server team
 

@@ -22,10 +22,18 @@ import (
 
 // ===== Live-agent registry (used by REPL to target by host / id) =====
 
-func (s *server) registerLiveAgent(deviceID string, stream pb.AgentControlPlane_ConnectServer) {
+func (s *server) registerLiveAgent(deviceID string, stream pb.AgentControlPlane_ConnectServer) *liveAgent {
 	s.liveMu.Lock()
-	s.liveAgents[deviceID] = &liveAgent{deviceID: deviceID, stream: stream, since: time.Now()}
+	agent := &liveAgent{deviceID: deviceID, stream: stream, since: time.Now()}
+	s.liveAgents[deviceID] = agent
 	s.liveMu.Unlock()
+	return agent
+}
+
+func (a *liveAgent) send(msg *pb.ServerMessage) error {
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+	return a.stream.Send(msg)
 }
 
 func (s *server) deregisterLiveAgent(deviceID string) {
@@ -90,17 +98,20 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 // nshSession is the REPL state (per-process). The console (future web UI) will
 // keep this per logged-in operator; the mock has one.
 type nshSession struct {
-	srv        *server
-	targets    []string // device_ids resolved from `cd \\host`
-	workingDir string   // endpoint CWD for subsequent run_commands ("" = SKVC\tmp)
-	shell      string   // cmd | powershell | pwsh (nothing on this OS == default)
-	timeout    int32    // seconds
-	maxOutput  int64    // bytes
-	capture    bool     // auto-save every command's stdout as a server-side file
-	outputDir  string   // default upload path prefix for grab / capture
-	history    []string
-	out        *bufio.Writer
-	engine     *scriptEngine
+	srv          *server
+	targets      []string          // device_ids resolved from `cd \\host`
+	workingDirs  map[string]string // endpoint CWD per device (unset = SKVC\tmp)
+	fileWorkers  int
+	fileMaxBytes int64
+	fileMaxFiles int
+	shell        string // cmd | powershell | pwsh (nothing on this OS == default)
+	timeout      int32  // seconds
+	maxOutput    int64  // bytes
+	capture      bool   // auto-save every command's stdout as a server-side file
+	outputDir    string // default upload path prefix for grab / capture
+	history      []string
+	out          *bufio.Writer
+	engine       *scriptEngine
 }
 
 // runNSH starts the interactive REPL on stdin (or non-interactive from a
@@ -194,8 +205,22 @@ func (s *nshSession) exec(line string) bool {
 		s.verbHelp(rest)
 	case "hosts":
 		s.verbHosts(rest)
+	case "search":
+		s.verbHosts(rest)
+	case "copy", "cp":
+		s.verbFile("copy", rest)
+	case "move", "mv":
+		s.verbFile("move", rest)
+	case "delete", "del", "rm":
+		s.verbFile("delete", rest)
+	case "mkdir", "md":
+		s.verbFile("mkdir", rest)
+	case "touch":
+		s.verbFile("touch", rest)
 	case "cd":
 		s.verbCD(rest)
+	case "pwd":
+		s.changeWorkingDir("")
 	case "run":
 		s.verbRun(rest, false)
 	case "grab":
@@ -228,13 +253,23 @@ func (s *nshSession) exec(line string) bool {
 func (s *nshSession) verbHelp(_ string) {
 	fmt.Print(`
 TARGETING
-  hosts [filter]            list online devices (host=sub, id=sub, cid=sub)
+  hosts [filter]            known devices + ONLINE/OFFLINE (20 rows by default)
+  search <text>             search hostname/device_id/computer_id
+  hosts --status offline --page 2 --limit 20   filter/paginate (max 100 rows)
   cd \\<host>               set single target (hostname / device_id / computer_id)
   cd \\<h1>,<h2>            set multiple targets
   cd *                      target all online
-  cd                        clear target
+  cd C:\temp | cd ..        change selected endpoint's working directory
+  cd | pwd                  show endpoint working directory
+  cd \\                     clear targets (return to nsh prompt)
 
 EXECUTION
+  copy|cp [-r] [--overwrite] <src> <dest>  native local/cross-host copy
+  move|mv [-r] [--overwrite] <src> <dest>  copy-verify-remove (one destination)
+  mkdir|md <path> | touch <path> | delete|del|rm [-r] <path>
+     Paths: selected-host C:\path or \\host[,host]\c\path; \\* targets online hosts.
+     Cross-host paths are NSH device paths, not Windows SMB shares.
+     set file-workers 4 | file-max-bytes 524288000 | file-max-files 10000
   <cmd> | run <cmd>         run on current target(s) (bare line = run)
   grab [path] <cmd>         run + save stdout as server-side file
   pull <remote> [path]      fetch an endpoint file verbatim
@@ -286,29 +321,23 @@ LAST-RESULT VARS (after each command, usable in if-conditions / substitution)
 }
 
 func (s *nshSession) verbHosts(filter string) {
-	s.srv.liveMu.Lock()
-	ids := make([]string, 0, len(s.srv.liveAgents))
-	for id := range s.srv.liveAgents {
-		ids = append(ids, id)
-	}
-	s.srv.liveMu.Unlock()
-	sort.Strings(ids)
-
-	fmt.Printf("%-18s  %-24s  %s\n", "HOST", "DEVICE_ID", "COMPUTER_ID")
-	for _, id := range ids {
-		host := s.srv.hostnameOf(id)
-		cid := s.srv.computerIDOf(id)
-		if filter != "" && !matchFilter(host, id, cid, filter) {
-			continue
-		}
-		fmt.Printf("%-18s  %-24s  %s\n", host, id, cid)
-	}
+	s.printHosts(filter)
 }
 
 func (s *nshSession) verbCD(rest string) {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
+		if len(s.targets) == 1 {
+			s.changeWorkingDir("")
+		}
+		return
+	}
+	if rest == `\\` {
 		s.targets = nil
+		return
+	}
+	if rest != "*" && !strings.HasPrefix(rest, `\\`) && len(s.targets) > 0 {
+		s.changeWorkingDir(rest)
 		return
 	}
 	if rest == "*" {
@@ -329,17 +358,83 @@ func (s *nshSession) verbCD(rest string) {
 		if p == "" {
 			continue
 		}
-		id := s.srv.resolveTarget(p)
-		if id == "" {
-			fmt.Printf("nsh: no such online host: %s\n", p)
-			continue
+		id, err := s.srv.resolveKnownTarget(p)
+		if err != nil {
+			fmt.Printf("nsh: %v\n", err)
+			return // preserve selection rather than partially selecting a list
 		}
 		resolved = append(resolved, id)
 	}
 	s.targets = resolved
+	for _, id := range resolved {
+		if !s.srv.isOnline(id) {
+			fmt.Printf("nsh: %s selected (OFFLINE); commands require this endpoint to reconnect\n", s.srv.hostnameOf(id))
+		}
+	}
 	if len(resolved) == 0 {
 		fmt.Println("nsh: no targets selected")
 	}
+}
+
+// Validate/resolve the directory on the endpoint. Never use the mockserver's
+// local filesystem, and retain the old CWD if the endpoint rejects the change.
+func (s *nshSession) changeWorkingDir(path string) {
+	if len(s.targets) != 1 {
+		fmt.Println("nsh: cd/pwd needs exactly one selected endpoint")
+		return
+	}
+	if strings.HasPrefix(strings.ToLower(path), "/d ") {
+		path = strings.TrimSpace(path[3:])
+	}
+	path = strings.Trim(strings.TrimSpace(path), `"`)
+	if strings.ContainsAny(path, "\r\n\x00") {
+		fmt.Println("nsh: invalid directory path")
+		return
+	}
+	text := "cd"
+	switch strings.ToLower(s.shell) {
+	case "powershell", "ps", "pwsh":
+		text = "(Get-Location).ProviderPath"
+		if path != "" {
+			text = "$ErrorActionPreference='Stop'; Set-Location -LiteralPath '" + strings.ReplaceAll(path, "'", "''") + "'; (Get-Location).ProviderPath"
+		}
+	case "", "auto", "cmd":
+		if strings.Contains(path, `"`) {
+			fmt.Println("nsh: invalid directory path")
+			return
+		}
+		if path != "" {
+			text = `cd /d "` + path + `" && cd`
+		}
+	default:
+		fmt.Println("nsh: directory navigation currently supports cmd/powershell/pwsh on Windows")
+		return
+	}
+	id := s.targets[0]
+	st, _ := s.sendCommand(id, text, "")
+	if st == nil {
+		if s.engine != nil {
+			s.engine.recordLastResult(s.srv.hostnameOf(id), "", "", "command not sent", -1, 0)
+		}
+		return
+	}
+	if s.engine != nil {
+		s.engine.recordLastResult(s.srv.hostnameOf(id), parseStdout(st.Detail), parseStderr(st.Detail), st.Reason, int(st.ExitCode), parseDuration(st.Detail))
+	}
+	if st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
+		fmt.Printf("nsh: directory unchanged: %s\n%s", st.Reason, parseStderr(st.Detail))
+		return
+	}
+	cwd := strings.TrimSpace(parseStdout(st.Detail))
+	if cwd == "" {
+		fmt.Println("nsh: endpoint returned no directory; directory unchanged")
+		return
+	}
+	if s.workingDirs == nil {
+		s.workingDirs = make(map[string]string)
+	}
+	s.workingDirs[id] = cwd
+	fmt.Printf("%s: %s\n", s.srv.hostnameOf(id), cwd)
 }
 
 func (s *nshSession) verbRun(cmdText string, fan bool) {
@@ -640,17 +735,26 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 		MaxOutputBytes: s.maxOutput,
 		UploadAs:       uploadAs,
 		Parameters:     params,
-		WorkingDir:     s.workingDir,
+		WorkingDir:     s.workingDirs[deviceID],
 	}
 	return s.sendTask(deviceID, "run_command", spec, uploadAs)
 }
 
 func (s *nshSession) sendTask(deviceID, taskType string, spec proto.Message, uploadAs string) (*pb.ActionStatus, string) {
+	payload, err := proto.Marshal(spec)
+	if err != nil {
+		fmt.Printf("nsh: marshal: %v\n", err)
+		return nil, ""
+	}
+	return s.sendTaskPayload(deviceID, taskType, payload, uploadAs)
+}
+
+func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, uploadAs string) (*pb.ActionStatus, string) {
 	s.srv.liveMu.Lock()
 	la, ok := s.srv.liveAgents[deviceID]
 	s.srv.liveMu.Unlock()
 	if !ok {
-		fmt.Printf("nsh: %s is not currently connected\n", s.srv.hostnameOf(deviceID))
+		fmt.Printf("nsh: %s is OFFLINE; command not sent (no fleet/heartbeat wait)\n", s.srv.hostnameOf(deviceID))
 		return nil, ""
 	}
 	if uploadAs != "" {
@@ -658,11 +762,6 @@ func (s *nshSession) sendTask(deviceID, taskType string, spec proto.Message, upl
 			fmt.Printf("nsh: %v\n", err)
 			return nil, ""
 		}
-	}
-	payload, err := proto.Marshal(spec)
-	if err != nil {
-		fmt.Printf("nsh: marshal: %v\n", err)
-		return nil, ""
 	}
 	cmdID := "nsh-" + nshRandomID()
 	ch := s.srv.waitFor(cmdID)
@@ -677,7 +776,8 @@ func (s *nshSession) sendTask(deviceID, taskType string, spec proto.Message, upl
 	msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 		CommandId: cmdID, Type: taskType, Payload: payload,
 	})}}
-	if err := la.stream.Send(msg); err != nil {
+	err := la.send(msg)
+	if err != nil {
 		s.srv.cancelWait(cmdID)
 		fmt.Printf("nsh: send to %s failed: %v\n", s.srv.hostnameOf(deviceID), err)
 		return nil, cmdID
@@ -802,22 +902,42 @@ func (s *server) computerIDOf(deviceID string) string {
 // resolveTarget takes a user-typed token (hostname, device_id prefix, computer_id)
 // and returns the matching ONLINE device_id, or "".
 func (s *server) resolveTarget(token string) string {
-	token = strings.TrimSpace(token)
-	s.liveMu.Lock()
-	defer s.liveMu.Unlock()
-	for id := range s.liveAgents {
-		if strings.EqualFold(id, token) || strings.HasPrefix(id, token) {
-			return id
-		}
-		host := s.hostnameOf(id)
-		if strings.EqualFold(host, token) {
-			return id
-		}
-		if s.computerIDOf(id) == token {
-			return id
-		}
+	id, err := s.resolveKnownTarget(token)
+	if err == nil && s.isOnline(id) {
+		return id
 	}
 	return ""
+}
+
+func (s *server) isOnline(id string) bool {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	_, ok := s.liveAgents[id]
+	return ok
+}
+
+func (s *server) resolveKnownTarget(token string) (string, error) {
+	token = strings.TrimSpace(token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, record := range s.byID {
+		if strings.EqualFold(id, token) || (record.ComputerID != "" && record.ComputerID == token) {
+			return id, nil
+		}
+	}
+	var match string
+	for id, record := range s.byID {
+		if strings.EqualFold(record.Hostname, token) || (token != "" && strings.HasPrefix(strings.ToLower(id), strings.ToLower(token))) {
+			if match != "" && match != id {
+				return "", fmt.Errorf("ambiguous target %q; use device_id or computer_id", token)
+			}
+			match = id
+		}
+	}
+	if match == "" {
+		return "", fmt.Errorf("unknown device: %s", token)
+	}
+	return match, nil
 }
 
 func nshRandomID() string {

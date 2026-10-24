@@ -53,7 +53,7 @@ const privateKeyB64 = "+KSVnrEXSXNsyCL0FVZ0TLOB28gKyL0L7KRxzjtUAXqyW5fNX8seQt4BH
 func loadSignKey() ed25519.PrivateKey {
 	privBytes, err := base64.StdEncoding.DecodeString(privateKeyB64)
 	if err != nil {
-		log.Fatalf("invalid private key: %v", err)
+		mockFatalf("invalid private key: %v", err)
 	}
 	return ed25519.PrivateKey(privBytes)
 }
@@ -100,13 +100,16 @@ type server struct {
 	// their terminal ActionStatus. The ActionStatus receive loop forwards a
 	// terminal phase to the channel and closes it; non-REPL (regular) traffic
 	// prints normally.
-	pendingMu  sync.Mutex
-	pending    map[string]chan *pb.ActionStatus
-	nshUploads map[string]nshUploadTarget // protected by pendingMu
+	pendingMu    sync.Mutex
+	pending      map[string]chan *pb.ActionStatus
+	nshUploads   map[string]nshUploadTarget // protected by pendingMu
+	fileReceipts map[string]fileReceipt     // protected by pendingMu
+	fileContent  map[string]fileContent     // protected by pendingMu; destination-bound
 }
 
 // liveAgent is one currently-connected agent, discoverable by the REPL.
 type liveAgent struct {
+	sendMu   sync.Mutex
 	deviceID string
 	stream   pb.AgentControlPlane_ConnectServer
 	since    time.Time
@@ -163,7 +166,7 @@ func (s *server) loadRegistry() {
 			s.computerIDUsed[r.ComputerID] = struct{}{}
 		}
 	}
-	fmt.Printf("mock state: loaded %d device(s) from %s (dedup survives restart)\n", len(recs), s.statePath)
+	mockPrintf("mock state: loaded %d device(s) from %s (dedup survives restart)\n", len(recs), s.statePath)
 }
 
 // saveLocked persists the whole registry to disk atomically. Caller holds s.mu.
@@ -390,7 +393,7 @@ func (s *server) Renew(ctx context.Context, req *pb.RenewRequest) (*pb.RenewResp
 	if err != nil {
 		return &pb.RenewResponse{Error: "sign cert: " + err.Error()}, nil
 	}
-	fmt.Printf("Renew OK -> device_id=%s (new cert signed, valid %s)\n", cn, certTTL())
+	mockPrintf("Renew OK -> device_id=%s (new cert signed, valid %s)\n", cn, certTTL())
 	return &pb.RenewResponse{ClientCertPem: certPEM}, nil
 }
 
@@ -410,7 +413,7 @@ func licenseMax() int {
 func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollResponse, error) {
 	want := strings.TrimSpace(os.Getenv("AEGIS_ENROLL_TOKEN"))
 	if want == "" || req.EnrollToken != want {
-		fmt.Printf("Enroll REJECTED -> device_id=%s (bad/missing token)\n", req.DeviceId)
+		mockPrintf("Enroll REJECTED -> device_id=%s (bad/missing token)\n", req.DeviceId)
 		return &pb.EnrollResponse{Error: "invalid enrollment token"}, nil
 	}
 	block, _ := pem.Decode([]byte(req.CsrPem))
@@ -428,7 +431,7 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 	// and enforce the license cap.
 	assigned, deduped, rejected := s.reconcile(req)
 	if rejected != "" {
-		fmt.Printf("Enroll REJECTED -> device_id=%s hostname=%s: %s\n", req.DeviceId, req.Hostname, rejected)
+		mockPrintf("Enroll REJECTED -> device_id=%s hostname=%s: %s\n", req.DeviceId, req.Hostname, rejected)
 		return &pb.EnrollResponse{Error: rejected}, nil
 	}
 
@@ -444,10 +447,10 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 	}
 	computerID := s.computerIDFor(assigned)
 	if deduped {
-		fmt.Printf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s computer_id=%s tpm_ek=%s system_uuid=%s hostname=%s (same hardware → existing device)%s\n",
+		mockPrintf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s computer_id=%s tpm_ek=%s system_uuid=%s hostname=%s (same hardware → existing device)%s\n",
 			req.DeviceId, assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.Hostname, lic)
 	} else {
-		fmt.Printf("Enroll OK -> device_id=%s computer_id=%s tpm_ek=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)%s\n",
+		mockPrintf("Enroll OK -> device_id=%s computer_id=%s tpm_ek=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)%s\n",
 			assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.MachineGuid, req.Hostname, req.Os, lic)
 	}
 	return &pb.EnrollResponse{
@@ -531,6 +534,14 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 	}
 	var path string
 	switch req.Kind {
+	case "nsh-file":
+		s.pendingMu.Lock()
+		content, ok := s.fileContent[req.Id]
+		s.pendingMu.Unlock()
+		if !ok || content.deviceID != clientCertCN(stream.Context()) || content.sha256 != req.Sha256 {
+			return status.Error(codes.PermissionDenied, "file transfer is not authorized for this device/content")
+		}
+		path = content.path
 	case "cab":
 		path = os.Getenv("AEGIS_SERVE_CAB")
 	case "patch":
@@ -548,7 +559,7 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 		return err
 	}
 	defer f.Close()
-	fmt.Printf("FetchContent: serving %s (kind=%s, id=%s)\n", path, req.Kind, req.Id)
+	mockPrintf("FetchContent: serving %s (kind=%s, id=%s)\n", path, req.Kind, req.Id)
 	buf := make([]byte, 64*1024)
 	var total int64
 	for {
@@ -566,7 +577,7 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 			return rerr
 		}
 	}
-	fmt.Printf("FetchContent: done (%d bytes)\n", total)
+	mockPrintf("FetchContent: done (%d bytes)\n", total)
 	return nil
 }
 
@@ -654,7 +665,18 @@ func (s *server) UploadContent(stream pb.AgentControlPlane_UploadContentServer) 
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	ok := wantSha != "" && strings.EqualFold(got, wantSha)
-	fmt.Printf("Collected file -> %s | action_id: %s, stored: %s, bytes: %d, integrity: %v\n",
+	if ok {
+		s.pendingMu.Lock()
+		target, exists := s.nshUploads[actionID]
+		if exists && target.deviceID == device && strings.HasPrefix(target.path, "_nsh-transfer/") {
+			if s.fileReceipts == nil {
+				s.fileReceipts = make(map[string]fileReceipt)
+			}
+			s.fileReceipts[actionID] = fileReceipt{path: path, sha256: got, deviceID: device}
+		}
+		s.pendingMu.Unlock()
+	}
+	mockPrintf("Collected file -> %s | action_id: %s, stored: %s, bytes: %d, integrity: %v\n",
 		s.identify(device), actionID, path, total, ok)
 	ack := &pb.UploadAck{StoredPath: path, ReceivedBytes: total, IntegrityOk: ok}
 	if !ok {
@@ -731,12 +753,12 @@ func (s *server) ShellSession(stream pb.AgentControlPlane_ShellSessionServer) er
 	}
 	s.shellMu.Unlock()
 	if !ok {
-		fmt.Printf("ShellSession REFUSED (unknown or already-consumed session_id) -> %s\n", s.identify(device))
+		mockPrintf("ShellSession REFUSED (unknown or already-consumed session_id) -> %s\n", s.identify(device))
 		return status.Error(codes.PermissionDenied, "unknown or already-consumed session_id")
 	}
-	fmt.Printf("ShellSession OPEN -> %s (session=%s, since open_shell=%s)\n",
+	mockPrintf("ShellSession OPEN -> %s (session=%s, since open_shell=%s)\n",
 		s.identify(device), sid[:12]+"...", time.Since(parked.started).Round(time.Millisecond))
-	fmt.Println("---- type commands below (end with Ctrl+Z then Enter to close) ----")
+	mockPrintln("---- type commands below (end with Ctrl+Z then Enter to close) ----")
 
 	// agent → mock (stdout/stderr/close): print live, mark the session closed on
 	// the terminal chunk so our stdin reader bails out.
@@ -747,7 +769,7 @@ func (s *server) ShellSession(stream pb.AgentControlPlane_ShellSessionServer) er
 			out, err := stream.Recv()
 			if err != nil {
 				if err != io.EOF {
-					fmt.Printf("ShellSession recv error: %v\n", err)
+					mockPrintf("ShellSession recv error: %v\n", err)
 				}
 				return
 			}
@@ -758,7 +780,7 @@ func (s *server) ShellSession(stream pb.AgentControlPlane_ShellSessionServer) er
 				os.Stderr.Write(out.Stderr)
 			}
 			if out.Closed {
-				fmt.Printf("\n---- shell closed (exit=%d, reason=%s) ----\n", out.ExitCode, out.Reason)
+				mockPrintf("\n---- shell closed (exit=%d, reason=%s) ----\n", out.ExitCode, out.Reason)
 				return
 			}
 		}
@@ -776,7 +798,7 @@ func (s *server) ShellSession(stream pb.AgentControlPlane_ShellSessionServer) er
 		n, rerr := os.Stdin.Read(in)
 		if n > 0 {
 			if serr := stream.Send(&pb.ShellInput{Stdin: append([]byte{}, in[:n]...)}); serr != nil {
-				fmt.Printf("ShellSession send error: %v\n", serr)
+				mockPrintf("ShellSession send error: %v\n", serr)
 				return serr
 			}
 		}
@@ -802,15 +824,15 @@ func sanitizePathSeg(s string) string {
 
 func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	if !clientVerified(stream.Context()) {
-		fmt.Println("Connect REJECTED -> no verified client certificate (must enroll first)")
+		mockPrintln("Connect REJECTED -> no verified client certificate (must enroll first)")
 		return status.Error(codes.Unauthenticated, "client certificate required")
 	}
 	connectedDevice := clientCertCN(stream.Context())
-	fmt.Printf("Agent connected! device: %s\n", connectedDevice)
+	mockPrintf("Agent connected! device: %s\n", connectedDevice)
 
 	// Register this connection in the live-agent registry so the NSH REPL can
 	// target it by hostname / device_id / computer_id. Deregister on return.
-	s.registerLiveAgent(connectedDevice, stream)
+	connection := s.registerLiveAgent(connectedDevice, stream)
 	defer s.deregisterLiveAgent(connectedDevice)
 
 	go func() {
@@ -818,7 +840,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// commands to that device_id (others just stay connected / receive). The
 		// REAL server targets by device; the mock otherwise sends to whoever connects.
 		if target := strings.TrimSpace(os.Getenv("AEGIS_TARGET_DEVICE")); target != "" && !strings.EqualFold(target, connectedDevice) {
-			fmt.Printf("  (AEGIS_TARGET_DEVICE=%s set; connected device=%s — receiving only, NO commands sent)\n", target, connectedDevice)
+			mockPrintf("  (AEGIS_TARGET_DEVICE=%s set; connected device=%s — receiving only, NO commands sent)\n", target, connectedDevice)
 			return
 		}
 		time.Sleep(2 * time.Second)
@@ -832,11 +854,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				}),
 			},
 		}
-		if err := stream.Send(command); err != nil {
+		if err := connection.send(command); err != nil {
 			log.Printf("failed to send command: %v", err)
 			return
 		}
-		fmt.Println("Sent command -> id: cmd-001, type: hostname (signed)")
+		mockPrintln("Sent command -> id: cmd-001, type: hostname (signed)")
 
 		// Optionally push one or more signed install_patch commands. Set
 		// AEGIS_INSTALL_FILE (and optionally _KB / _HASH / _HASH_ALGO); each may be
@@ -874,11 +896,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 						}),
 					},
 				}
-				if err := stream.Send(installCmd); err != nil {
+				if err := connection.send(installCmd); err != nil {
 					log.Printf("failed to send install command: %v", err)
 					return
 				}
-				fmt.Printf("Sent command -> id: %s, type: install_patch, kb=%s, file=%s (signed)\n", cmdID, spec.Kb, f)
+				mockPrintf("Sent command -> id: %s, type: install_patch, kb=%s, file=%s (signed)\n", cmdID, spec.Kb, f)
 			}
 		}
 
@@ -904,11 +926,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				cmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 					CommandId: cmdID, Type: "uninstall_patch", Payload: specBytes,
 				})}}
-				if err := stream.Send(cmd); err != nil {
+				if err := connection.send(cmd); err != nil {
 					log.Printf("failed to send uninstall command: %v", err)
 					return
 				}
-				fmt.Printf("Sent command -> id: %s, type: uninstall_patch, kb=%s (signed)\n", cmdID, kb)
+				mockPrintf("Sent command -> id: %s, type: uninstall_patch, kb=%s (signed)\n", cmdID, kb)
 			}
 		}
 
@@ -944,11 +966,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					Type:      "stage_patch",
 					Payload:   specBytes,
 				})}}
-				if err := stream.Send(stageCmd); err != nil {
+				if err := connection.send(stageCmd); err != nil {
 					log.Printf("failed to send stage command: %v", err)
 					return
 				}
-				fmt.Printf("Sent command -> id: %s, type: stage_patch, kb=%s (signed)\n", cmdID, kb)
+				mockPrintf("Sent command -> id: %s, type: stage_patch, kb=%s (signed)\n", cmdID, kb)
 			}
 		}
 
@@ -1003,7 +1025,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				}
 				if sum, err := fileSHA256(src); err == nil {
 					spec.ExpectedHash, spec.HashAlgorithm = sum, "sha256"
-					fmt.Printf("Auto-computed package sha256 (%s): %s\n", src, sum)
+					mockPrintf("Auto-computed package sha256 (%s): %s\n", src, sum)
 				} else {
 					log.Printf("WARNING: no AEGIS_DEPLOY_HASH and cannot read %q to auto-hash (%v) — the agent will REFUSE this unpinned deploy; set AEGIS_DEPLOY_HASH (file is on the agent machine)", src, err)
 				}
@@ -1015,7 +1037,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				deploy := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 					CommandId: "deploy-001", Type: "software_deploy", Payload: specBytes,
 				})}}
-				if err := stream.Send(deploy); err != nil {
+				if err := connection.send(deploy); err != nil {
 					log.Printf("failed to send software_deploy command: %v", err)
 					return
 				}
@@ -1023,7 +1045,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				if deployContentID != "" {
 					src = "content_id=" + deployContentID + " (server-delivered)"
 				}
-				fmt.Printf("Sent command -> id: deploy-001, type: software_deploy, name=%s, %s (signed)\n", spec.Name, src)
+				mockPrintf("Sent command -> id: deploy-001, type: software_deploy, name=%s, %s (signed)\n", spec.Name, src)
 			}
 		}
 
@@ -1052,11 +1074,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				collect := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 					CommandId: "collect-001", Type: "collect_file", Payload: specBytes,
 				})}}
-				if err := stream.Send(collect); err != nil {
+				if err := connection.send(collect); err != nil {
 					log.Printf("failed to send collect_file command: %v", err)
 					return
 				}
-				fmt.Printf("Sent command -> id: collect-001, type: collect_file, paths=%v (signed)\n", paths)
+				mockPrintf("Sent command -> id: collect-001, type: collect_file, paths=%v (signed)\n", paths)
 			}
 		}
 
@@ -1077,11 +1099,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			bl := &pb.ServerMessage{Payload: &pb.ServerMessage_PatchBaseline{
 				PatchBaseline: &pb.PatchBaseline{Build: build, LatestKbs: kbs, IssuedAt: time.Now().Unix()},
 			}}
-			if err := stream.Send(bl); err != nil {
+			if err := connection.send(bl); err != nil {
 				log.Printf("failed to send baseline: %v", err)
 				return
 			}
-			fmt.Printf("Sent patch baseline -> build=%s, latest_kbs=%v\n", build, kbs)
+			mockPrintf("Sent patch baseline -> build=%s, latest_kbs=%v\n", build, kbs)
 		}
 
 		// Optionally push the current cab version. Set AEGIS_CAB_VERSION (and
@@ -1090,11 +1112,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			cm := &pb.ServerMessage{Payload: &pb.ServerMessage_CabManifest{
 				CabManifest: &pb.CabManifest{Version: ver, Sha256: os.Getenv("AEGIS_CAB_SHA256")},
 			}}
-			if err := stream.Send(cm); err != nil {
+			if err := connection.send(cm); err != nil {
 				log.Printf("failed to send cab manifest: %v", err)
 				return
 			}
-			fmt.Printf("Sent cab manifest -> version=%s\n", ver)
+			mockPrintf("Sent cab manifest -> version=%s\n", ver)
 		}
 
 		// Optionally send a signed reboot command. Set AEGIS_REBOOT_DELAY (seconds)
@@ -1107,11 +1129,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			reboot := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 				CommandId: "reboot-001", Type: "reboot", Payload: b,
 			})}}
-			if err := stream.Send(reboot); err != nil {
+			if err := connection.send(reboot); err != nil {
 				log.Printf("failed to send reboot command: %v", err)
 				return
 			}
-			fmt.Printf("Sent command -> id: reboot-001, type: reboot, delay=%ds (signed)\n", delay)
+			mockPrintf("Sent command -> id: reboot-001, type: reboot, delay=%ds (signed)\n", delay)
 		}
 
 		// Optionally send a signed scan_now command (set AEGIS_SCAN_NOW=1) — forces an
@@ -1121,11 +1143,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			scan := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 				CommandId: "scan-now-001", Type: "scan_now", Payload: payload,
 			})}}
-			if err := stream.Send(scan); err != nil {
+			if err := connection.send(scan); err != nil {
 				log.Printf("failed to send scan_now: %v", err)
 				return
 			}
-			fmt.Println("Sent command -> id: scan-now-001, type: scan_now (signed)")
+			mockPrintln("Sent command -> id: scan-now-001, type: scan_now (signed)")
 		}
 
 		// Optionally send a signed cancel_reboot command (set AEGIS_CANCEL_REBOOT=1).
@@ -1134,11 +1156,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			cancel := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 				CommandId: "cancel-reboot-001", Type: "cancel_reboot", Payload: payload,
 			})}}
-			if err := stream.Send(cancel); err != nil {
+			if err := connection.send(cancel); err != nil {
 				log.Printf("failed to send cancel_reboot: %v", err)
 				return
 			}
-			fmt.Println("Sent command -> id: cancel-reboot-001, type: cancel_reboot (signed)")
+			mockPrintln("Sent command -> id: cancel-reboot-001, type: cancel_reboot (signed)")
 		}
 
 		// Parallel-run demo: while a (long) install runs on the agent's serial
@@ -1155,11 +1177,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					Type:      "hostname",
 					Payload:   payload,
 				})}}
-				if err := stream.Send(ping); err != nil {
+				if err := connection.send(ping); err != nil {
 					log.Printf("failed to send parallel ping: %v", err)
 					return
 				}
-				fmt.Printf("Sent parallel ping -> id: ping-%03d, type: hostname (while install may be running)\n", i)
+				mockPrintf("Sent parallel ping -> id: ping-%03d, type: hostname (while install may be running)\n", i)
 			}
 		}
 	}()
@@ -1167,11 +1189,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
-			fmt.Println("Agent disconnected:", err)
+			mockPrintln("Agent disconnected:", err)
 			return err
 		}
 		if hb := msg.GetHeartbeat(); hb != nil {
-			fmt.Printf("Received heartbeat -> device: %s, hostname: %s, version: %s, os: %s\n",
+			mockPrintf("Received heartbeat -> device: %s, hostname: %s, version: %s, os: %s\n",
 				hb.DeviceId, hb.Hostname, hb.AgentVersion, hb.Os)
 			// Attribute update from heartbeat: hostname is mutable and NOT the key.
 			// A rename keeps the same device record — only the attribute changes.
@@ -1179,9 +1201,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			rec := s.byID[hb.DeviceId]
 			if rec == nil {
 				s.byID[hb.DeviceId] = &deviceRecord{DeviceID: hb.DeviceId, Hostname: hb.Hostname, LastSeen: time.Now()}
-				fmt.Printf("  device %s seen via heartbeat (registered), hostname: %s\n", hb.DeviceId, hb.Hostname)
+				mockPrintf("  device %s seen via heartbeat (registered), hostname: %s\n", hb.DeviceId, hb.Hostname)
 			} else if hb.Hostname != "" && rec.Hostname != hb.Hostname {
-				fmt.Printf("  device %s RENAMED: %q -> %q (same record — hostname is just an attribute)\n", hb.DeviceId, rec.Hostname, hb.Hostname)
+				mockPrintf("  device %s RENAMED: %q -> %q (same record — hostname is just an attribute)\n", hb.DeviceId, rec.Hostname, hb.Hostname)
 				rec.Hostname = hb.Hostname
 			}
 			s.mu.Unlock()
@@ -1206,7 +1228,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 			// CommandResult carries no device_id, but this stream belongs to one agent —
 			// resolve all three identifiers from the connected device.
-			fmt.Printf("Received command result -> %s | command_id: %s, status: %s, message: %s\n",
+			mockPrintf("Received command result -> %s | command_id: %s, status: %s, message: %s\n",
 				s.identify(connectedDevice), result.CommandId, result.Status, result.Message)
 		}
 		if st := msg.GetActionStatus(); st != nil {
@@ -1215,22 +1237,22 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if s.deliverActionStatus(st) {
 				continue
 			}
-			fmt.Printf("Received action status -> %s | action_id: %s, type: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
+			mockPrintf("Received action status -> %s | action_id: %s, type: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
 				s.identify(st.DeviceId), st.ActionId, st.ActionType, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
 			if st.Detail != "" {
-				fmt.Printf("  detail: %s\n", st.Detail)
+				mockPrintf("  detail: %s\n", st.Detail)
 			}
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			fmt.Printf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v",
+			mockPrintf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v",
 				s.identify(ds.DeviceId), ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending)
 			if ds.RebootPending {
-				fmt.Printf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
+				mockPrintf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}
-			fmt.Println()
+			mockPrintln()
 		}
 		if cf := msg.GetCacheFull(); cf != nil {
-			fmt.Printf("Received CACHE-FULL report -> device: %s, pending: %s, needed: %d, cap: %d, in_use: %d, msg: %s\n",
+			mockPrintf("Received CACHE-FULL report -> device: %s, pending: %s, needed: %d, cap: %d, in_use: %d, msg: %s\n",
 				cf.DeviceId, cf.PendingId, cf.NeededBytes, cf.CapBytes, cf.InUseBytes, cf.Message)
 		}
 		if psr := msg.GetPatchScanResult(); psr != nil {
@@ -1244,19 +1266,19 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					actionable++
 				}
 			}
-			fmt.Printf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d, superseded: %d, INSTALLED: %d\n",
+			mockPrintf("Received patch scan result -> device: %s, build: %s, arch: %s, source: %s, missing: %d, superseded: %d, INSTALLED: %d\n",
 				psr.DeviceId, psr.Build, psr.Architecture, psr.Source, actionable, superseded, len(psr.Installed))
 			for _, m := range psr.Missing {
 				tag := "MISSING"
 				if m.Superseded {
 					tag = "SUPERSEDED"
 				}
-				fmt.Printf("    - [%s][%s] %s (KB=%v, MS=%v, severity=%s, size=%.1f-%.1fMB, reboot=%v, cves=%v, supersedes=%v)\n",
+				mockPrintf("    - [%s][%s] %s (KB=%v, MS=%v, severity=%s, size=%.1f-%.1fMB, reboot=%v, cves=%v, supersedes=%v)\n",
 					tag, m.Classification, m.Title, m.KbArticleIds, m.SecurityBulletinIds, m.MsrcSeverity,
 					m.MinSizeMb, m.SizeMb, m.RebootRequired, m.CveIds, m.SupersededUpdateIds)
 			}
 			for _, m := range psr.Installed {
-				fmt.Printf("    - [INSTALLED][%s] %s (KB=%v, severity=%s)\n",
+				mockPrintf("    - [INSTALLED][%s] %s (KB=%v, severity=%s)\n",
 					m.Classification, m.Title, m.KbArticleIds, m.MsrcSeverity)
 			}
 		}
@@ -1264,9 +1286,17 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 }
 
 func main() {
+	serverLog, err := configureMockLogging()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mockserver: cannot open server log: %v\n", err)
+		os.Exit(1)
+	}
+	if serverLog != nil {
+		defer serverLog.Close()
+	}
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		mockFatalf("failed to listen: %v", err)
 	}
 
 	// mTLS: require and verify a client cert. Cert paths via env (defaults suit a
@@ -1279,7 +1309,7 @@ func main() {
 	// app layer (see Connect / FetchContent).
 	creds, err := secure.ServerCredentialsVerifyIfGiven(caFile, certFile, keyFile)
 	if err != nil {
-		log.Fatalf("TLS setup failed (run certgen first?): %v", err)
+		mockFatalf("TLS setup failed (run certgen first?): %v", err)
 	}
 
 	// Allow the agent's keepalive pings (client pings ~60s; without a permissive
@@ -1289,7 +1319,7 @@ func main() {
 	caKeyFile := getenv("AEGIS_CA_KEY", "certs/ca.key")
 	caCert, caKey, caCertPEM, err := loadCA(caFile, caKeyFile)
 	if err != nil {
-		log.Fatalf("CA load failed (needed for enrollment): %v", err)
+		mockFatalf("CA load failed (needed for enrollment): %v", err)
 	}
 	srv := &server{
 		caCert: caCert, caKey: caKey, caCertPEM: caCertPEM,
@@ -1319,7 +1349,7 @@ func main() {
 			srv.byID[rec.DeviceID] = rec
 			srv.bySysUUID[rec.SystemUUID] = rec
 		}
-		fmt.Printf("Pre-seeded %d dummy device(s) for license testing\n", n)
+		mockPrintf("Pre-seeded %d dummy device(s) for license testing\n", n)
 	}
 
 	s := grpc.NewServer(
@@ -1330,7 +1360,7 @@ func main() {
 		}),
 	)
 	pb.RegisterAgentControlPlaneServer(s, srv)
-	fmt.Printf("Mock server listening on :50051 (single port: mTLS ops + enrollment; token=%s)\n", maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
+	mockPrintf("Mock server listening on :50051 (single port: mTLS ops + enrollment; token=%s)\n", maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
 
 	// NSH REPL: start the console operator shell in-process when asked. The real
 	// console UI will drive the same engine from a web terminal; here the REPL
@@ -1340,7 +1370,7 @@ func main() {
 	}
 
 	if err := s.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+		mockFatalf("failed to serve: %v", err)
 	}
 }
 

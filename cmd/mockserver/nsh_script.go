@@ -296,6 +296,10 @@ func (e *scriptEngine) openIf(line string) bool {
 // ===== Executors (replay buffered bodies) =====
 
 func (e *scriptEngine) runLoop(f *blockFrame) bool {
+	savedTargets := append([]string(nil), e.sess.targets...)
+	if f.kind == "foreach" {
+		defer func() { e.sess.targets = savedTargets }()
+	}
 	for _, v := range f.values {
 		e.vars[f.varName] = v
 		if f.kind == "foreach" {
@@ -364,8 +368,22 @@ func (e *scriptEngine) dispatchVerb(line string) bool {
 		e.sess.verbHelp(rest)
 	case "hosts":
 		e.sess.verbHosts(rest)
+	case "search":
+		e.sess.verbHosts(rest)
+	case "copy", "cp":
+		e.sess.verbFile("copy", rest)
+	case "move", "mv":
+		e.sess.verbFile("move", rest)
+	case "delete", "del", "rm":
+		e.sess.verbFile("delete", rest)
+	case "mkdir", "md":
+		e.sess.verbFile("mkdir", rest)
+	case "touch":
+		e.sess.verbFile("touch", rest)
 	case "cd":
 		e.sess.verbCD(rest)
+	case "pwd":
+		e.sess.changeWorkingDir("")
 	case "run":
 		e.sess.verbRun(rest, false)
 	case "grab":
@@ -429,6 +447,9 @@ func (e *scriptEngine) dispatchVerb(line string) bool {
 func (e *scriptEngine) verbSet(rest string) {
 	k, v := splitFirst(rest)
 	v = strings.TrimSpace(v)
+	if e.sess.setFileOption(strings.ToLower(k), v) {
+		return
+	}
 	switch strings.ToLower(k) {
 	case "timeout":
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -585,7 +606,9 @@ func buildShellCommand(shell, content string) (cmdText, agentShell string) {
 		enc := utf16LEBase64(content)
 		// The agent already launches this interpreter with -Command. Supply a
 		// PowerShell expression, not process startup flags as script text.
-		text := "& ([ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + enc + "'))))"
+		// Promote unhandled PowerShell errors to a failed task even if a later
+		// pipeline succeeds. Scripts can still handle expected errors explicitly.
+		text := "$ErrorActionPreference='Stop'; try { & ([ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + enc + "')))) } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }"
 		if s == "pwsh" {
 			return text, "pwsh"
 		}

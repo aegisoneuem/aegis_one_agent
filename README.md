@@ -6,6 +6,16 @@ internet), and reports a unified per-action status back to the server.
 
 ## Docs
 
+- **[docs/nsh-server-acceptance-2026-10-24.md](docs/nsh-server-acceptance-2026-10-24.md)**
+  — today's server-team replay cases and expected results for the NSH handoff.
+
+- **[docs/nsh-file-operations.md](docs/nsh-file-operations.md)** — native/bulk
+  copy, move, create/delete, agent-to-agent relay and bounded host search.
+
+- **[docs/nsh-console-integration.md](docs/nsh-console-integration.md)** — Live
+  Dashboard/device NSH, Software Distribution workflows, operator identity,
+  persistent shell integration and terminal/log separation for both teams.
+
 - **[docs/code-structure.md](docs/code-structure.md)** — source layout: what each
   directory/file does and how the Go packages fit together. Start here as a dev.
 - **[docs/patching-test-guide.md](docs/patching-test-guide.md)** — step-by-step
