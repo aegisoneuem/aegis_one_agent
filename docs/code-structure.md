@@ -47,7 +47,7 @@ Entry point: **`cmd/agent/main.go` → `func main()`** → dispatches subcommand
 |---|---|
 | `cmd/` | Executables — one subfolder per binary (`func main()` each). |
 | `internal/` | Private library packages (the agent's real logic). Not importable outside this module. |
-| `pkg/` | Reserved for future exportable packages (currently empty). |
+| `pkg/` | Exportable server-side packages: `pkg/nsh` provides the shared interactive interpreter and non-interactive job runner. |
 | `docs/` | Documentation (this file, the server-team guides, architecture notes). |
 | `installer/` | WiX v5 MSI source (`Package.wxs`), branding assets, build/sign README. |
 | `build/` | Local build output (git-ignored) — compiled `.exe`s for dev/VM testing. |

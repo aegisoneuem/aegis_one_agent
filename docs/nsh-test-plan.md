@@ -615,8 +615,8 @@ be managed agents. A no-target right-click/session open must not print any list.
 
 ## Hand-off note for the server team
 
-The reference engine the real console will embed is at
-`cmd/mockserver/nsh.go` + `cmd/mockserver/nsh_script.go`. The agent-side
+The shared engine is `pkg/nsh`; mockserver adapters are
+`cmd/mockserver/nsh_engine.go` + `cmd/mockserver/nsh_jobs.go`. The agent-side
 contract is `RunCommandSpec` + `RunCommandResult` in `grpc/agent.proto`
 and the handler at `cmd/agent/runcommand.go`. The console UI team should
 reuse the engine verbatim (verb set, variable substitution, loop/if

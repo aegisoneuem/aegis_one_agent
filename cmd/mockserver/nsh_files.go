@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/fileops"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
@@ -76,6 +77,9 @@ func (s *nshSession) endpointPaths(raw string) ([]endpointPath, error) {
 		if selector == "*" {
 			s.srv.liveMu.Lock()
 			for id := range s.srv.liveAgents {
+				if s.allowedTargets != nil && !s.allowedTargets[id] {
+					continue
+				}
 				ids = append(ids, id)
 			}
 			s.srv.liveMu.Unlock()
@@ -122,11 +126,11 @@ func (s *nshSession) fileTask(id string, spec fileops.Spec, upload string) (*pb.
 	spec.WorkingDir = s.workingDirs[id]
 	payload, err := json.Marshal(spec)
 	if err != nil {
-		fmt.Println("nsh:", err)
+		s.println("nsh:", err)
 		return nil, ""
 	}
 	if len(payload) > fileops.MaxManifestBytes {
-		fmt.Println("nsh: file manifest exceeds 2 MiB; use smaller batches")
+		s.println("nsh: file manifest exceeds 2 MiB; use smaller batches")
 		return nil, ""
 	}
 	return s.sendTaskPayload(id, "file_operation", payload, upload)
@@ -145,7 +149,7 @@ func (s *nshSession) takeReceipt(id string) (fileReceipt, bool) {
 func (s *nshSession) verbFile(op, rest string) {
 	args, err := splitNSHArgs(rest)
 	if err != nil {
-		fmt.Println("nsh:", err)
+		s.println("nsh:", err)
 		return
 	}
 	spec := s.fileSpec(op)
@@ -158,7 +162,7 @@ func (s *nshSession) verbFile(op, rest string) {
 			spec.Overwrite = true
 		default:
 			if strings.HasPrefix(a, "--") {
-				fmt.Println("nsh: unknown file option", a)
+				s.println("nsh: unknown file option", a)
 				return
 			}
 			paths = append(paths, a)
@@ -169,12 +173,12 @@ func (s *nshSession) verbFile(op, rest string) {
 		need = 2
 	}
 	if len(paths) != need {
-		fmt.Printf("nsh: %s expects %d path(s); quote paths with spaces\n", op, need)
+		s.printf("nsh: %s expects %d path(s); quote paths with spaces\n", op, need)
 		return
 	}
 	sources, err := s.endpointPaths(paths[0])
 	if err != nil {
-		fmt.Println("nsh:", err)
+		s.println("nsh:", err)
 		return
 	}
 	if need == 1 {
@@ -189,11 +193,11 @@ func (s *nshSession) verbFile(op, rest string) {
 	}
 	destinations, err := s.endpointPaths(paths[1])
 	if err != nil {
-		fmt.Println("nsh:", err)
+		s.println("nsh:", err)
 		return
 	}
 	if op == "move" && (len(sources) != 1 || len(destinations) != 1) {
-		fmt.Println("nsh: move requires exactly one source host and one destination host; use copy for distribution")
+		s.println("nsh: move requires exactly one source host and one destination host; use copy for distribution")
 		return
 	}
 	ok := true
@@ -219,14 +223,14 @@ func (s *nshSession) verbFile(op, rest string) {
 				_ = os.Remove(receipt.path)
 			}
 			s.printFileResult(source.device, st)
-			fmt.Println("nsh: source export did not produce a verified transfer artifact")
+			s.println("nsh: source export did not produce a verified transfer artifact")
 			ok = false
 			continue
 		}
 		var manifest fileops.Result
 		if err = json.Unmarshal([]byte(st.Detail), &manifest); err != nil || manifest.SHA256 != receipt.sha256 {
 			os.Remove(receipt.path)
-			fmt.Println("nsh: source manifest/archive digest mismatch")
+			s.println("nsh: source manifest/archive digest mismatch")
 			ok = false
 			continue
 		}
@@ -274,21 +278,21 @@ func (s *nshSession) verbFile(op, rest string) {
 }
 func (s *nshSession) printFileResult(id string, st *pb.ActionStatus) {
 	if st == nil {
-		fmt.Printf("---- %s FILE FAILED (not sent/no terminal reply)\n", s.srv.hostnameOf(id))
+		s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Type: "file_operation", ExitCode: 1, Reason: "not sent/no terminal reply"})
+		s.printf("---- %s FILE FAILED (not sent/no terminal reply)\n", s.srv.hostnameOf(id))
 		return
 	}
-	fmt.Printf("---- %s %s: %s\n", s.srv.hostnameOf(id), phaseWord(st.Phase), st.Reason)
+	s.recordStatus(id, st)
+	s.printf("---- %s %s: %s\n", s.srv.hostnameOf(id), phaseWord(st.Phase), st.Reason)
 }
 func (s *nshSession) recordFileExit(ok bool) {
-	if s.engine != nil {
-		exit := 0
-		reason := "file job completed"
-		if !ok {
-			exit = 1
-			reason = "one or more file operations failed"
-		}
-		s.engine.recordLastResult("", "", "", reason, exit, 0)
+	exit := 0
+	reason := "file job completed"
+	if !ok {
+		exit = 1
+		reason = "one or more file operations failed"
 	}
+	s.recordAction(nsh.ActionResult{Type: "file_job", Reason: reason, ExitCode: exit, Summary: true})
 }
 func (s *nshSession) runFileJobs(paths []endpointPath, job func(endpointPath) bool) bool {
 	workers := s.fileWorkers
@@ -328,27 +332,27 @@ func (s *nshSession) setFileOption(key, value string) bool {
 	case "file-workers":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > 32 {
-			fmt.Println("nsh: file-workers must be 1..32")
+			s.println("nsh: file-workers must be 1..32")
 			return true
 		}
 		s.fileWorkers = n
 	case "file-max-bytes":
 		n, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || n < 1 {
-			fmt.Println("nsh: file-max-bytes must be positive")
+			s.println("nsh: file-max-bytes must be positive")
 			return true
 		}
 		s.fileMaxBytes = n
 	case "file-max-files":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 {
-			fmt.Println("nsh: file-max-files must be positive")
+			s.println("nsh: file-max-files must be positive")
 			return true
 		}
 		s.fileMaxFiles = n
 	default:
 		return false
 	}
-	fmt.Printf("%s = %s\n", key, value)
+	s.printf("%s = %s\n", key, value)
 	return true
 }

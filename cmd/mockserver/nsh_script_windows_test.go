@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
@@ -172,5 +175,23 @@ func TestNSHWorkingDirectoryPersistsPerDevice(t *testing.T) {
 				t.Fatal("cd \\\\ did not clear targets")
 			}
 		})
+	}
+}
+
+func TestSharedJobRunnerExecutesNativePowerShellPerTarget(t *testing.T) {
+	srv := &server{byID: make(map[string]*deviceRecord), liveAgents: make(map[string]*liveAgent), pending: make(map[string]chan *pb.ActionStatus)}
+	for _, id := range []string{"vm-a", "vm-b"} {
+		srv.byID[id] = &deviceRecord{DeviceID: id, Hostname: id}
+		srv.liveAgents[id] = &liveAgent{deviceID: id, stream: &scriptExecutionStream{server: srv, device: id}}
+	}
+	script := "use powershell\nforeach host in *\nscript powershell until END\nWrite-Output 'target=${host}, tag=${TAG}'\nWrite-Output $env:AEGIS_PARAM_TAG\nEND\nend\n"
+	result := newMockNSHRunner(srv).Run(context.Background(), nsh.Job{ID: "native-job", Kind: "software_distribution", Targets: []string{"vm-a", "vm-b"}, Parameters: map[string]string{"TAG": "job-native"}, Script: script})
+	if result.Status != "success" || result.TotalActions != 2 {
+		t.Fatalf("%+v", result)
+	}
+	for _, id := range []string{"vm-a", "vm-b"} {
+		if !strings.Contains(result.Output, "target="+id+", tag=job-native") {
+			t.Fatalf("missing native target output: %s", result.Output)
+		}
 	}
 }

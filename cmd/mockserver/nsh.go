@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
@@ -98,20 +101,26 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 // nshSession is the REPL state (per-process). The console (future web UI) will
 // keep this per logged-in operator; the mock has one.
 type nshSession struct {
-	srv          *server
-	targets      []string          // device_ids resolved from `cd \\host`
-	workingDirs  map[string]string // endpoint CWD per device (unset = SKVC\tmp)
-	fileWorkers  int
-	fileMaxBytes int64
-	fileMaxFiles int
-	shell        string // cmd | powershell | pwsh (nothing on this OS == default)
-	timeout      int32  // seconds
-	maxOutput    int64  // bytes
-	capture      bool   // auto-save every command's stdout as a server-side file
-	outputDir    string // default upload path prefix for grab / capture
-	history      []string
-	out          *bufio.Writer
-	engine       *scriptEngine
+	srv                 *server
+	targets             []string          // device_ids resolved from `cd \\host`
+	workingDirs         map[string]string // endpoint CWD per device (unset = SKVC\tmp)
+	fileWorkers         int
+	fileMaxBytes        int64
+	fileMaxFiles        int
+	shell               string // cmd | powershell | pwsh (nothing on this OS == default)
+	timeout             int32  // seconds
+	maxOutput           int64  // bytes
+	capture             bool   // auto-save every command's stdout as a server-side file
+	outputDir           string // default upload path prefix for grab / capture
+	history             []string
+	out                 *bufio.Writer
+	engine              *scriptEngine
+	ctx                 context.Context
+	output, errorOutput io.Writer
+	parameters          map[string]string
+	emit                func(nsh.ActionResult)
+	allowedTargets      map[string]bool
+	jobMode             bool
 }
 
 // runNSH starts the interactive REPL on stdin (or non-interactive from a
@@ -129,35 +138,29 @@ func runNSH(srv *server) {
 	}
 	sess.engine = newScriptEngine(sess)
 	sess.printBanner()
+	defer sess.engine.core.Close()
 	// Non-interactive script mode (same engine, no prompt).
 	if scriptPath := strings.TrimSpace(os.Getenv("AEGIS_NSH_SCRIPT")); scriptPath != "" {
-		f, err := os.Open(scriptPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "nsh: open script %q: %v\n", scriptPath, err)
-			return
-		}
-		defer f.Close()
-		sess.capture = true
-		sess.readLoop(f, false)
+		runEnvironmentNSHJob(srv, scriptPath)
 		return
 	}
 	sess.readLoop(os.Stdin, true)
 }
 
 func (s *nshSession) printBanner() {
-	fmt.Println("")
-	fmt.Println("Aegis One NSH v1 — console operator REPL")
-	fmt.Println("  type `help` for verbs, `hosts` to list devices, `exit` to quit")
-	fmt.Println("")
+	s.println("")
+	s.println("Aegis One NSH v1 — console operator REPL")
+	s.println("  type `help` for verbs, `hosts` to list devices, `exit` to quit")
+	s.println("")
 }
 
 func (s *nshSession) prompt() string {
-	if s.engine != nil && s.engine.inHeredoc {
-		return "... [" + s.engine.heredocDelim + "]> "
+	if s.engine != nil && s.engine.core.State().InHeredoc {
+		return "... [" + s.engine.core.State().Delimiter + "]> "
 	}
 	// Inside an open for/foreach/if block → continuation prompt.
-	if s.engine != nil && len(s.engine.blocks) > 0 {
-		dots := strings.Repeat("..", len(s.engine.blocks))
+	if s.engine != nil && s.engine.core.State().BlockDepth > 0 {
+		dots := strings.Repeat("..", s.engine.core.State().BlockDepth)
 		return dots + "> "
 	}
 	tag := "nsh"
@@ -173,7 +176,7 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 	br := bufio.NewReader(src)
 	for {
 		if interactive {
-			fmt.Fprint(os.Stdout, s.prompt())
+			s.printf("%s", s.prompt())
 		}
 		line, err := br.ReadString('\n')
 		if err != nil && line == "" {
@@ -181,7 +184,7 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if !interactive {
-			fmt.Printf("# %s\n", line)
+			s.printf("# %s\n", line)
 		}
 		s.history = append(s.history, line)
 		if cont := s.engine.execLine(line); !cont {
@@ -237,7 +240,7 @@ func (s *nshSession) exec(line string) bool {
 		s.verbSet(rest)
 	case "history":
 		for i, h := range s.history {
-			fmt.Printf("  %3d  %s\n", i+1, h)
+			s.printf("  %3d  %s\n", i+1, h)
 		}
 	case "script":
 		s.verbScript(rest)
@@ -251,7 +254,7 @@ func (s *nshSession) exec(line string) bool {
 // ===== Verbs =====
 
 func (s *nshSession) verbHelp(_ string) {
-	fmt.Print(`
+	s.print(`
 TARGETING
   hosts [filter]            known devices + ONLINE/OFFLINE (20 rows by default)
   search <text>             search hostname/device_id/computer_id
@@ -264,6 +267,8 @@ TARGETING
   cd \\                     clear targets (return to nsh prompt)
 
 EXECUTION
+  job run <file.nsh> [--param NAME=value] [--kind script_job|software_distribution]
+      non-interactive execution with isolated state on selected targets
   copy|cp [-r] [--overwrite] <src> <dest>  native local/cross-host copy
   move|mv [-r] [--overwrite] <src> <dest>  copy-verify-remove (one destination)
   mkdir|md <path> | touch <path> | delete|del|rm [-r] <path>
@@ -344,10 +349,13 @@ func (s *nshSession) verbCD(rest string) {
 		s.srv.liveMu.Lock()
 		s.targets = nil
 		for id := range s.srv.liveAgents {
+			if s.allowedTargets != nil && !s.allowedTargets[id] {
+				continue
+			}
 			s.targets = append(s.targets, id)
 		}
 		s.srv.liveMu.Unlock()
-		fmt.Printf("targets: %d online host(s)\n", len(s.targets))
+		s.printf("targets: %d online host(s)\n", len(s.targets))
 		return
 	}
 	rest = strings.TrimPrefix(rest, `\\`)
@@ -360,7 +368,7 @@ func (s *nshSession) verbCD(rest string) {
 		}
 		id, err := s.srv.resolveKnownTarget(p)
 		if err != nil {
-			fmt.Printf("nsh: %v\n", err)
+			s.printf("nsh: %v\n", err)
 			return // preserve selection rather than partially selecting a list
 		}
 		resolved = append(resolved, id)
@@ -368,11 +376,11 @@ func (s *nshSession) verbCD(rest string) {
 	s.targets = resolved
 	for _, id := range resolved {
 		if !s.srv.isOnline(id) {
-			fmt.Printf("nsh: %s selected (OFFLINE); commands require this endpoint to reconnect\n", s.srv.hostnameOf(id))
+			s.printf("nsh: %s selected (OFFLINE); commands require this endpoint to reconnect\n", s.srv.hostnameOf(id))
 		}
 	}
 	if len(resolved) == 0 {
-		fmt.Println("nsh: no targets selected")
+		s.println("nsh: no targets selected")
 	}
 }
 
@@ -380,7 +388,7 @@ func (s *nshSession) verbCD(rest string) {
 // local filesystem, and retain the old CWD if the endpoint rejects the change.
 func (s *nshSession) changeWorkingDir(path string) {
 	if len(s.targets) != 1 {
-		fmt.Println("nsh: cd/pwd needs exactly one selected endpoint")
+		s.println("nsh: cd/pwd needs exactly one selected endpoint")
 		return
 	}
 	if strings.HasPrefix(strings.ToLower(path), "/d ") {
@@ -388,7 +396,7 @@ func (s *nshSession) changeWorkingDir(path string) {
 	}
 	path = strings.Trim(strings.TrimSpace(path), `"`)
 	if strings.ContainsAny(path, "\r\n\x00") {
-		fmt.Println("nsh: invalid directory path")
+		s.println("nsh: invalid directory path")
 		return
 	}
 	text := "cd"
@@ -400,55 +408,51 @@ func (s *nshSession) changeWorkingDir(path string) {
 		}
 	case "", "auto", "cmd":
 		if strings.Contains(path, `"`) {
-			fmt.Println("nsh: invalid directory path")
+			s.println("nsh: invalid directory path")
 			return
 		}
 		if path != "" {
 			text = `cd /d "` + path + `" && cd`
 		}
 	default:
-		fmt.Println("nsh: directory navigation currently supports cmd/powershell/pwsh on Windows")
+		s.println("nsh: directory navigation currently supports cmd/powershell/pwsh on Windows")
 		return
 	}
 	id := s.targets[0]
 	st, _ := s.sendCommand(id, text, "")
 	if st == nil {
-		if s.engine != nil {
-			s.engine.recordLastResult(s.srv.hostnameOf(id), "", "", "command not sent", -1, 0)
-		}
+		s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Reason: "command not sent", ExitCode: -1})
 		return
 	}
-	if s.engine != nil {
-		s.engine.recordLastResult(s.srv.hostnameOf(id), parseStdout(st.Detail), parseStderr(st.Detail), st.Reason, int(st.ExitCode), parseDuration(st.Detail))
-	}
+	s.recordStatus(id, st)
 	if st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
-		fmt.Printf("nsh: directory unchanged: %s\n%s", st.Reason, parseStderr(st.Detail))
+		s.printf("nsh: directory unchanged: %s\n%s", st.Reason, parseStderr(st.Detail))
 		return
 	}
 	cwd := strings.TrimSpace(parseStdout(st.Detail))
 	if cwd == "" {
-		fmt.Println("nsh: endpoint returned no directory; directory unchanged")
+		s.println("nsh: endpoint returned no directory; directory unchanged")
 		return
 	}
 	if s.workingDirs == nil {
 		s.workingDirs = make(map[string]string)
 	}
 	s.workingDirs[id] = cwd
-	fmt.Printf("%s: %s\n", s.srv.hostnameOf(id), cwd)
+	s.printf("%s: %s\n", s.srv.hostnameOf(id), cwd)
 }
 
 func (s *nshSession) verbRun(cmdText string, fan bool) {
 	cmdText = strings.TrimSpace(cmdText)
 	if cmdText == "" {
-		fmt.Println("nsh: nothing to run")
+		s.println("nsh: nothing to run")
 		return
 	}
 	if len(s.targets) == 0 {
-		fmt.Println("nsh: no target — pick one with `cd \\\\<host>`")
+		s.println("nsh: no target — pick one with `cd \\\\<host>`")
 		return
 	}
 	if !fan && len(s.targets) > 1 {
-		fmt.Printf("nsh: %d targets selected; use `fanout <cmd>` for multi-target\n", len(s.targets))
+		s.printf("nsh: %d targets selected; use `fanout <cmd>` for multi-target\n", len(s.targets))
 		return
 	}
 	// Capture mode: each target gets its OWN per-host path so a fan-out never
@@ -466,11 +470,11 @@ func (s *nshSession) verbGrab(rest string) {
 	}
 	cmdText = strings.TrimSpace(cmdText)
 	if cmdText == "" {
-		fmt.Println("nsh: usage: grab [server-path] <command>")
+		s.println("nsh: usage: grab [server-path] <command>")
 		return
 	}
 	if len(s.targets) == 0 {
-		fmt.Println("nsh: no target — pick one with `cd \\\\<host>`")
+		s.println("nsh: no target — pick one with `cd \\\\<host>`")
 		return
 	}
 	for _, id := range s.targets {
@@ -487,11 +491,11 @@ func (s *nshSession) verbGrab(rest string) {
 func (s *nshSession) verbPull(rest string) {
 	remote, savePath := splitPullArgs(rest)
 	if remote == "" {
-		fmt.Println("nsh: usage: pull <remote-path> [server-path]")
+		s.println("nsh: usage: pull <remote-path> [server-path]")
 		return
 	}
 	if len(s.targets) == 0 {
-		fmt.Println("nsh: no target — pick one with cd \\\\<host>")
+		s.println("nsh: no target — pick one with cd \\\\<host>")
 		return
 	}
 	for _, id := range s.targets {
@@ -500,22 +504,16 @@ func (s *nshSession) verbPull(rest string) {
 			up = time.Now().Format("20060102-150405.000000000") + "-" + filepath.Base(strings.ReplaceAll(remote, "\\", "/"))
 		}
 		up = s.namedUploadPath(id, up)
-		fmt.Printf("---- %s pull %s\n", s.srv.hostnameOf(id), remote)
+		s.printf("---- %s pull %s\n", s.srv.hostnameOf(id), remote)
 		st, _ := s.sendTask(id, "collect_file", &pb.CollectFileSpec{Paths: []string{remote}, MaxBytesEach: 1<<63 - 1, MaxTotalBytes: 1<<63 - 1}, up)
 		if st == nil {
 			continue
 		}
 		if st.Detail != "" {
-			fmt.Println(st.Detail)
+			s.println(st.Detail)
 		}
-		fmt.Printf("---- %s %s: %s\n", s.srv.hostnameOf(id), phaseWord(st.Phase), st.Reason)
-		if s.engine != nil {
-			exit := 0
-			if st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
-				exit = 1
-			}
-			s.engine.recordLastResult(s.srv.hostnameOf(id), st.Detail, "", st.Reason, exit, 0)
-		}
+		s.printf("---- %s %s: %s\n", s.srv.hostnameOf(id), phaseWord(st.Phase), st.Reason)
+		s.recordStatus(id, st)
 	}
 }
 
@@ -546,11 +544,11 @@ func (s *nshSession) namedUploadPath(id, name string) string {
 
 func (s *nshSession) verbShell() {
 	if len(s.targets) != 1 {
-		fmt.Println("nsh: `shell` needs exactly ONE target — use `cd \\\\<host>` first")
+		s.println("nsh: `shell` needs exactly ONE target — use `cd \\\\<host>` first")
 		return
 	}
-	fmt.Println("nsh: `shell` opens a persistent interactive session — run `mockserver.exe` with AEGIS_SHELL (legacy) or wait for the console UI to wire the terminal.")
-	fmt.Println("     (v1 interactive shell exists on the agent as open_shell/ShellSession; the console UI will carry stdin/stdout to a web terminal.)")
+	s.println("nsh: `shell` opens a persistent interactive session — run `mockserver.exe` with AEGIS_SHELL (legacy) or wait for the console UI to wire the terminal.")
+	s.println("     (v1 interactive shell exists on the agent as open_shell/ShellSession; the console UI will carry stdin/stdout to a web terminal.)")
 }
 
 func (s *nshSession) verbUse(rest string) {
@@ -558,9 +556,9 @@ func (s *nshSession) verbUse(rest string) {
 	switch rest {
 	case "cmd", "powershell", "ps", "pwsh", "bash", "sh", "zsh":
 		s.shell = rest
-		fmt.Printf("shell = %s\n", rest)
+		s.printf("shell = %s\n", rest)
 	default:
-		fmt.Println("nsh: use <cmd|powershell|pwsh|bash|sh|zsh>")
+		s.println("nsh: use <cmd|powershell|pwsh|bash|sh|zsh>")
 	}
 }
 
@@ -571,35 +569,35 @@ func (s *nshSession) verbSet(rest string) {
 	case "timeout":
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			s.timeout = int32(n)
-			fmt.Printf("timeout = %ds\n", n)
+			s.printf("timeout = %ds\n", n)
 		}
 	case "max-output":
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			s.maxOutput = n
-			fmt.Printf("max-output = %d bytes\n", n)
+			s.printf("max-output = %d bytes\n", n)
 		}
 	case "capture":
 		s.capture = v == "on" || v == "true" || v == "1"
-		fmt.Printf("capture = %v\n", s.capture)
+		s.printf("capture = %v\n", s.capture)
 	case "output-dir":
 		if v != "" {
 			s.outputDir = v
-			fmt.Printf("output-dir = %s\n", v)
+			s.printf("output-dir = %s\n", v)
 		}
 	default:
-		fmt.Println("nsh: set <timeout|max-output|capture|output-dir> <value>")
+		s.println("nsh: set <timeout|max-output|capture|output-dir> <value>")
 	}
 }
 
 func (s *nshSession) verbScript(rest string) {
 	sub, path := splitFirst(rest)
 	if strings.ToLower(sub) != "run" || path == "" {
-		fmt.Println("nsh: usage: script run <file>")
+		s.println("nsh: usage: script run <file>")
 		return
 	}
 	f, err := os.Open(strings.TrimSpace(path))
 	if err != nil {
-		fmt.Printf("nsh: open %s: %v\n", path, err)
+		s.printf("nsh: open %s: %v\n", path, err)
 		return
 	}
 	defer f.Close()
@@ -649,9 +647,9 @@ func (s *nshSession) dispatchAndRender(cmdText, forcedUpload string, fan bool) {
 	}
 	wg.Wait()
 	sort.Slice(rows, func(i, j int) bool { return rows[i].host < rows[j].host })
-	fmt.Printf("%-18s  %-10s  %-60s  %s\n", "HOST", "RESULT", "FIRST LINE", "SAVED")
+	s.printf("%-18s  %-10s  %-60s  %s\n", "HOST", "RESULT", "FIRST LINE", "SAVED")
 	for _, r := range rows {
-		fmt.Printf("%-18s  %-10s  %-60s  %s\n", r.host, r.status, r.snippet, r.saved)
+		s.printf("%-18s  %-10s  %-60s  %s\n", r.host, r.status, r.snippet, r.saved)
 	}
 }
 
@@ -664,8 +662,10 @@ type oneResult struct {
 func (s *nshSession) dispatchQuiet(id, cmdText, uploadAs string) oneResult {
 	st, _ := s.sendCommand(id, cmdText, uploadAs)
 	if st == nil {
+		s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Reason: "no reply", ExitCode: -1})
 		return oneResult{status: "no-reply"}
 	}
+	s.recordStatus(id, st)
 	saved := parseUploaded(st.Detail)
 	snippet := firstLine(parseStdout(st.Detail))
 	switch st.Phase {
@@ -680,38 +680,34 @@ func (s *nshSession) dispatchQuiet(id, cmdText, uploadAs string) oneResult {
 
 func (s *nshSession) dispatchOne(id, cmdText, uploadAs string) {
 	host := s.srv.hostnameOf(id)
-	fmt.Printf("---- %s $ %s\n", host, cmdText)
+	s.printf("---- %s $ %s\n", host, cmdText)
 	st, cmdID := s.sendCommand(id, cmdText, uploadAs)
 	if st == nil {
-		fmt.Printf("     (no reply, action_id=%s)\n", cmdID)
-		if s.engine != nil {
-			s.engine.recordLastResult(host, "", "", "no reply", -1, 0)
-		}
+		s.printf("     (no reply, action_id=%s)\n", cmdID)
+		s.recordAction(nsh.ActionResult{TargetID: id, Host: host, ActionID: cmdID, Reason: "no reply", ExitCode: -1})
 		return
 	}
 	stdout := parseStdout(st.Detail)
 	stderr := parseStderr(st.Detail)
-	if s.engine != nil {
-		s.engine.recordLastResult(host, stdout, stderr, st.Reason, int(st.ExitCode), parseDuration(st.Detail))
-	}
+	s.recordStatus(id, st)
 	if stdout != "" {
-		fmt.Print(stdout)
+		s.print(stdout)
 		if !strings.HasSuffix(stdout, "\n") {
-			fmt.Println()
+			s.println()
 		}
 	}
 	if stderr != "" {
-		fmt.Fprint(os.Stderr, stderr)
+		fmt.Fprint(s.writer(true), stderr)
 		if !strings.HasSuffix(stderr, "\n") {
-			fmt.Println()
+			s.println()
 		}
 	}
 	if up := parseUploaded(st.Detail); up != "" {
-		fmt.Printf("---- saved to %s\n", up)
+		s.printf("---- saved to %s\n", up)
 	}
-	fmt.Printf("---- %s %s  (exit=%d, %dms)\n", host, phaseWord(st.Phase), st.ExitCode, parseDuration(st.Detail))
+	s.printf("---- %s %s  (exit=%d, %dms)\n", host, phaseWord(st.Phase), st.ExitCode, parseDuration(st.Detail))
 	if st.Reason != "" {
-		fmt.Printf("     reason: %s\n", st.Reason)
+		s.printf("     reason: %s\n", st.Reason)
 	}
 }
 
@@ -722,9 +718,13 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 	// child process env as AEGIS_PARAM_<NAME> so a pre-staged .ps1/.bat/.py on
 	// the endpoint can read them (BigFix "parameters" pattern, softdist-shared).
 	var params map[string]string
-	if s.engine != nil && len(s.engine.vars) > 0 {
-		params = make(map[string]string, len(s.engine.vars))
-		for k, v := range s.engine.vars {
+	values := s.parameters
+	if values == nil && s.engine != nil {
+		values = s.engine.variables()
+	}
+	if len(values) > 0 {
+		params = make(map[string]string, len(values))
+		for k, v := range values {
 			params[k] = v
 		}
 	}
@@ -743,23 +743,34 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 func (s *nshSession) sendTask(deviceID, taskType string, spec proto.Message, uploadAs string) (*pb.ActionStatus, string) {
 	payload, err := proto.Marshal(spec)
 	if err != nil {
-		fmt.Printf("nsh: marshal: %v\n", err)
+		s.printf("nsh: marshal: %v\n", err)
 		return nil, ""
 	}
 	return s.sendTaskPayload(deviceID, taskType, payload, uploadAs)
 }
 
 func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, uploadAs string) (*pb.ActionStatus, string) {
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil, ""
+	}
+	if s.allowedTargets != nil && !s.allowedTargets[deviceID] {
+		s.printf("nsh: %s is outside this job's authorized scope\n", deviceID)
+		return nil, ""
+	}
 	s.srv.liveMu.Lock()
 	la, ok := s.srv.liveAgents[deviceID]
 	s.srv.liveMu.Unlock()
 	if !ok {
-		fmt.Printf("nsh: %s is OFFLINE; command not sent (no fleet/heartbeat wait)\n", s.srv.hostnameOf(deviceID))
+		s.printf("nsh: %s is OFFLINE; command not sent (no fleet/heartbeat wait)\n", s.srv.hostnameOf(deviceID))
 		return nil, ""
 	}
 	if uploadAs != "" {
 		if _, err := safeNSHUploadPath(uploadAs); err != nil {
-			fmt.Printf("nsh: %v\n", err)
+			s.printf("nsh: %v\n", err)
 			return nil, ""
 		}
 	}
@@ -779,7 +790,7 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 	err := la.send(msg)
 	if err != nil {
 		s.srv.cancelWait(cmdID)
-		fmt.Printf("nsh: send to %s failed: %v\n", s.srv.hostnameOf(deviceID), err)
+		s.printf("nsh: send to %s failed: %v\n", s.srv.hostnameOf(deviceID), err)
 		return nil, cmdID
 	}
 	timeout := time.Duration(s.timeout+10) * time.Second // small grace over per-command timeout
@@ -788,6 +799,10 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 	var terminal *pb.ActionStatus
 	for {
 		select {
+		case <-ctx.Done():
+			s.srv.cancelWait(cmdID)
+			s.printf("nsh: job cancelled while waiting for %s\n", cmdID)
+			return nil, cmdID
 		case st, open := <-ch:
 			if !open {
 				return terminal, cmdID
@@ -799,7 +814,7 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 			}
 		case <-deadline.C:
 			s.srv.cancelWait(cmdID)
-			fmt.Printf("nsh: timed out waiting for %s\n", cmdID)
+			s.printf("nsh: timed out waiting for %s\n", cmdID)
 			return terminal, cmdID
 		}
 	}

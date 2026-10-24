@@ -103,13 +103,14 @@ agents; it does not wait for the fleet. For deterministic manual G2 testing,
 start interactive NSH, check hosts, then source the local .nsh file. Production
 jobs must explicitly resolve target availability instead of copying this race.
 
-## NSH workflows in Software Distribution
+## NSH script execution in all console entry points
 
-Offer **NSH workflow** as a Software Distribution job option: edit NSH syntax or
-select a versioned saved .nsh workflow, supply parameters, select targets, preview
-and run/schedule it. Expose the same saved workflows in the Live Dashboard NSH
-tab. Manual commands and background jobs should use the same interpreter, with
-fresh per-run state and scoped output rather than global console state.
+Offer NSH beside PowerShell/Python/shell as a **script interpreter**. It must be
+usable in Script Jobs and Software Distribution script actions/pre/post steps,
+with inline text or a saved versioned .nsh file, parameters and selected targets.
+The same language also powers right-click Open NSH and the Live Configuration /
+Live Dashboard general NSH terminal. Scripts may perform any authorized NSH
+operations; they are not limited to package deployment workflows.
 
 An .nsh file is a **server-side orchestration workflow**. The server interprets
 let/source/foreach/if/exec/script and sends signed native tasks to agents. Do not
@@ -118,19 +119,18 @@ In the mock, source and exec read server-local files. In production resolve
 approved tenant/operator-scoped script-library IDs and versions; do not expose
 unrestricted server filesystem access through browser-authored paths.
 
-Current native deploy types are MSI/EXE/PS1/BAT/CMD/Python/VBS/command. There is
-currently **no .nsh installer type or NSH package-deploy verb**. The workflow UI
-and direct package-action bridge described here remain to implement.
+The shared `pkg/nsh` interpreter and Runner now implement this server-side
+execution path. Script Jobs use Kind=script_job; Software Distribution NSH script
+actions use Kind=software_distribution. Both execute the same language and
+isolate per-run state. See [script jobs](nsh-script-jobs.md) for API and mock tests.
+Console UI, scheduling, login/RBAC and durable job orchestration still need
+server/console binding. There is no new package-deploy verb in this scope.
 
-Recommended integration: the job engine supports package-action and native-script
-steps. A package step resolves the package/version and creates the existing
-SoftwareDeploySpec, sends signed software_deploy, waits for ActionStatus, then
-exposes the result to subsequent NSH logic. A future NSH package verb should call
-that same service; agree its syntax before adding it. Use run_command for checks
-and collect_file for explicit artifacts. Do not substitute a raw installer
-command for software_deploy: preserve hash verification, encrypted cache delivery,
-idempotency/detection, version-aware upgrade, post-action verification, installer
-logs and reboot_required reporting.
+Current native deploy types remain MSI/EXE/PS1/BAT/CMD/Python/VBS/command. An .nsh
+script is interpreted on the server, not passed to the agent as an installer.
+Native package jobs retain their existing hash/cache/detection/version/verification
+behavior. NSH script outcomes report its executed actions; they do not implicitly
+perform MSI product detection or turn arbitrary scripts into package installs.
 
 Check package/device permissions even inside scripts. Record operator, workflow
 version/hash, redacted parameters, target snapshot, parent job ID and child action
@@ -173,5 +173,6 @@ job/action metadata alongside human-readable names.
 - Bounded large jobs are separately load-tested for cancellation/backpressure.
 
 References: nsh-test-plan.md, testing-use-cases.md, cmd/mockserver/nsh.go,
-cmd/mockserver/nsh_script.go, cmd/agent/runcommand.go, collect.go, shell*.go and
+pkg/nsh, cmd/mockserver/nsh_engine.go, nsh_jobs.go, cmd/agent/runcommand.go,
+collect.go, shell*.go and
 the shared ../aegis_one_proto/grpc/agent.proto contracts.

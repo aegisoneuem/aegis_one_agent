@@ -55,6 +55,9 @@ func parseHostQuery(rest string) (hostQuery, error) {
 	return q, nil
 }
 func (s *server) hostPage(q hostQuery) ([]hostRow, int) {
+	return s.hostPageScoped(q, nil)
+}
+func (s *server) hostPageScoped(q hostQuery, allowed map[string]bool) ([]hostRow, int) {
 	s.liveMu.Lock()
 	online := make(map[string]bool, len(s.liveAgents))
 	for id := range s.liveAgents {
@@ -64,6 +67,9 @@ func (s *server) hostPage(q hostQuery) ([]hostRow, int) {
 	var rows []hostRow
 	s.mu.Lock()
 	for id, r := range s.byID {
+		if allowed != nil && !allowed[id] {
+			continue
+		}
 		status := "OFFLINE"
 		if online[id] {
 			status = "ONLINE"
@@ -97,19 +103,19 @@ func (s *server) hostPage(q hostQuery) ([]hostRow, int) {
 func (s *nshSession) printHosts(rest string) {
 	q, err := parseHostQuery(rest)
 	if err != nil {
-		fmt.Println("nsh:", err)
+		s.println("nsh:", err)
 		return
 	}
-	rows, total := s.srv.hostPage(q)
-	fmt.Printf("%-18s  %-36s  %-12s  %s\n", "HOST", "DEVICE_ID", "COMPUTER_ID", "STATUS")
+	rows, total := s.srv.hostPageScoped(q, s.allowedTargets)
+	s.printf("%-18s  %-36s  %-12s  %s\n", "HOST", "DEVICE_ID", "COMPUTER_ID", "STATUS")
 	for _, r := range rows {
-		fmt.Printf("%-18s  %-36s  %-12s  %s\n", r.host, r.id, r.cid, r.status)
+		s.printf("%-18s  %-36s  %-12s  %s\n", r.host, r.id, r.cid, r.status)
 	}
-	fmt.Printf("Showing %d of %d match(es), page %d (limit %d).\n", len(rows), total, q.page, q.limit)
+	s.printf("Showing %d of %d match(es), page %d (limit %d).\n", len(rows), total, q.page, q.limit)
 	if q.page*q.limit < total {
-		fmt.Printf("Next: hosts %s --status %s --page %d --limit %d\n", q.filter, q.status, q.page+1, q.limit)
+		s.printf("Next: hosts %s --status %s --page %d --limit %d\n", q.filter, q.status, q.page+1, q.limit)
 	}
 	if len(s.targets) == 1 {
-		fmt.Printf("Selected: %s (%s)\n", s.srv.hostnameOf(s.targets[0]), map[bool]string{true: "ONLINE", false: "OFFLINE"}[s.srv.isOnline(s.targets[0])])
+		s.printf("Selected: %s (%s)\n", s.srv.hostnameOf(s.targets[0]), map[bool]string{true: "ONLINE", false: "OFFLINE"}[s.srv.isOnline(s.targets[0])])
 	}
 }

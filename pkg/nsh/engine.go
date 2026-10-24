@@ -1,15 +1,15 @@
-package main
+package nsh
 
 import (
-	"bufio"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,18 +27,30 @@ var base64StdEncoding = base64.StdEncoding
 // resolved on the endpoint by the RunCommandSpec.parameters engine and only
 // those names unknown to this engine fall through to the agent.
 
-type scriptEngine struct {
-	sess       *nshSession
-	vars       map[string]string // let-defined + $exit/$stdout/$host/...
-	aliases    map[string]string // alias name -> expansion
-	onError    string            // "continue" | "stop" (default "stop" for scripts)
-	format     string            // "table" | "json" | "csv" (fanout rendering)
-	sessionLog *os.File          // non-nil when set session-log <path> ran
-	blocks     []*blockFrame     // active for/foreach/if frames
-	breakOut   int               // >0 = unwind N loops (for `break`)
-	contLoop   bool              // true = jump to next iteration (`continue`)
+type Engine struct {
+	backend          Backend
+	options          Options
+	ctx              context.Context
+	mu               sync.Mutex
+	actions          []ActionResult
+	totalActions     int
+	failedActions    int
+	hadFailure       bool
+	resultBytes      int
+	resultsTruncated bool
+	stopScript       bool
+	scriptDepth      int
+	lastError        error
+	vars             map[string]string // let-defined + $exit/$stdout/$host/...
+	aliases          map[string]string // alias name -> expansion
+	onError          string            // "continue" | "stop" (default "stop" for scripts)
+	format           string            // "table" | "json" | "csv" (fanout rendering)
+	sessionLog       io.WriteCloser    // non-nil when set session-log <path> ran
+	blocks           []*blockFrame     // active for/foreach/if frames
+	breakOut         int               // >0 = unwind N loops (for `break`)
+	contLoop         bool              // true = jump to next iteration (`continue`)
 	// HEREDOC state (top-level only; inside a for/if block the opener is
-	// captured as body text and replayed through execLine per iteration).
+	// captured as body text and replayed through ExecLine per iteration).
 	inHeredoc    bool
 	heredocShell string
 	heredocDelim string
@@ -60,23 +72,41 @@ type blockFrame struct {
 	heredocDelim string   // non-empty while we're buffering INSIDE a heredoc
 }
 
-func newScriptEngine(sess *nshSession) *scriptEngine {
-	return &scriptEngine{
-		sess:    sess,
-		vars:    map[string]string{},
-		aliases: map[string]string{},
-		onError: "stop",
-		format:  "table",
+func New(backend Backend, options Options) *Engine {
+	if options.Output == nil {
+		options.Output = io.Discard
 	}
+	if options.MaxActions <= 0 {
+		options.MaxActions = 10000
+	}
+	if options.MaxSourceDepth <= 0 {
+		options.MaxSourceDepth = 16
+	}
+	if options.MaxResultBytes <= 0 {
+		options.MaxResultBytes = 1 << 20
+	}
+	if options.MaxSourceBytes <= 0 {
+		options.MaxSourceBytes = DefaultMaxSourceBytes
+	}
+	if options.MaxVariableBytes <= 0 {
+		options.MaxVariableBytes = 1 << 20
+	}
+	e := &Engine{backend: backend, options: options, ctx: context.Background(), vars: map[string]string{}, aliases: map[string]string{}, onError: "stop", format: "table"}
+	for k, v := range options.Parameters {
+		e.SetVariable(k, v)
+	}
+	return e
 }
 
-// ===== Line entry: handles blocks, dispatches to verbs =====
-
-// execLine is called once per source line (REPL input or script line). It
-// returns false only on `exit`. It understands control-flow keywords and buffers
-// bodies for for/foreach/if and heredocs; the normal verbs fall through to the
-// REPL.
-func (e *scriptEngine) execLine(raw string) bool {
+func (e *Engine) ExecLine(raw string) bool {
+	if e.cancelled() {
+		return false
+	}
+	if e.scriptDepth == 0 {
+		e.mu.Lock()
+		e.stopScript = false
+		e.mu.Unlock()
+	}
 	// Preserve exact text in heredoc / block mode (indentation matters). The
 	// trimmed form is only used to parse keywords.
 	line := strings.TrimSpace(raw)
@@ -177,25 +207,14 @@ func parseHeredocOpener(line string) (shell, delim string, ok bool) {
 // closeHeredoc builds the final script content, substitutes ${VAR}, encodes
 // per interpreter, and dispatches as a single run_command through verbRun —
 // which honors current targets, capture mode, and timeout.
-func (e *scriptEngine) closeHeredoc() {
-	content := strings.Join(e.heredocLines, "\n")
-	content = e.expand(content) // ${VAR} / ${env:X} applied to WHOLE script
-	cmdText, agentShell := buildShellCommand(e.heredocShell, content)
-
-	saved := e.sess.shell
-	e.sess.shell = agentShell
-	e.sess.verbRun(cmdText, len(e.sess.targets) > 1)
-	e.sess.shell = saved
-
+func (e *Engine) closeHeredoc() {
+	content := e.Expand(strings.Join(e.heredocLines, "\n"))
+	command, shell := BuildShellCommand(e.heredocShell, content)
 	e.inHeredoc = false
-	e.heredocShell = ""
-	e.heredocDelim = ""
+	e.heredocShell, e.heredocDelim = "", ""
 	e.heredocLines = nil
+	e.dispatch(Command{Verb: "run", Text: command, Shell: shell, Fanout: len(e.backend.SelectedTargets()) > 1})
 }
-
-// blockFrame extension: a heredoc opened INSIDE a block body (foreach / if)
-// captures its lines as part of the body — depth tracking is suspended until
-// the delimiter closes the heredoc.
 
 func openerOf(line string) string {
 	w, _ := splitFirst(line)
@@ -208,7 +227,7 @@ func openerOf(line string) string {
 
 // appendBody stashes a body line (also keeps the opening line of a nested
 // block so replay sees the whole structure).
-func (f *blockFrame) appendBody(line string, e *scriptEngine) {
+func (f *blockFrame) appendBody(line string, e *Engine) {
 	if f.kind == "if" && f.inElse {
 		f.elseBody = append(f.elseBody, line)
 		return
@@ -217,7 +236,7 @@ func (f *blockFrame) appendBody(line string, e *scriptEngine) {
 }
 
 // closeBlock pops the top block and executes it.
-func (e *scriptEngine) closeBlock() bool {
+func (e *Engine) closeBlock() bool {
 	top := e.blocks[len(e.blocks)-1]
 	e.blocks = e.blocks[:len(e.blocks)-1]
 	switch top.kind {
@@ -233,17 +252,17 @@ func (e *scriptEngine) closeBlock() bool {
 
 // `for VAR in a b c` — plain for-loop over space-separated values. Values may
 // use ${VAR} / ${env:NAME} substitution against the enclosing scope.
-func (e *scriptEngine) openFor(line string) bool {
+func (e *Engine) openFor(line string) bool {
 	parts := strings.Fields(line)
 	if len(parts) < 4 || strings.ToLower(parts[2]) != "in" {
-		fmt.Println("nsh: usage: for VAR in <values ...>")
+		e.fail(fmt.Errorf("usage: for VAR in <values ...>"))
 		return true
 	}
 	v := parts[1]
 	vals := parts[3:]
 	// Expand ${vars} on the values list.
 	for i := range vals {
-		vals[i] = e.expand(vals[i])
+		vals[i] = e.Expand(vals[i])
 	}
 	// Support `for VAR in a,b,c`
 	if len(vals) == 1 && strings.Contains(vals[0], ",") {
@@ -255,22 +274,25 @@ func (e *scriptEngine) openFor(line string) bool {
 
 // `foreach host in *|list` — host iteration (binds $host, implicit `cd \\$host`
 // per iteration). Convenience over writing cd + fanout by hand.
-func (e *scriptEngine) openForeach(line string) bool {
+func (e *Engine) openForeach(line string) bool {
 	parts := strings.Fields(line)
 	if len(parts) < 4 || strings.ToLower(parts[2]) != "in" {
-		fmt.Println("nsh: usage: foreach host in *|<h1>,<h2>|${var}")
+		e.fail(fmt.Errorf("usage: foreach host in *|<h1>,<h2>|${var}"))
 		return true
 	}
 	selector := strings.Join(parts[3:], " ")
-	selector = e.expand(selector)
+	selector = e.Expand(selector)
 	var hosts []string
 	switch strings.TrimSpace(selector) {
 	case "*":
-		e.sess.srv.liveMu.Lock()
-		for id := range e.sess.srv.liveAgents {
-			hosts = append(hosts, e.sess.srv.hostnameOf(id))
+		targets, err := e.backend.WildcardTargets(e.ctx)
+		if err != nil {
+			e.fail(err)
+			return true
 		}
-		e.sess.srv.liveMu.Unlock()
+		for _, target := range targets {
+			hosts = append(hosts, target.ID)
+		}
 	default:
 		hosts = splitCSV(selector)
 	}
@@ -282,10 +304,10 @@ func (e *scriptEngine) openForeach(line string) bool {
 // `if <cond>` — condition evaluated now; body runs if true, else-body if false.
 // Conditions supported: `$name == value`, `$name != value`, `stdout contains "..."`,
 // `stderr contains "..."`, `defined NAME`, with optional leading `!` negation.
-func (e *scriptEngine) openIf(line string) bool {
+func (e *Engine) openIf(line string) bool {
 	cond := strings.TrimSpace(strings.TrimPrefix(line, "if"))
 	if cond == "" {
-		fmt.Println("nsh: usage: if <condition>")
+		e.fail(fmt.Errorf("usage: if <condition>"))
 		return true
 	}
 	val := e.evalCond(cond)
@@ -295,29 +317,46 @@ func (e *scriptEngine) openIf(line string) bool {
 
 // ===== Executors (replay buffered bodies) =====
 
-func (e *scriptEngine) runLoop(f *blockFrame) bool {
-	savedTargets := append([]string(nil), e.sess.targets...)
+func (e *Engine) runLoop(f *blockFrame) bool {
+	saved := append([]string(nil), e.backend.SelectedTargets()...)
 	if f.kind == "foreach" {
-		defer func() { e.sess.targets = savedTargets }()
+		defer func() {
+			if err := e.backend.SelectTargets(e.ctx, saved); err != nil {
+				e.fail(err)
+			}
+		}()
 	}
-	for _, v := range f.values {
-		e.vars[f.varName] = v
+	for _, value := range f.values {
+		if e.cancelled() || e.stopping() {
+			break
+		}
+		e.SetVariable(f.varName, value)
 		if f.kind == "foreach" {
-			e.vars["host"] = v
-			id := e.sess.srv.resolveTarget(v)
-			if id == "" {
-				fmt.Printf("nsh: foreach — no such online host: %s (skipping)\n", v)
+			target, err := e.backend.ResolveTarget(e.ctx, value)
+			if err != nil {
+				e.fail(err)
+				if e.stopping() {
+					break
+				}
 				continue
 			}
-			e.sess.targets = []string{id}
+			e.SetVariable("host", target.Name)
+			e.SetVariable(f.varName, target.Name)
+			if err = e.backend.SelectTargets(e.ctx, []string{target.ID}); err != nil {
+				e.fail(err)
+				continue
+			}
 		}
 		for _, line := range f.body {
-			if !e.execLine(line) {
+			if !e.ExecLine(line) {
 				return false
+			}
+			if e.stopping() || e.cancelled() {
+				return true
 			}
 			if e.breakOut > 0 {
 				e.breakOut--
-				goto loopDone
+				return true
 			}
 			if e.contLoop {
 				e.contLoop = false
@@ -325,20 +364,19 @@ func (e *scriptEngine) runLoop(f *blockFrame) bool {
 			}
 		}
 	}
-loopDone:
 	return true
 }
 
-func (e *scriptEngine) runIf(f *blockFrame) bool {
+func (e *Engine) runIf(f *blockFrame) bool {
 	body := f.body
 	if !f.cond {
 		body = f.elseBody
 	}
 	for _, line := range body {
-		if !e.execLine(line) {
+		if !e.ExecLine(line) {
 			return false
 		}
-		if e.breakOut > 0 || e.contLoop {
+		if e.breakOut > 0 || e.contLoop || e.stopping() || e.cancelled() {
 			return true
 		}
 	}
@@ -347,67 +385,27 @@ func (e *scriptEngine) runIf(f *blockFrame) bool {
 
 // ===== Verb dispatch (after substitution, with REPL + script verbs) =====
 
-func (e *scriptEngine) dispatchVerb(line string) bool {
-	// Alias expansion.
-	w, rest := splitFirst(line)
-	if a, ok := e.aliases[w]; ok {
-		if rest == "" {
-			line = a
-		} else {
-			line = a + " " + rest
+func (e *Engine) dispatchVerb(line string) bool {
+	word, rest := splitFirst(line)
+	if alias, ok := e.aliases[word]; ok {
+		line = alias
+		if rest != "" {
+			line += " " + rest
 		}
 	}
-	// Substitute ${VAR} / ${env:NAME} / $exit etc. BEFORE routing.
-	line = e.expand(line)
-
-	v, rest := splitFirst(line)
-	switch strings.ToLower(v) {
+	line = e.Expand(line)
+	verb, rest := splitFirst(line)
+	switch strings.ToLower(verb) {
 	case "exit", "quit", "bye":
 		return false
-	case "help":
-		e.sess.verbHelp(rest)
-	case "hosts":
-		e.sess.verbHosts(rest)
-	case "search":
-		e.sess.verbHosts(rest)
-	case "copy", "cp":
-		e.sess.verbFile("copy", rest)
-	case "move", "mv":
-		e.sess.verbFile("move", rest)
-	case "delete", "del", "rm":
-		e.sess.verbFile("delete", rest)
-	case "mkdir", "md":
-		e.sess.verbFile("mkdir", rest)
-	case "touch":
-		e.sess.verbFile("touch", rest)
-	case "cd":
-		e.sess.verbCD(rest)
-	case "pwd":
-		e.sess.changeWorkingDir("")
-	case "run":
-		e.sess.verbRun(rest, false)
-	case "grab":
-		e.sess.verbGrab(rest)
-	case "pull":
-		e.sess.verbPull(rest)
-	case "fanout":
-		e.sess.verbRun(rest, true)
-	case "shell":
-		e.sess.verbShell()
-	case "use":
-		e.sess.verbUse(rest)
 	case "set":
 		e.verbSet(rest)
-	case "history":
-		for i, h := range e.sess.history {
-			fmt.Printf("  %3d  %s\n", i+1, h)
-		}
 	case "script":
 		e.verbScript(rest)
 	case "let":
 		e.verbLet(rest)
 	case "log":
-		fmt.Println(rest)
+		e.println(rest)
 		e.writeSessionLog("# log: " + rest)
 	case "alias":
 		e.verbAlias(rest)
@@ -416,116 +414,107 @@ func (e *scriptEngine) dispatchVerb(line string) bool {
 	case "break":
 		n := 1
 		if rest != "" {
-			if m, err := strconv.Atoi(rest); err == nil {
-				n = m
+			if value, err := strconv.Atoi(rest); err == nil && value > 0 {
+				n = value
+			} else {
+				e.fail(fmt.Errorf("invalid break count"))
+				return true
 			}
 		}
 		e.breakOut = n
 	case "continue":
 		e.contLoop = true
 	case "wait":
-		if n, err := strconv.Atoi(rest); err == nil {
-			time.Sleep(time.Duration(n) * time.Second)
+		n, err := strconv.Atoi(rest)
+		if err != nil || n < 0 {
+			e.fail(fmt.Errorf("wait needs nonnegative seconds"))
+		} else {
+			e.wait(time.Duration(n) * time.Second)
 		}
 	case "source":
 		e.verbSource(rest)
 	case "exec":
 		e.verbExec(rest)
 	case "vars":
-		for k, v := range e.vars {
-			fmt.Printf("  %s = %s\n", k, v)
+		variables := e.Variables()
+		keys := make([]string, 0, len(variables))
+		for key := range variables {
+			keys = append(keys, key)
 		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			e.printf("  %s = %s\n", key, variables[key])
+		}
+	case "end", "else":
+		e.fail(fmt.Errorf("unexpected %s", verb))
+	case "help", "hosts", "search", "copy", "cp", "move", "mv", "delete", "del", "rm", "mkdir", "md", "touch", "cd", "pwd", "run", "grab", "pull", "fanout", "shell", "use", "history", "job":
+		e.dispatch(Command{Verb: strings.ToLower(verb), Text: rest})
 	default:
-		// Bare command → run_command on current target(s).
-		e.sess.verbRun(line, len(e.sess.targets) > 1)
+		e.dispatch(Command{Verb: "run", Text: line, Fanout: len(e.backend.SelectedTargets()) > 1})
 	}
 	return true
 }
 
-// ===== Verbs the engine owns (vs sess.verbXxx) =====
-
-func (e *scriptEngine) verbSet(rest string) {
-	k, v := splitFirst(rest)
-	v = strings.TrimSpace(v)
-	if e.sess.setFileOption(strings.ToLower(k), v) {
-		return
-	}
-	switch strings.ToLower(k) {
-	case "timeout":
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			e.sess.timeout = int32(n)
-			fmt.Printf("timeout = %ds\n", n)
-		}
-	case "max-output":
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			e.sess.maxOutput = n
-			fmt.Printf("max-output = %d bytes\n", n)
-		}
-	case "capture":
-		e.sess.capture = v == "on" || v == "true" || v == "1"
-		fmt.Printf("capture = %v\n", e.sess.capture)
-	case "output-dir":
-		if v != "" {
-			e.sess.outputDir = v
-			fmt.Printf("output-dir = %s\n", v)
-		}
+func (e *Engine) verbSet(rest string) {
+	key, value := splitFirst(rest)
+	switch strings.ToLower(key) {
 	case "format":
-		switch strings.ToLower(v) {
+		switch strings.ToLower(value) {
 		case "table", "json", "csv":
-			e.format = strings.ToLower(v)
-			fmt.Printf("format = %s\n", e.format)
+			e.format = strings.ToLower(value)
+			e.printf("format = %s\n", e.format)
 		default:
-			fmt.Println("nsh: set format table|json|csv")
+			e.fail(fmt.Errorf("format must be table|json|csv"))
 		}
 	case "session-log":
-		e.setSessionLog(v)
+		e.setSessionLog(value)
 	default:
-		fmt.Println("nsh: set <timeout|max-output|capture|output-dir|format|session-log> <value>")
+		e.dispatch(Command{Verb: "set", Text: rest})
 	}
 }
 
-func (e *scriptEngine) verbLet(rest string) {
+func (e *Engine) verbLet(rest string) {
 	i := strings.IndexByte(rest, '=')
 	if i < 0 {
-		fmt.Println("nsh: usage: let NAME = value")
+		e.fail(fmt.Errorf("usage: let NAME = value"))
 		return
 	}
 	name := strings.TrimSpace(rest[:i])
 	val := strings.TrimSpace(rest[i+1:])
 	val = strings.Trim(val, `"'`)
 	// Allow substitution on the RHS so `let X = ${env:USERNAME}` works.
-	val = e.expand(val)
-	e.vars[name] = val
-	fmt.Printf("%s = %s\n", name, val)
+	val = e.Expand(val)
+	e.SetVariable(name, val)
+	e.printf("%s = %s\n", name, val)
 }
 
-func (e *scriptEngine) verbAlias(rest string) {
+func (e *Engine) verbAlias(rest string) {
 	i := strings.IndexByte(rest, '=')
 	if i < 0 {
-		fmt.Println("nsh: usage: alias NAME = <expansion>")
+		e.fail(fmt.Errorf("usage: alias NAME = <expansion>"))
 		return
 	}
 	name := strings.TrimSpace(rest[:i])
 	exp := strings.TrimSpace(rest[i+1:])
 	e.aliases[name] = exp
-	fmt.Printf("alias %s = %s\n", name, exp)
+	e.printf("alias %s = %s\n", name, exp)
 }
 
-func (e *scriptEngine) verbOnError(rest string) {
+func (e *Engine) verbOnError(rest string) {
 	rest = strings.ToLower(strings.TrimSpace(rest))
 	switch rest {
 	case "continue", "stop":
 		e.onError = rest
-		fmt.Printf("on-error = %s\n", rest)
+		e.printf("on-error = %s\n", rest)
 	default:
-		fmt.Println("nsh: on-error continue|stop")
+		e.fail(fmt.Errorf("on-error must be continue|stop"))
 	}
 }
 
-func (e *scriptEngine) verbScript(rest string) {
+func (e *Engine) verbScript(rest string) {
 	sub, path := splitFirst(rest)
 	if strings.ToLower(sub) != "run" || path == "" {
-		fmt.Println("nsh: usage: script run <file>")
+		e.fail(fmt.Errorf("usage: script run <file>"))
 		return
 	}
 	e.runScriptFile(strings.TrimSpace(path), true)
@@ -542,10 +531,10 @@ func (e *scriptEngine) verbScript(rest string) {
 // `cmd` and the script content is wrapped as `python -c "<content>"`. If no
 // shell is given, infers from extension: .ps1→powershell, .bat/.cmd→cmd,
 // .py→python-via-cmd, else current `use`.
-func (e *scriptEngine) verbExec(rest string) {
+func (e *Engine) verbExec(rest string) {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
-		fmt.Println("nsh: usage: exec [shell] <local-file>")
+		e.fail(fmt.Errorf("usage: exec [shell] <local-file>"))
 		return
 	}
 	// Decide which word is the shell vs file.
@@ -564,12 +553,12 @@ func (e *scriptEngine) verbExec(rest string) {
 		}
 	}
 	path = strings.Trim(path, `"'`)
-	b, err := os.ReadFile(path)
+	b, err := e.loadFile(path)
 	if err != nil {
-		fmt.Printf("nsh: exec: read %s: %v\n", path, err)
+		e.fail(fmt.Errorf("exec: read %s: %w", path, err))
 		return
 	}
-	content := e.expand(string(b)) // console-side ${VAR} substitution
+	content := e.Expand(string(b)) // console-side ${VAR} substitution
 
 	// Infer shell from extension if admin did not name one.
 	if shell == "" {
@@ -583,23 +572,20 @@ func (e *scriptEngine) verbExec(rest string) {
 		case ".sh":
 			shell = "bash"
 		default:
-			shell = e.sess.shell
+			shell = e.backend.Shell()
 		}
 	}
 
-	cmdText, agentShell := buildShellCommand(shell, content)
-	savedShell := e.sess.shell
-	e.sess.shell = agentShell
-	e.sess.verbRun(cmdText, len(e.sess.targets) > 1)
-	e.sess.shell = savedShell
+	cmdText, agentShell := BuildShellCommand(shell, content)
+	e.dispatch(Command{Verb: "run", Text: cmdText, Shell: agentShell, Fanout: len(e.backend.SelectedTargets()) > 1})
 }
 
-// buildShellCommand packages a (possibly multi-line) script for the chosen
+// BuildShellCommand packages a (possibly multi-line) script for the chosen
 // interpreter so the agent runs it as ONE self-contained command — no file is
 // created on the endpoint. Returns the command text and the AGENT shell to
 // use for RunCommandSpec.shell. Shared by `exec <file>` and the `script
 // <shell> until <delim>` heredoc.
-func buildShellCommand(shell, content string) (cmdText, agentShell string) {
+func BuildShellCommand(shell, content string) (cmdText, agentShell string) {
 	s := strings.ToLower(strings.TrimSpace(shell))
 	switch s {
 	case "powershell", "ps", "pwsh":
@@ -630,10 +616,10 @@ func buildShellCommand(shell, content string) (cmdText, agentShell string) {
 	}
 }
 
-func (e *scriptEngine) verbSource(rest string) {
+func (e *Engine) verbSource(rest string) {
 	path := strings.TrimSpace(rest)
 	if path == "" {
-		fmt.Println("nsh: usage: source <file>")
+		e.fail(fmt.Errorf("usage: source <file>"))
 		return
 	}
 	e.runScriptFile(path, false)
@@ -641,55 +627,48 @@ func (e *scriptEngine) verbSource(rest string) {
 
 // ===== Script-file execution =====
 
-func (e *scriptEngine) runScriptFile(path string, capture bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		fmt.Printf("nsh: open %s: %v\n", path, err)
+func (e *Engine) runScriptFile(path string, capture bool) {
+	if e.scriptDepth >= e.options.MaxSourceDepth {
+		e.fail(fmt.Errorf("source depth limit exceeded"))
 		return
 	}
-	defer f.Close()
-	savedCap := e.sess.capture
+	data, err := e.loadFile(strings.Trim(path, "\"'"))
+	if err != nil {
+		e.fail(fmt.Errorf("source %s: %w", path, err))
+		return
+	}
+	saved := e.backend.Capture()
 	if capture {
-		e.sess.capture = true
+		e.backend.SetCapture(true)
 	}
-	br := bufio.NewReader(f)
-	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
-			if !e.execLine(strings.TrimRight(line, "\r\n")) {
-				e.sess.capture = savedCap
-				return
-			}
-		}
-		if err == io.EOF || err != nil {
-			break
-		}
-	}
-	e.sess.capture = savedCap
+	defer e.backend.SetCapture(saved)
+	e.readSource(strings.NewReader(string(data)))
 }
 
-// ===== Session log =====
-
-func (e *scriptEngine) setSessionLog(path string) {
+func (e *Engine) setSessionLog(path string) {
 	if e.sessionLog != nil {
 		e.sessionLog.Close()
 		e.sessionLog = nil
 	}
 	if path == "" || strings.EqualFold(path, "off") {
-		fmt.Println("session-log = off")
+		e.println("session-log = off")
 		return
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if e.options.OpenSessionLog == nil {
+		e.fail(fmt.Errorf("session-log is not enabled by this host"))
+		return
+	}
+	writer, err := e.options.OpenSessionLog(path)
 	if err != nil {
-		fmt.Printf("nsh: open session-log %s: %v\n", path, err)
+		e.fail(err)
 		return
 	}
-	fmt.Fprintf(f, "\n=== session resumed %s ===\n", time.Now().UTC().Format(time.RFC3339))
-	e.sessionLog = f
-	fmt.Printf("session-log = %s\n", path)
+	e.sessionLog = writer
+	fmt.Fprintf(writer, "\n=== session resumed %s ===\n", time.Now().UTC().Format(time.RFC3339))
+	e.printf("session-log = %s\n", path)
 }
 
-func (e *scriptEngine) writeSessionLog(line string) {
+func (e *Engine) writeSessionLog(line string) {
 	if e.sessionLog == nil {
 		return
 	}
@@ -704,27 +683,39 @@ var varRE = regexp.MustCompile(`\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 // last-result bindings, and ${env:NAME} for mock-side env. Agent-side names
 // (hostname, device_id) that the engine doesn't know are passed through
 // unchanged so the agent's own substitution still handles them.
-func (e *scriptEngine) expand(s string) string {
+func (e *Engine) Expand(s string) string {
+	variables := e.Variables()
+	bytes := len(s)
+	overflow := false
 	return varRE.ReplaceAllStringFunc(s, func(match string) string {
+		if overflow {
+			return ""
+		}
 		m := varRE.FindStringSubmatch(match)
 		name := m[1]
 		if name == "" {
 			name = m[2]
 		}
+		value := match
 		if strings.HasPrefix(name, "env:") {
-			return os.Getenv(name[4:])
+			value = e.lookupEnv(name[4:])
+		} else if v, ok := variables[name]; ok {
+			value = v
 		}
-		if v, ok := e.vars[name]; ok {
-			return v
+		bytes += len(value) - len(match)
+		if bytes > e.options.MaxSourceBytes {
+			overflow = true
+			e.fail(fmt.Errorf("expanded command exceeds source byte limit"))
+			return ""
 		}
-		// Unknown → leave as-is (agent-side names fall through here).
-		return match
+		return value
 	})
 }
 
 // evalCond understands:  $NAME == x | != x,  stdout contains "x",
 // stderr contains "x", defined NAME, with optional leading `!` negation.
-func (e *scriptEngine) evalCond(c string) bool {
+func (e *Engine) evalCond(c string) bool {
+	variables := e.Variables()
 	c = strings.TrimSpace(c)
 	negate := false
 	if strings.HasPrefix(c, "!") {
@@ -734,24 +725,24 @@ func (e *scriptEngine) evalCond(c string) bool {
 	// defined NAME
 	if strings.HasPrefix(strings.ToLower(c), "defined ") {
 		name := strings.TrimSpace(c[len("defined "):])
-		_, ok := e.vars[name]
+		_, ok := variables[name]
 		return ok != negate
 	}
 	// stdout/stderr contains "x"
 	if m := regexp.MustCompile(`^(stdout|stderr)\s+contains\s+(.+)$`).FindStringSubmatch(c); m != nil {
 		stream := m[1]
 		needle := strings.Trim(strings.TrimSpace(m[2]), `"'`)
-		haystack := e.vars[stream]
+		haystack := variables[stream]
 		return strings.Contains(haystack, needle) != negate
 	}
 	// $NAME op value
 	if m := regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(.*)$`).FindStringSubmatch(c); m != nil {
-		got := e.vars[m[1]]
+		got := variables[m[1]]
 		op := m[2]
 		want := strings.Trim(strings.TrimSpace(m[3]), `"'`)
 		return cmpStrings(got, op, want) != negate
 	}
-	fmt.Printf("nsh: cannot evaluate condition: %q\n", c)
+	e.fail(fmt.Errorf("cannot evaluate condition: %q", c))
 	return false
 }
 
@@ -785,23 +776,7 @@ func cmpStrings(got, op, want string) bool {
 
 // recordLastResult is called after each run_command returns, so subsequent
 // `if $exit == 0` conditions and ${stdout} substitutions see fresh values.
-func (e *scriptEngine) recordLastResult(host, stdout, stderr, reason string, exit int, durationMs int64) {
-	e.vars["host"] = host
-	e.vars["exit"] = strconv.Itoa(exit)
-	e.vars["stdout"] = stdout
-	e.vars["stderr"] = stderr
-	e.vars["reason"] = reason
-	e.vars["duration"] = strconv.FormatInt(durationMs, 10)
-}
 
-// shouldStop returns true when a non-zero exit should abort the script.
-func (e *scriptEngine) shouldStop(exit int) bool {
-	return exit != 0 && e.onError == "stop" && len(e.blocks) == 0 // never abort INSIDE a user block
-}
-
-// ===== small utils =====
-
-// extOf returns the lowercased extension (".ps1", ".bat", ...) of a path.
 func extOf(path string) string {
 	i := strings.LastIndexByte(path, '.')
 	if i < 0 {
@@ -863,4 +838,13 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func splitFirst(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	i := strings.IndexAny(s, " \t")
+	if i < 0 {
+		return s, ""
+	}
+	return s[:i], strings.TrimSpace(s[i+1:])
 }

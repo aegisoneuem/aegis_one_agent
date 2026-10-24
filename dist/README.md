@@ -4,9 +4,15 @@ Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
 **Today's replay guide:**
 [NSH acceptance — 24 October](../docs/nsh-server-acceptance-2026-10-24.md).
-Vijay reports the NSH suite passed; the server team should replay the documented
-cases with these matching artifacts. Reusable Script Job integration is the next
-coding block, separate from this accepted handoff.
+Vijay reports the earlier NSH suite passed. The latest mockserver also includes
+the shared NSH Script Job/Software Distribution runner. Test with both the replay
+guide above and [NSH Script Jobs](../docs/nsh-script-jobs.md). Replace/restart only
+mockserver.exe for this runner update; agent/MSI are unchanged. Automated tests
+pass; new job VM acceptance is pending. Production server/console integration
+remains server-team work, detailed in the job guide and console integration notes.
+
+The older dated notes below describe earlier increments; their pending VM-test
+statements are superseded by Vijay's accepted NSH suite reported above.
 
 2026-10-24 file-operations build: replace BOTH agent and mockserver (or install
 the matching MSI). Native/bulk copy, move, mkdir/touch/delete and bounded host

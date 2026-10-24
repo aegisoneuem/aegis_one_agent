@@ -6,6 +6,9 @@ internet), and reports a unified per-action status back to the server.
 
 ## Docs
 
+- **[docs/nsh-script-jobs.md](docs/nsh-script-jobs.md)** — development block:
+  reusable NSH engine and non-interactive Script Job/Software Distribution runner.
+
 - **[docs/nsh-server-acceptance-2026-10-24.md](docs/nsh-server-acceptance-2026-10-24.md)**
   — today's server-team replay cases and expected results for the NSH handoff.
 
