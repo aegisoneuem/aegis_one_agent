@@ -14,6 +14,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 // softdistJob is a software deploy handed to the serial softdist worker. Software
@@ -33,16 +34,18 @@ type softdistJob struct {
 
 // softdistInstaller carries what the worker + delivery need across deploys.
 type softdistInstaller struct {
-	outbox      chan<- *pb.AgentMessage
-	deviceID    string
-	cache       *patchcache.Cache // encrypted-at-rest store, shared with patches
-	tmpDir      string            // transient decrypt-to-install dir (secure-deleted after)
-	downloadDir string            // controlled drop zone for pre-staged local installers
-	jobs        chan softdistJob
+	outbox         chan<- *pb.AgentMessage
+	deviceID       string
+	cache          *patchcache.Cache // encrypted-at-rest store, shared with patches
+	tmpDir         string            // transient decrypt-to-install dir (secure-deleted after)
+	downloadDir    string            // controlled drop zone for pre-staged local installers
+	verifyAttempts int
+	verifyInterval time.Duration
+	jobs           chan softdistJob
 }
 
-func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string) *softdistInstaller {
-	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, jobs: make(chan softdistJob, 32)}
+func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration) *softdistInstaller {
+	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, jobs: make(chan softdistJob, 32)}
 }
 
 // resolveLocal resolves a pre-staged installer path. A bare name / relative path
@@ -72,8 +75,16 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	if action == "" {
 		action = "install"
 	}
+	if action != "install" && action != "uninstall" {
+		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "invalid software action "+action)))
+		return
+	}
 	if pc := strings.TrimSpace(spec.ProductCode); pc != "" {
-		installed := softdist.ProductInstalled(pc)
+		installed, err := softdist.QueryProductInstalled(pc)
+		if err != nil {
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "MSI detection failed: "+err.Error())))
+			return
+		}
 		switch {
 		case action == "install" && installed:
 			slog.Info("software_deploy: product already installed, skipping", "command_id", cmdID, "product_code", pc)
@@ -93,8 +104,16 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	//     absent → install; OLDER version installed → proceed (upgrade); same/newer →
 	//     skip. Without a target version, any installed copy skips (plain idempotency).
 	//     Uninstall of an absent app is always skipped.
-	if key := strings.TrimSpace(spec.UninstallKey); key != "" || strings.TrimSpace(spec.DisplayName) != "" {
-		app := softdist.FindInstalledApp(key, spec.DisplayName)
+	if key := strings.TrimSpace(spec.UninstallKey); strings.TrimSpace(spec.ProductCode) == "" && (key != "" || strings.TrimSpace(spec.DisplayName) != "") {
+		selector := softdist.AppSelector{UninstallKey: key, DisplayName: spec.DisplayName}
+		if action == "uninstall" {
+			selector.Version = spec.Version
+		}
+		app, err := softdist.ResolveInstalledApp(selector)
+		if err != nil {
+			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "registry detection failed: "+err.Error())))
+			return
+		}
 		if action == "install" && app != nil {
 			target := strings.TrimSpace(spec.Version)
 			// Skip only when we can CONFIRM the installed copy already satisfies the
@@ -118,6 +137,9 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 			slog.Info("software_deploy: proceeding as upgrade/ensure-version",
 				"command_id", cmdID, "app", app.DisplayName, "installed", app.DisplayVersion, "target", target)
 		}
+		if action == "uninstall" && app != nil {
+			spec = pinnedRegistryUninstall(spec, app)
+		}
 		if action == "uninstall" && app == nil {
 			slog.Info("software_deploy: app not installed, nothing to uninstall", "command_id", cmdID, "key", key, "display_name", spec.DisplayName)
 			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
@@ -130,7 +152,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	//     removes the product from its own database (msiexec /x {GUID}). Reaching here
 	//     on an uninstall with a product_code means the product IS installed (STEP 0
 	//     short-circuits the absent case), so enqueue a fileless uninstall.
-	if action == "uninstall" && strings.TrimSpace(spec.ProductCode) != "" && isMSIType(spec) {
+	if action == "uninstall" && !hasExplicitSoftwarePayload(spec) && strings.TrimSpace(spec.ProductCode) != "" && isMSIType(spec) {
 		slog.Info("software_deploy: uninstall by product_code (no installer file needed)", "command_id", cmdID, "product_code", spec.ProductCode)
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
 		return
@@ -140,7 +162,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	//     file either — the agent runs the vendor's registered (Quiet)UninstallString.
 	//     Reaching here on an uninstall with a key/display_name means the app IS
 	//     installed (0a short-circuits the absent case), so enqueue a fileless job.
-	if action == "uninstall" && (strings.TrimSpace(spec.UninstallKey) != "" || strings.TrimSpace(spec.DisplayName) != "") {
+	if action == "uninstall" && !hasExplicitSoftwarePayload(spec) && strings.TrimSpace(spec.ProductCode) == "" && (strings.TrimSpace(spec.UninstallKey) != "" || strings.TrimSpace(spec.DisplayName) != "") {
 		slog.Info("software_deploy: uninstall by registry entry (no installer file needed)", "command_id", cmdID, "key", spec.UninstallKey, "display_name", spec.DisplayName)
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
 		return
@@ -263,7 +285,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 
 	sendStatus(s.outbox, &pb.ActionStatus{
 		ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
-		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "starting install", StartedAt: started,
+		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "starting software action", StartedAt: started,
 	})
 
 	// One installer at a time across the whole machine (shared with patches).
@@ -309,6 +331,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 		ProductCode:      spec.ProductCode,
 		UninstallKey:     spec.UninstallKey,
 		DisplayName:      spec.DisplayName,
+		Version:          spec.Version,
 		Parameters:       s.buildParams(spec),
 	})
 
@@ -327,12 +350,12 @@ func (s *softdistInstaller) run(job softdistJob) {
 	// carries detection identifiers, re-detect and only then confirm SUCCESS; a
 	// contradiction is reported honestly as FAILED. Specs without identifiers (plain
 	// scripts) are trusted on exit code alone.
-	if phase == pb.ActionPhase_ACTION_PHASE_SUCCESS {
+	if phase == pb.ActionPhase_ACTION_PHASE_SUCCESS || phase == pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE {
 		action := strings.ToLower(strings.TrimSpace(spec.Action))
 		if action == "" {
 			action = "install"
 		}
-		if ok, note := verifyOutcome(spec, action); !ok {
+		if ok, note := verifyDetectedOutcome(context.Background(), spec, action, s.verifyAttempts, s.verifyInterval, detectProduct); !ok {
 			phase = pb.ActionPhase_ACTION_PHASE_FAILED
 			res.Reason = fmt.Sprintf("installer exited %d but verification failed: %s", res.ExitCode, note)
 			slog.Warn("software_deploy: post-action verification FAILED", "command_id", cmdID, "name", spec.Name, "note", note)
@@ -342,7 +365,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 	}
 	// A server-delivered installer is single-use per machine — drop it from the
 	// cache after a successful install (orphans are swept by the cache janitor TTL).
-	if job.cacheID != "" && res.Success {
+	if job.cacheID != "" && phase == pb.ActionPhase_ACTION_PHASE_SUCCESS {
 		if err := s.cache.Remove(job.cacheID); err != nil {
 			slog.Warn("software_deploy: could not remove installed package from cache", "content_id", job.cacheID, "error", err.Error())
 		}
@@ -388,12 +411,12 @@ func (s *softdistInstaller) buildParams(spec *pb.SoftwareDeploySpec) map[string]
 	return p
 }
 
-// verifyOutcome re-detects the product after a successful install/uninstall and
+// verifyDetectedOutcome re-detects the product after a successful install/uninstall and
 // reports whether reality matches the action. It retries a few times because some
 // uninstallers (notably NSIS) exit before the removal fully completes, and MSI
 // registry entries can lag a moment. When the spec carries no detection identifiers
 // there is nothing to check — the exit code stands (ok, no note).
-func verifyOutcome(spec *pb.SoftwareDeploySpec, action string) (ok bool, note string) {
+func verifyDetectedOutcome(ctx context.Context, spec *pb.SoftwareDeploySpec, action string, attempts int, interval time.Duration, detect func(*pb.SoftwareDeploySpec) (bool, string, error)) (ok bool, note string) {
 	hasIDs := strings.TrimSpace(spec.ProductCode) != "" ||
 		strings.TrimSpace(spec.UninstallKey) != "" || strings.TrimSpace(spec.DisplayName) != ""
 	if !hasIDs {
@@ -403,11 +426,24 @@ func verifyOutcome(spec *pb.SoftwareDeploySpec, action string) (ok bool, note st
 
 	var present bool
 	var version string
-	for attempt := 0; attempt < 4; attempt++ {
+	if attempts < 1 {
+		attempts = 1
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			time.Sleep(5 * time.Second) // settle: NSIS uninstallers finish after exiting
+			timer := time.NewTimer(interval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false, "verification cancelled"
+			case <-timer.C:
+			}
 		}
-		present, version = detectProduct(spec)
+		var err error
+		present, version, err = detect(spec)
+		if err != nil {
+			return false, "detection failed: " + err.Error()
+		}
 		if present == wantPresent {
 			break
 		}
@@ -417,7 +453,10 @@ func verifyOutcome(spec *pb.SoftwareDeploySpec, action string) (ok bool, note st
 	case wantPresent && present:
 		// Install verified. When a target version was requested, confirm it took.
 		target := strings.TrimSpace(spec.Version)
-		if target != "" && version != "" && softdist.CompareVersions(version, target) < 0 {
+		if target != "" && strings.TrimSpace(version) == "" {
+			return false, "product present but installed version is unknown (target " + target + ")"
+		}
+		if target != "" && softdist.CompareVersions(version, target) < 0 {
 			return false, fmt.Sprintf("product present but still version %s (target %s) — upgrade did not apply", version, target)
 		}
 		if version != "" {
@@ -435,17 +474,38 @@ func verifyOutcome(spec *pb.SoftwareDeploySpec, action string) (ok bool, note st
 
 // detectProduct reports whether the spec's product is present (MSI ProductCode or
 // registry Uninstall hive) and its registry DisplayVersion when known.
-func detectProduct(spec *pb.SoftwareDeploySpec) (present bool, version string) {
-	if pc := strings.TrimSpace(spec.ProductCode); pc != "" && softdist.ProductInstalled(pc) {
-		present = true
+func detectProduct(spec *pb.SoftwareDeploySpec) (present bool, version string, err error) {
+	if pc := strings.TrimSpace(spec.ProductCode); pc != "" {
+		present, err = softdist.QueryProductInstalled(pc)
+		if err != nil || !present {
+			return present, "", err
+		}
+		// ProductCode is authoritative: an unrelated display-name match must never
+		// hide the absence of the requested MSI. Registry version is optional metadata.
+		app, lookupErr := softdist.ResolveInstalledApp(softdist.AppSelector{UninstallKey: pc})
+		if lookupErr != nil {
+			return false, "", lookupErr
+		}
+		if app != nil {
+			version = app.DisplayVersion
+		}
+		return present, version, nil
 	}
 	key, name := strings.TrimSpace(spec.UninstallKey), strings.TrimSpace(spec.DisplayName)
 	if key != "" || name != "" {
-		if app := softdist.FindInstalledApp(key, name); app != nil {
-			return true, app.DisplayVersion
+		selector := softdist.AppSelector{UninstallKey: key, DisplayName: name}
+		if strings.EqualFold(strings.TrimSpace(spec.Action), "uninstall") {
+			selector.Version = spec.Version
+		}
+		app, err := softdist.ResolveInstalledApp(selector)
+		if err != nil {
+			return false, "", err
+		}
+		if app != nil {
+			return true, app.DisplayVersion, nil
 		}
 	}
-	return present, ""
+	return false, "", nil
 }
 
 // isMSIType reports whether the deploy targets an MSI product — an explicit "msi"
@@ -480,4 +540,21 @@ func installerExt(spec *pb.SoftwareDeploySpec) string {
 	default:
 		return ".exe"
 	}
+}
+
+// Pin the registration chosen at dispatch. Re-matching a broad DisplayName after
+// removal could mistake a different edition/tool for the original target.
+func pinnedRegistryUninstall(spec *pb.SoftwareDeploySpec, app *softdist.InstalledApp) *pb.SoftwareDeploySpec {
+	pinned := proto.Clone(spec).(*pb.SoftwareDeploySpec)
+	pinned.UninstallKey = app.RegistryView + `\` + app.Key
+	pinned.DisplayName = "" // the registration key/view is authoritative
+	return pinned
+}
+
+// Explicit payloads take precedence over automatic removal. Detection IDs still
+// drive idempotency and post-verification; they must not replace the author's
+// custom command/script or bypass a delivered file's hash verification.
+func hasExplicitSoftwarePayload(spec *pb.SoftwareDeploySpec) bool {
+	return strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") ||
+		strings.TrimSpace(spec.FilePath) != "" || strings.TrimSpace(spec.ContentId) != ""
 }

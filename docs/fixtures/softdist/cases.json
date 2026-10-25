@@ -1,0 +1,791 @@
+[
+  {
+    "n": "01",
+    "title": "Ambiguous display name",
+    "expect": "FAILED; ambiguous installed product (2 matches)",
+    "env": {},
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": "Vijay PASS on host mockserver. WIN-TUES4V46T7I had no fixtures and correctly returned NOT_APPLICABLE. Other tests remain pending."
+  },
+  {
+    "n": "02",
+    "title": "Remove only requested version 1.0",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "VERSION": "1.0"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "03",
+    "title": "Already absent requested version",
+    "expect": "NOT_APPLICABLE; not installed",
+    "env": {
+      "VERSION": "1.0"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "04",
+    "title": "Exact 64-bit key",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v2",
+      "DISPLAY_NAME": ""
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "absent",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "05",
+    "title": "Same key in both registry views",
+    "expect": "FAILED; ambiguous installed product (2 matches)",
+    "env": {
+      "UNINSTALL_KEY": "AegisSoftDistFixture-view",
+      "DISPLAY_NAME": ""
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-view",
+        32
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-view",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "06",
+    "title": "Remove only the 32-bit registration",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "UNINSTALL_KEY": "HKLM32\\AegisSoftDistFixture-view",
+      "DISPLAY_NAME": ""
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-view",
+        32
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-view",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "07",
+    "title": "Remove only the 64-bit registration",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-view",
+      "DISPLAY_NAME": ""
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-view",
+        32
+      ],
+      [
+        "absent",
+        "AegisSoftDistFixture-view",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "08",
+    "title": "Exact name wins over similarly named companion",
+    "expect": "SUCCESS; verified removed",
+    "env": {},
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-tool",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "09",
+    "title": "Key and display name disagree",
+    "expect": "NOT_APPLICABLE; not installed",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "DISPLAY_NAME": "A completely different fixture"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "10",
+    "title": "No registered uninstall command",
+    "expect": "FAILED; no uninstall command registered",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "11",
+    "title": "No quiet command and no author silent arguments",
+    "expect": "FAILED; supply vendor-specific silent_args",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "no-marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "12",
+    "title": "Author silent arguments, spaces and runtime variables",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=daily release"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": null,
+    "note": "custom.txt must contain tag=daily release, tag-environment=daily release, and matching endpoint host-argument/host-environment."
+  },
+  {
+    "n": "13",
+    "title": "Zero exit is not enough when product remains",
+    "expect": "FAILED; verification failed: product still detected after uninstall; exit_code=0",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "14",
+    "title": "Registered executable is missing",
+    "expect": "FAILED; could not start installer",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "15",
+    "title": "Unquoted spaced executable path",
+    "expect": "FAILED; quote paths with spaces",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "16",
+    "title": "Malformed MSI ProductCode",
+    "expect": "FAILED; invalid MSI ProductCode",
+    "env": {
+      "PRODUCT_CODE": "not-a-guid",
+      "DISPLAY_NAME": ""
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "17",
+    "title": "HKCU is explicitly refused until Run-As",
+    "expect": "FAILED; per-user/HKCU removal requires user-context support",
+    "env": {
+      "UNINSTALL_KEY": "HKCU\\AegisSoftDistFixture-v1",
+      "DISPLAY_NAME": ""
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "18",
+    "title": "Custom command overrides default registry uninstaller",
+    "expect": "SUCCESS; verified removed; exit_code=0",
+    "env": {
+      "TYPE": "command",
+      "FILE": "%SystemRoot%\\System32\\cmd.exe",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "/d /c C:\\temp\\AegisSoftDistTests\\custom-remove.cmd \"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=custom command"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": null,
+    "note": "Default registry command exits 19. SUCCESS plus CUSTOM_REMOVE proves the supplied custom command ran instead."
+  },
+  {
+    "n": "19",
+    "title": "Hash-pinned CMD script overrides default uninstaller",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\custom-remove.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=signed script"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": "custom-remove.cmd",
+    "note": ""
+  },
+  {
+    "n": "20",
+    "title": "Tampered or wrong-hash file is refused",
+    "expect": "FAILED; integrity check failed (hash mismatch)",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\custom-remove.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=signed script",
+      "HASH": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ],
+      [
+        "no-marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "21",
+    "title": "Malformed registry value is not absence",
+    "expect": "FAILED; registry detection failed; QuietUninstallString",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "22",
+    "title": "Server-delivered custom script with detection IDs",
+    "expect": "SUCCESS; verified removed; FetchContent kind=package",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=signed script",
+      "CONTENT_ID": "softdist-test-22"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": "custom-remove.cmd",
+    "note": "No local installer file_path is sent. Server streams the script; client cache/decrypted temp are exercised. If rerunning, prior cached content may avoid a second download."
+  },
+  {
+    "n": "23",
+    "title": "Installer timeout",
+    "expect": "FAILED; installer timed out after 1s",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\slow-payload.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "",
+      "PARAMS": "TAG=signed script",
+      "TIMEOUT": "1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ]
+    ],
+    "hashfile": "slow-payload.cmd",
+    "note": "The payload pings loopback only and never removes a key. Allow about ten seconds for an already-started child to finish; timeout is not a promise to kill all descendants."
+  },
+  {
+    "n": "24",
+    "title": "Nonzero registered uninstaller exit",
+    "expect": "FAILED; installer failed (exit 19); exit_code=19",
+    "env": {
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ]
+    ],
+    "hashfile": null,
+    "note": ""
+  },
+  {
+    "n": "25",
+    "title": "Package-author custom success exit code",
+    "expect": "SUCCESS; verified removed; exit_code=19",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\custom-remove.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\" 19",
+      "PARAMS": "TAG=signed script",
+      "SUCCESS_CODES": "19"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": "custom-remove.cmd",
+    "note": ""
+  },
+  {
+    "n": "26",
+    "title": "Install fixture and verify version",
+    "expect": "SUCCESS; verified installed (version 1.0)",
+    "env": {
+      "ACTION": "install",
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\install-fixture.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistInstall",
+      "DISPLAY_NAME": "",
+      "VERSION": "1.0",
+      "ARGS": "1.0"
+    },
+    "checks": [
+      [
+        "version",
+        "1.0",
+        64
+      ],
+      [
+        "marker",
+        "install.txt",
+        0
+      ]
+    ],
+    "hashfile": "install-fixture.cmd",
+    "note": "This payload registers a dummy app. It tests the EXE/script pipeline and detection, not Windows Installer MSI behavior."
+  },
+  {
+    "n": "27",
+    "title": "Upgrade old version 1.0 to 2.0",
+    "expect": "SUCCESS; verified installed (version 2.0)",
+    "env": {
+      "ACTION": "install",
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\install-fixture.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistInstall",
+      "DISPLAY_NAME": "",
+      "VERSION": "2.0",
+      "ARGS": "2.0"
+    },
+    "checks": [
+      [
+        "version",
+        "2.0",
+        64
+      ],
+      [
+        "marker",
+        "install.txt",
+        0
+      ]
+    ],
+    "hashfile": "install-fixture.cmd",
+    "note": ""
+  },
+  {
+    "n": "28",
+    "title": "Same/newer version skips installation",
+    "expect": "NOT_APPLICABLE; already installed (version 2.0, skipped)",
+    "env": {
+      "ACTION": "install",
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\install-fixture.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistInstall",
+      "DISPLAY_NAME": "",
+      "VERSION": "1.0",
+      "ARGS": "1.0"
+    },
+    "checks": [
+      [
+        "version",
+        "2.0",
+        64
+      ],
+      [
+        "no-marker",
+        "install.txt",
+        0
+      ]
+    ],
+    "hashfile": "install-fixture.cmd",
+    "note": ""
+  },
+  {
+    "n": "29",
+    "title": "Missing pinned hash is refused",
+    "expect": "FAILED; expected_hash (sha256) is required",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\custom-remove.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=signed script",
+      "AUTO_HASH": "0"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ],
+      [
+        "no-marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": null,
+    "note": "This test deliberately disables only the mock console auto-hash. Mandatory agent hash verification remains enabled."
+  },
+  {
+    "n": "30",
+    "title": "Required publisher signature rejects unsigned script",
+    "expect": "FAILED; publisher signature check failed",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\custom-remove.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=signed script",
+      "REQUIRE_SIG": "1"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "present",
+        "AegisSoftDistFixture-v2",
+        64
+      ],
+      [
+        "no-marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": "custom-remove.cmd",
+    "note": ""
+  },
+  {
+    "n": "31",
+    "title": "CMD payload path contains spaces",
+    "expect": "SUCCESS; verified removed",
+    "env": {
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\Payload With Spaces\\custom-remove.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistFixture-v1",
+      "ARGS": "\"${TAG}\" \"${hostname}\"",
+      "PARAMS": "TAG=signed script"
+    },
+    "checks": [
+      [
+        "absent",
+        "AegisSoftDistFixture-v1",
+        64
+      ],
+      [
+        "marker",
+        "custom.txt",
+        0
+      ]
+    ],
+    "hashfile": "custom-remove.cmd",
+    "note": "Requires the newest agent build: a real CMD quoting bug was found and fixed while preparing this pack."
+  },
+  {
+    "n": "32",
+    "title": "Installed but requested version cannot be verified",
+    "expect": "FAILED; installed version is unknown (target 1.0)",
+    "env": {
+      "ACTION": "install",
+      "TYPE": "cmd",
+      "FILE": "C:\\temp\\AegisSoftDistTests\\install-fixture.cmd",
+      "UNINSTALL_KEY": "HKLM64\\AegisSoftDistInstall",
+      "DISPLAY_NAME": "",
+      "VERSION": "1.0",
+      "ARGS": "unknown"
+    },
+    "checks": [
+      [
+        "present",
+        "AegisSoftDistInstall",
+        64
+      ],
+      [
+        "no-version",
+        "AegisSoftDistInstall",
+        64
+      ],
+      [
+        "marker",
+        "install.txt",
+        0
+      ]
+    ],
+    "hashfile": "install-fixture.cmd",
+    "note": ""
+  },
+  {
+    "n": "33",
+    "title": "NSH Software Distribution job, parameters and fleet loop",
+    "expect": "JOB SUCCESS; per-target package/tag/hostname output",
+    "env": {},
+    "checks": [
+      [
+        "marker",
+        "nsh.txt",
+        0
+      ]
+    ],
+    "hashfile": null,
+    "note": "This is the shared NSH Runner Software Distribution caller mode. It is not an agent installer_type=nsh or proof that the production console is already wired."
+  },
+  {
+    "n": "34",
+    "title": "NSH job propagates native script failure",
+    "expect": "JOB FAILED; native command exit_code=7",
+    "env": {},
+    "checks": [],
+    "hashfile": null,
+    "note": "This is the shared NSH Runner Software Distribution caller mode. It is not an agent installer_type=nsh or proof that the production console is already wired."
+  }
+]

@@ -13,19 +13,17 @@ checklist for the real console/server implementation.
 **REPL = Read-Eval-Print Loop.** An interactive prompt (`nsh>`) where you type
 one command, the engine reads + evaluates it, prints the result, and loops.
 Everything in this doc runs in that prompt — the same engine runs in
-**non-interactive script mode** when `AEGIS_NSH_SCRIPT` points at a `.nsh`
-file. The engine behaves identically either way, so these tests also validate
+**non-interactive script mode** with `mockserver.exe script <file.nsh>`. The engine behaves identically either way, so these tests also validate
 console-authored tasks.
 
 Start interactive:
 ```
-set AEGIS_NSH=1
-mockserver.exe
+mockserver.exe nsh
 ```
 Start scripted:
 ```
 set AEGIS_NSH_SCRIPT=C:\tests\<name>.nsh
-mockserver.exe
+mockserver.exe script
 ```
 
 Expected outcomes are stated per test. **PASS** = output matches the row;
@@ -290,7 +288,7 @@ dir Z:\nope
 log "survived (exit was $exit)"
 hostname
 ```
-Run: `set AEGIS_NSH_SCRIPT=C:\tests\on-error.nsh & mockserver.exe`.
+Run: `set AEGIS_NSH_SCRIPT=C:\tests\on-error.nsh & mockserver.exe script`.
 **PASS:** both the `log` line and `hostname` output appear.
 
 ---
@@ -428,7 +426,7 @@ end
 ```
 set REGION=apac
 set AEGIS_NSH_SCRIPT=C:\tests\fleet-herdoc.nsh
-mockserver.exe
+mockserver.exe script
 ```
 **PASS:** every host prints its name + the engine version; per-host files
 land under `uploads/<cid>/nsh/<host>/*.out` without collision.
@@ -554,7 +552,7 @@ log "all done"
 ```
 ```
 set AEGIS_NSH_SCRIPT=C:\tests\fleet-check.nsh
-mockserver.exe
+mockserver.exe script
 ```
 **PASS:** mock exits after the script runs; session log at
 `C:\tests\fleet-check.log` has every line; per-host files under
@@ -584,7 +582,7 @@ end
 ```
 ```
 set AEGIS_NSH_SCRIPT=C:\tests\pack.nsh
-mockserver.exe
+mockserver.exe script
 ```
 **PASS:** every host prints a `wrote on ...: C:\temp\report-<HOSTNAME>.txt`
 line; files exist on the endpoints.

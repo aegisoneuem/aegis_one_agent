@@ -27,10 +27,14 @@ type Params struct {
 	// UninstallKey / DisplayName locate a non-MSI (EXE/script-installed) product in the
 	// Windows registry Uninstall hive. When set on an uninstall, Run reads the product's
 	// QuietUninstallString (vendor-silent, preferred) or UninstallString + SilentArgs
-	// and runs it — no installer file needed. UninstallKey is the exact subkey name;
-	// DisplayName is a case-insensitive substring fallback.
+	// and runs it — no installer file needed. UninstallKey is the exact subkey name,
+	// optionally prefixed HKLM32\ or HKLM64\. DisplayName prefers exact matches then
+	// a unique case-insensitive substring. Ambiguity/read errors fail the action.
 	UninstallKey string
 	DisplayName  string
+	// Version restricts registry uninstalls to an exact DisplayVersion. Install
+	// minimum-version handling remains in the agent's delivery/verification layer.
+	Version string
 	// Parameters are name→value pairs (built-in runtime vars + author-supplied)
 	// substituted as ${name} into SilentArgs and the "command" invocation, and also
 	// exported to child scripts as AEGIS_PARAM_<NAME> environment variables.

@@ -2,19 +2,18 @@
 
 package softdist
 
+import "fmt"
+
 // ProductInstalled is Windows-only (MSI product state). Elsewhere it reports
 // false, so deploys are not wrongly skipped.
 func ProductInstalled(string) bool { return false }
 
-// InstalledApp mirrors the Windows registry Uninstall-hive record (see the Windows
-// build); defined here so cross-platform code compiles.
-type InstalledApp struct {
-	Key                  string
-	DisplayName          string
-	DisplayVersion       string
-	Publisher            string
-	UninstallString      string
-	QuietUninstallString string
+func QueryProductInstalled(string) (bool, error) {
+	return false, fmt.Errorf("MSI detection is only supported on Windows")
+}
+
+func ResolveInstalledApp(AppSelector) (*InstalledApp, error) {
+	return nil, fmt.Errorf("registry detection is only supported on Windows")
 }
 
 // FindInstalledApp is Windows-only (registry Uninstall hive). Elsewhere it reports

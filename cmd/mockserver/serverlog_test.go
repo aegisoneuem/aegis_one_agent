@@ -21,7 +21,7 @@ func TestNSHBackgroundEventsUseDedicatedLog(t *testing.T) {
 			defer func() { mockOutput = oldOutput; log.SetOutput(oldLog) }()
 			var terminal bytes.Buffer
 			mockOutput = &terminal
-			f, err := configureMockLogging()
+			f, err := configureMockLogging(true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -46,13 +46,13 @@ func TestNSHBackgroundEventsUseDedicatedLog(t *testing.T) {
 }
 
 func TestNormalMockModeRetainsConsoleOutput(t *testing.T) {
-	t.Setenv("AEGIS_NSH", "")
-	t.Setenv("AEGIS_NSH_SCRIPT", "")
+	t.Setenv("AEGIS_NSH", "1")
+	t.Setenv("AEGIS_NSH_SCRIPT", "old-script.nsh")
 	old := mockOutput
 	defer func() { mockOutput = old }()
 	var terminal bytes.Buffer
 	mockOutput = &terminal
-	f, err := configureMockLogging()
+	f, err := configureMockLogging(false)
 	if err != nil || f != nil {
 		t.Fatalf("%v %v", f, err)
 	}

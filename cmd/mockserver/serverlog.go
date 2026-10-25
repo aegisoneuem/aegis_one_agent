@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Set once at startup, before any RPC or terminal goroutine starts. Server
@@ -25,8 +24,8 @@ func mockFatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
-func configureMockLogging() (*os.File, error) {
-	if !truthy(os.Getenv("AEGIS_NSH")) && strings.TrimSpace(os.Getenv("AEGIS_NSH_SCRIPT")) == "" {
+func configureMockLogging(nshMode bool) (*os.File, error) {
+	if !nshMode {
 		return nil, nil
 	}
 	path := getenv("AEGIS_MOCK_LOG_FILE", filepath.Join("logs", "mockserver.log"))

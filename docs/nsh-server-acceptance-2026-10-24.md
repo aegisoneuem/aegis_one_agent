@@ -20,9 +20,8 @@ mockserver process's local filesystem.
 
 In CMD on the server, before starting mockserver:
 ```bat
-set AEGIS_NSH=1
 set AEGIS_NSH_SCRIPT=
-mockserver.exe
+mockserver.exe nsh
 ```
 
 Background connection/heartbeat/scan/upload events belong in

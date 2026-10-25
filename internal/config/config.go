@@ -85,6 +85,9 @@ func resolve(key string) string {
 }
 
 type Config struct {
+	SoftdistVerifyAttempts int           // post-action checks, including initial detection
+	SoftdistVerifyInterval time.Duration // settle delay for detached uninstallers
+
 	ServerAddress     string
 	LogLevel          string
 	LogFile           string
@@ -245,6 +248,8 @@ func Load() Config {
 	}
 
 	cfg := Config{
+		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
+		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:     getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
 		LogLevel:          getenv("AEGIS_LOG_LEVEL", "info"),
 		LogFile:           getenv("AEGIS_LOG_FILE", ""),

@@ -69,8 +69,8 @@ an operator terminal. Heartbeats, fleet connects, patch reports and background
 transfer messages belong in server logs. Put online status in a separate UI
 indicator. Never subscribe each operator terminal to the entire fleet event feed.
 
-The mock now routes background events to logs/mockserver.log when AEGIS_NSH or
-AEGIS_NSH_SCRIPT is set; AEGIS_MOCK_LOG_FILE overrides the log path. NSH output
+The mock routes background events to logs/mockserver.log only in explicit
+`mockserver.exe nsh` or `mockserver.exe script <file>` mode; AEGIS_MOCK_LOG_FILE overrides the log path. NSH output
 stays in the current window. A second CMD window is unnecessary. Without NSH,
 normal mock console logging remains. This is reference logging, not a production
 retention/rotation implementation.
@@ -98,7 +98,7 @@ file_operation/v1 relay contract, bounds and source/destination permissions.
 File-operation UI must use the operator's file read/write/delete rights rather
 than treating permission to open an NSH tab as unrestricted filesystem access.
 
-AEGIS_NSH_SCRIPT runs at mock startup. foreach * snapshots currently connected
+`mockserver.exe script <file.nsh>` runs a script at mock startup. foreach * snapshots currently connected
 agents; it does not wait for the fleet. For deterministic manual G2 testing,
 start interactive NSH, check hosts, then source the local .nsh file. Production
 jobs must explicitly resolve target availability instead of copying this race.

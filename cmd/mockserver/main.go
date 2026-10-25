@@ -994,6 +994,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// display_name → the vendor's (Quiet)UninstallString). Trigger for those too.
 		uninstallFileless := deployAction == "uninstall" && (deployProductCode != "" || deployUninstallKey != "" || deployDisplayName != "")
 		if deployFile != "" || deployContentID != "" || uninstallFileless {
+			options, err := readSoftdistTestOptions(os.Getenv)
+			if err != nil {
+				mockPrintf("Software deploy test settings refused: %v\n", err)
+				return
+			}
 			spec := &pb.SoftwareDeploySpec{
 				PackageId:        os.Getenv("AEGIS_DEPLOY_PACKAGE_ID"),
 				Name:             os.Getenv("AEGIS_DEPLOY_NAME"),
@@ -1010,6 +1015,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				UninstallKey:     deployUninstallKey,                            // non-MSI registry subkey
 				DisplayName:      deployDisplayName,                             // non-MSI DisplayName match
 				Parameters:       parseParams(os.Getenv("AEGIS_DEPLOY_PARAMS")), // ${name} substitution, e.g. "LICENSE=ABC,INSTALLDIR=C:\app"
+				TimeoutSeconds:   options.timeout,
+				SuccessExitCodes: options.successCodes,
 			}
 			// AUTO-HASH (BigFix model — the console computes the SHA at package upload,
 			// the admin never types it): when no AEGIS_DEPLOY_HASH is given for a
@@ -1018,7 +1025,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			// readable on THIS machine (same-box dev). The agent REFUSES unpinned
 			// file-based payloads, so without a hash the deploy will fail by design.
 			isCommandType := strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command")
-			if spec.ExpectedHash == "" && !uninstallFileless && !isCommandType {
+			if options.autoHash && spec.ExpectedHash == "" && !isCommandType && (deployFile != "" || deployContentID != "") {
 				src := strings.TrimSpace(os.Getenv("AEGIS_SERVE_SOFTWARE"))
 				if src == "" {
 					src = deployFile
@@ -1286,7 +1293,21 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 }
 
 func main() {
-	serverLog, err := configureMockLogging()
+	if _, err := readSoftdistTestOptions(os.Getenv); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	mode, err := parseMockMode(os.Args[1:], os.Getenv("AEGIS_NSH_SCRIPT"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, mockModeUsage)
+		os.Exit(2)
+	}
+	if mode.help {
+		fmt.Print(mockModeUsage)
+		return
+	}
+	serverLog, err := configureMockLogging(mode.nsh)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mockserver: cannot open server log: %v\n", err)
 		os.Exit(1)
@@ -1365,8 +1386,10 @@ func main() {
 	// NSH REPL: start the console operator shell in-process when asked. The real
 	// console UI will drive the same engine from a web terminal; here the REPL
 	// uses the mockserver's own stdin for ad-hoc operator work and script runs.
-	if truthy(os.Getenv("AEGIS_NSH")) || strings.TrimSpace(os.Getenv("AEGIS_NSH_SCRIPT")) != "" {
-		go runNSH(srv)
+	if mode.nsh {
+		go runNSH(srv, mode.script)
+	} else {
+		mockPrintln("Normal server mode: NSH is not running; agent and action logs appear here.")
 	}
 
 	if err := s.Serve(lis); err != nil {

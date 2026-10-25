@@ -124,9 +124,9 @@ type nshSession struct {
 }
 
 // runNSH starts the interactive REPL on stdin (or non-interactive from a
-// script file when AEGIS_NSH_SCRIPT is set). Runs in a goroutine alongside the
+// script file explicitly selected by the startup mode). Runs alongside the
 // gRPC server — not a separate process (console will embed the same engine).
-func runNSH(srv *server) {
+func runNSH(srv *server, scriptPath string) {
 	sess := &nshSession{
 		srv:       srv,
 		shell:     "cmd",
@@ -137,13 +137,13 @@ func runNSH(srv *server) {
 		out:       bufio.NewWriter(os.Stdout),
 	}
 	sess.engine = newScriptEngine(sess)
-	sess.printBanner()
 	defer sess.engine.core.Close()
 	// Non-interactive script mode (same engine, no prompt).
-	if scriptPath := strings.TrimSpace(os.Getenv("AEGIS_NSH_SCRIPT")); scriptPath != "" {
+	if scriptPath != "" {
 		runEnvironmentNSHJob(srv, scriptPath)
 		return
 	}
+	sess.printBanner()
 	sess.readLoop(os.Stdin, true)
 }
 

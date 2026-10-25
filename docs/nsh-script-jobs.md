@@ -54,7 +54,7 @@ end
 ```
 
 Start the new **dist/mockserver.exe** (or a locally built build/mockserver.exe)
-interactively and choose target(s):
+with the explicit `nsh` argument, then choose target(s):
 ```text
 cd \\WIN-TUES4V46T7I
 job run C:\tests\job-check.nsh --param TAG=script-test
@@ -85,9 +85,12 @@ cd must not leave the job executing on a previous target. Attempt to select/copy
 to an unselected device must fail. Missing end/HEREDOC delimiter, source recursion
 and invalid script syntax must fail rather than produce a successful empty job.
 
-## Existing environment-script mode
+## Explicit non-interactive script mode
 
-AEGIS_NSH_SCRIPT now calls the same shared Runner. Optional settings:
+Run `mockserver.exe script C:\tests\job-check.nsh` to use the same shared Runner.
+Alternatively set AEGIS_NSH_SCRIPT and run `mockserver.exe script` explicitly.
+Plain mockserver.exe always stays in normal mode, even with old NSH variables.
+Optional settings:
 
 - AEGIS_NSH_TARGETS: comma-separated known device IDs/hostnames/computer IDs.
 - AEGIS_NSH_JOB_PARAMS: comma-separated NAME=value parameters (mock convenience).

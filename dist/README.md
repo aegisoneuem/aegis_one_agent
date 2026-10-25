@@ -2,7 +2,26 @@
 
 Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
-**Today's replay guide:**
+**25 October - SoftDist acceptance handoff:** replace BOTH agent and mockserver
+(or install the matching agent MSI). Start with
+[the 34-case runnable SoftDist guide](../docs/softdist-uninstall-edge-cases.md)
+and copy the entire [test-pack folder](../docs/fixtures/softdist) to
+`C:\temp\AegisSoftDistTests` on both test roles. A
+[results checklist](../docs/fixtures/softdist/softdist-results.md) is included.
+Test 01 passed on Vijay's VM; the remaining new VM/vendor cases are pending.
+Automated Go tests/vet and all 34 server-launcher smoke checks pass.
+
+Includes strict uninstall selection/verification, explicit custom payload
+precedence, quoted BAT/CMD paths, and mock controls for timeout/custom success
+codes/missing-hash tests. Normal startup is `mockserver.exe server` (or plain
+mockserver.exe); inherited NSH flags do not open a prompt. Use
+`mockserver.exe nsh` or `mockserver.exe script <file.nsh>` explicitly for NSH.
+
+**Current priority: finish SoftDist before moving to other tracks.** See
+[the SoftDist completion checklist](../docs/softdist-roadmap.md). Per-user/Run-As
+and complete production workflows are not claimed complete by this handoff.
+
+**Previous NSH replay guide (24 October):**
 [NSH acceptance — 24 October](../docs/nsh-server-acceptance-2026-10-24.md).
 Vijay reports the earlier NSH suite passed. The latest mockserver also includes
 the shared NSH Script Job/Software Distribution runner. Test with both the replay

@@ -132,6 +132,11 @@ the hash inside the signed command — never in the file on disk.
 
 ## 7. Software deploy — uninstall (fileless)
 
+For the new machine-wide selection/command/verification edge cases, see
+[SoftDist uninstall edge cases](softdist-uninstall-edge-cases.md). This local
+block requires the rebuilt agent and VM acceptance; per-user execution follows
+in the separate Run-As block.
+
 ```
 set AEGIS_DEPLOY_ACTION=uninstall
 set AEGIS_DEPLOY_PRODUCT_CODE={GUID}            (MSI: msiexec /x {GUID} /qn)   — or —
@@ -191,14 +196,13 @@ without the relevance-language learning curve.
 ### Start it
 
 ```
-set AEGIS_NSH=1
-mockserver.exe
+mockserver.exe nsh
 ```
-The REPL opens on the mock's stdin after the gRPC server comes up. For scripted
+Only `mockserver.exe nsh` opens the REPL; plain `mockserver.exe` stays in normal server mode. For scripted
 (non-interactive) mode:
 ```
 set AEGIS_NSH_SCRIPT=C:\checks\daily.nsh
-mockserver.exe
+mockserver.exe script
 ```
 
 ### Verbs (type `help` in the REPL for the full list)
@@ -348,7 +352,7 @@ end
 log "done"
 ```
 
-Run: `set AEGIS_NSH_SCRIPT=daily-defender-check.nsh & mockserver.exe` — fans
+Run: `set AEGIS_NSH_SCRIPT=daily-defender-check.nsh & mockserver.exe script` — fans
 out across all online endpoints, outputs land under
 `uploads/<computer_id>/\defender\<user>\...` for a WebUI report later.
 
