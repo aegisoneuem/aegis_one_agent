@@ -40,6 +40,7 @@ type softdistInstaller struct {
 	tmpDir         string            // transient decrypt-to-install dir (secure-deleted after)
 	downloadDir    string            // controlled drop zone for pre-staged local installers
 	verifyAttempts int
+	maxSecretBytes int
 	verifyInterval time.Duration
 	jobs           chan softdistJob
 }
@@ -68,6 +69,12 @@ func (s *softdistInstaller) resolveLocal(fp string) string {
 //   - content_id not cached → STREAM it from the server in the background (peer-
 //     cache / FetchContent), store it encrypted, then enqueue — the real-UEM path.
 func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlPlaneClient, cmdID string, spec *pb.SoftwareDeploySpec) {
+	transferred := false
+	defer func() {
+		if !transferred {
+			clearPrivateDeployment(spec)
+		}
+	}()
 	// 0. Idempotency / detection (Level 1, MSI): if a product_code is given, skip the
 	//    no-op — install of an already-present product, or uninstall of an absent one.
 	//    This avoids even downloading an installer we would not run.
@@ -79,73 +86,76 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "invalid software action "+action)))
 		return
 	}
-	if pc := strings.TrimSpace(spec.ProductCode); pc != "" {
-		installed, err := softdist.QueryProductInstalled(pc)
-		if err != nil {
-			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "MSI detection failed: "+err.Error())))
-			return
-		}
-		switch {
-		case action == "install" && installed:
-			slog.Info("software_deploy: product already installed, skipping", "command_id", cmdID, "product_code", pc)
-			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
-				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "already installed (skipped)")))
-			return
-		case action == "uninstall" && !installed:
-			slog.Info("software_deploy: product not installed, nothing to uninstall", "command_id", cmdID, "product_code", pc)
-			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
-				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
-			return
-		}
-	}
-
-	// 0a. Idempotency / detection for apps in the registry Uninstall hive, matched by
-	//     uninstall_key / display_name — VERSION-AWARE when spec.version is set:
-	//     absent → install; OLDER version installed → proceed (upgrade); same/newer →
-	//     skip. Without a target version, any installed copy skips (plain idempotency).
-	//     Uninstall of an absent app is always skipped.
-	if key := strings.TrimSpace(spec.UninstallKey); strings.TrimSpace(spec.ProductCode) == "" && (key != "" || strings.TrimSpace(spec.DisplayName) != "") {
-		selector := softdist.AppSelector{UninstallKey: key, DisplayName: spec.DisplayName}
-		if action == "uninstall" {
-			selector.Version = spec.Version
-		}
-		app, err := softdist.ResolveInstalledApp(selector)
-		if err != nil {
-			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "registry detection failed: "+err.Error())))
-			return
-		}
-		if action == "install" && app != nil {
-			target := strings.TrimSpace(spec.Version)
-			// Skip only when we can CONFIRM the installed copy already satisfies the
-			// request: no target version (plain idempotency), or a known installed
-			// version that is the same or newer. If a target is set but the installed
-			// version is unknown or older, proceed (upgrade / ensure the version) — never
-			// silently skip a requested upgrade just because the version can't be read.
-			skip := target == "" ||
-				(app.DisplayVersion != "" && softdist.CompareVersions(app.DisplayVersion, target) >= 0)
-			if skip {
-				reason := "already installed (skipped)"
-				if app.DisplayVersion != "" {
-					reason = "already installed (version " + app.DisplayVersion + ", skipped)"
-				}
-				slog.Info("software_deploy: app already installed, skipping",
-					"command_id", cmdID, "app", app.DisplayName, "installed_version", app.DisplayVersion, "target_version", target)
-				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
-					pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, reason)))
+	if !privateDeployment(spec) {
+		if pc := strings.TrimSpace(spec.ProductCode); pc != "" {
+			installed, err := softdist.QueryProductInstalled(pc)
+			if err != nil {
+				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "MSI detection failed: "+err.Error())))
 				return
 			}
-			slog.Info("software_deploy: proceeding as upgrade/ensure-version",
-				"command_id", cmdID, "app", app.DisplayName, "installed", app.DisplayVersion, "target", target)
+			switch {
+			case action == "install" && installed:
+				slog.Info("software_deploy: product already installed, skipping", "command_id", cmdID, "product_code", pc)
+				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+					pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "already installed (skipped)")))
+				return
+			case action == "uninstall" && !installed:
+				slog.Info("software_deploy: product not installed, nothing to uninstall", "command_id", cmdID, "product_code", pc)
+				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+					pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
+				return
+			}
 		}
-		if action == "uninstall" && app != nil {
-			spec = pinnedRegistryUninstall(spec, app)
+
+		// 0a. Idempotency / detection for apps in the registry Uninstall hive, matched by
+		//     uninstall_key / display_name — VERSION-AWARE when spec.version is set:
+		//     absent → install; OLDER version installed → proceed (upgrade); same/newer →
+		//     skip. Without a target version, any installed copy skips (plain idempotency).
+		//     Uninstall of an absent app is always skipped.
+		if key := strings.TrimSpace(spec.UninstallKey); strings.TrimSpace(spec.ProductCode) == "" && (key != "" || strings.TrimSpace(spec.DisplayName) != "") {
+			selector := softdist.AppSelector{UninstallKey: key, DisplayName: spec.DisplayName}
+			if action == "uninstall" {
+				selector.Version = spec.Version
+			}
+			app, err := softdist.ResolveInstalledApp(selector)
+			if err != nil {
+				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "registry detection failed: "+err.Error())))
+				return
+			}
+			if action == "install" && app != nil {
+				target := strings.TrimSpace(spec.Version)
+				// Skip only when we can CONFIRM the installed copy already satisfies the
+				// request: no target version (plain idempotency), or a known installed
+				// version that is the same or newer. If a target is set but the installed
+				// version is unknown or older, proceed (upgrade / ensure the version) — never
+				// silently skip a requested upgrade just because the version can't be read.
+				skip := target == "" ||
+					(app.DisplayVersion != "" && softdist.CompareVersions(app.DisplayVersion, target) >= 0)
+				if skip {
+					reason := "already installed (skipped)"
+					if app.DisplayVersion != "" {
+						reason = "already installed (version " + app.DisplayVersion + ", skipped)"
+					}
+					slog.Info("software_deploy: app already installed, skipping",
+						"command_id", cmdID, "app", app.DisplayName, "installed_version", app.DisplayVersion, "target_version", target)
+					send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+						pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, reason)))
+					return
+				}
+				slog.Info("software_deploy: proceeding as upgrade/ensure-version",
+					"command_id", cmdID, "app", app.DisplayName, "installed", app.DisplayVersion, "target", target)
+			}
+			if action == "uninstall" && app != nil {
+				spec = pinnedRegistryUninstall(spec, app)
+			}
+			if action == "uninstall" && app == nil {
+				slog.Info("software_deploy: app not installed, nothing to uninstall", "command_id", cmdID, "key", key, "display_name", spec.DisplayName)
+				send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
+					pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
+				return
+			}
 		}
-		if action == "uninstall" && app == nil {
-			slog.Info("software_deploy: app not installed, nothing to uninstall", "command_id", cmdID, "key", key, "display_name", spec.DisplayName)
-			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
-				pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "not installed (nothing to uninstall)")))
-			return
-		}
+
 	}
 
 	// 0b. Uninstall by MSI ProductCode needs NO installer file — Windows Installer
@@ -154,6 +164,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	//     short-circuits the absent case), so enqueue a fileless uninstall.
 	if action == "uninstall" && !hasExplicitSoftwarePayload(spec) && strings.TrimSpace(spec.ProductCode) != "" && isMSIType(spec) {
 		slog.Info("software_deploy: uninstall by product_code (no installer file needed)", "command_id", cmdID, "product_code", spec.ProductCode)
+		transferred = true
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
 		return
 	}
@@ -164,6 +175,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	//     installed (0a short-circuits the absent case), so enqueue a fileless job.
 	if action == "uninstall" && !hasExplicitSoftwarePayload(spec) && strings.TrimSpace(spec.ProductCode) == "" && (strings.TrimSpace(spec.UninstallKey) != "" || strings.TrimSpace(spec.DisplayName) != "") {
 		slog.Info("software_deploy: uninstall by registry entry (no installer file needed)", "command_id", cmdID, "key", spec.UninstallKey, "display_name", spec.DisplayName)
+		transferred = true
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
 		return
 	}
@@ -177,6 +189,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 			return
 		}
 		slog.Info("software_deploy: generic command (no file delivery)", "command_id", cmdID, "command", spec.FilePath)
+		transferred = true
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec})
 		return
 	}
@@ -202,6 +215,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		local := s.resolveLocal(fp)
 		if fileExists(local) {
 			slog.Info("software_deploy: using pre-staged local file", "command_id", cmdID, "file", local)
+			transferred = true
 			s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec, localPath: local})
 			return
 		}
@@ -222,13 +236,21 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 	}
 	if s.cache.Has(id) {
 		slog.Info("software_deploy: installer already cached, using it", "command_id", cmdID, "content_id", id)
+		transferred = true
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec, cacheID: id})
 		return
 	}
 
 	// 3. Fetch in the background (a large installer must not block the receiver),
 	//    verify integrity, store encrypted, then enqueue the install.
+	transferred = true
 	go func() {
+		queued := false
+		defer func() {
+			if !queued {
+				clearPrivateDeployment(spec)
+			}
+		}()
 		defer recoverLog("softdist-fetch")
 		send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
 			pb.ActionPhase_ACTION_PHASE_DOWNLOADING, "fetching installer from server")))
@@ -254,6 +276,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 			return
 		}
 		slog.Info("software_deploy: installer fetched + cached (encrypted)", "command_id", cmdID, "content_id", id)
+		queued = true
 		s.enqueue(ctx, softdistJob{commandID: cmdID, spec: spec, cacheID: id})
 	}()
 }
@@ -263,6 +286,7 @@ func (s *softdistInstaller) enqueue(ctx context.Context, job softdistJob) {
 	select {
 	case s.jobs <- job:
 	case <-ctx.Done():
+		clearPrivateDeployment(job.spec)
 	}
 }
 
@@ -292,6 +316,32 @@ func (s *softdistInstaller) run(job softdistJob) {
 	machineInstallGate.Lock()
 	defer machineInstallGate.Unlock()
 
+	defer clearPrivateDeployment(spec)
+	var session *softdist.Session
+	if privateDeployment(spec) {
+		var err error
+		session, err = softdist.OpenSession(deploymentExecution(spec))
+		clear(spec.GetExecution().GetPasswordUtf8())
+		if err != nil {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: err.Error()})
+			return
+		}
+		defer func() {
+			if err := session.Close(); err != nil {
+				slog.Warn("software_deploy: profile cleanup failed", "error", err)
+			}
+		}()
+		skip, reason, err := scopedDeploymentPrecheck(spec, session)
+		if err != nil {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "execution-scope detection failed: " + err.Error()})
+			return
+		}
+		if skip {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, &softdist.Result{NotApplicable: true, Reason: reason})
+			return
+		}
+	}
+
 	installPath := job.localPath
 	if job.cacheID != "" {
 		// Decrypt the sealed installer to a transient temp (plaintext exists only
@@ -317,6 +367,15 @@ func (s *softdistInstaller) run(job softdistJob) {
 		filePath = spec.FilePath
 	}
 
+	if session != nil && filePath != "" && !strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+		staged, cleanup, err := session.StagePayload(filePath, s.tmpDir)
+		if err != nil {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "user payload staging failed: " + err.Error()})
+			return
+		}
+		defer cleanup()
+		filePath = staged
+	}
 	res := softdist.Run(context.Background(), softdist.Params{
 		Name:             spec.Name,
 		Action:           spec.Action,
@@ -333,6 +392,10 @@ func (s *softdistInstaller) run(job softdistJob) {
 		DisplayName:      spec.DisplayName,
 		Version:          spec.Version,
 		Parameters:       s.buildParams(spec),
+		Session:          session,
+		SecureParameters: spec.SecureParameters,
+		Sensitive:        privateDeployment(spec),
+		MaxSecretBytes:   s.maxSecretBytes,
 	})
 
 	var phase pb.ActionPhase
@@ -355,7 +418,11 @@ func (s *softdistInstaller) run(job softdistJob) {
 		if action == "" {
 			action = "install"
 		}
-		if ok, note := verifyDetectedOutcome(context.Background(), spec, action, s.verifyAttempts, s.verifyInterval, detectProduct); !ok {
+		detect := detectProduct
+		if session != nil {
+			detect = func(p *pb.SoftwareDeploySpec) (bool, string, error) { return scopedDetectProduct(p, session) }
+		}
+		if ok, note := verifyDetectedOutcome(context.Background(), spec, action, s.verifyAttempts, s.verifyInterval, detect); !ok {
 			phase = pb.ActionPhase_ACTION_PHASE_FAILED
 			res.Reason = fmt.Sprintf("installer exited %d but verification failed: %s", res.ExitCode, note)
 			slog.Warn("software_deploy: post-action verification FAILED", "command_id", cmdID, "name", spec.Name, "note", note)

@@ -85,46 +85,47 @@ func resolve(key string) string {
 }
 
 type Config struct {
+	SoftdistMaxSecretBytes int           // private task input limit; passwords and secure parameters
 	SoftdistVerifyAttempts int           // post-action checks, including initial detection
 	SoftdistVerifyInterval time.Duration // settle delay for detached uninstallers
 
-	ServerAddress     string
-	LogLevel          string
-	LogFile           string
-	LogMaxAgeDays     int // retention: keep this many days of daily log files
-	DeviceID          string
-	AgentVersion      string
-	Hostname          string
-	OS                string
-	HeartbeatInterval time.Duration
-	HeartbeatJitter   time.Duration
-	KeepaliveTime     time.Duration // gRPC HTTP/2 keepalive ping interval (dead-conn detection)
-	KeepaliveTimeout  time.Duration // how long to wait for a keepalive ping ack
-	ReconnectBackoff  time.Duration
-	CommandTimeout    time.Duration
-	AllowedCommands   []string
-	WsusScanCab          string        // path to the server-provided wsusscn2.cab; empty disables the Layer 4 reconciliation scan
-	DeviceStateInterval  time.Duration // Layer 1: how often to check local installed-KB/build state (sent on change)
-	ReconScanInterval    time.Duration // Layer 4: how often to run the heavier offline cab reconciliation scan (weekly)
-	SecureDir            string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
-	DownloadDir          string        // where the server delivers runtime/adhoc patch files (distinct from the staging cache)
-	TLSCAFile            string        // CA bundle to verify the server (mTLS)
-	TLSCertFile          string        // agent client certificate (mTLS)
-	TLSKeyFile           string        // agent client private key (mTLS)
-	TLSServerName        string        // expected server certificate SAN
-	CmdVerifyKey         string        // base64 Ed25519 public key for verifying signed commands
-	CmdVerifyKeyFile     string        // path to a file holding the base64 Ed25519 public key (alt to CmdVerifyKey)
-	EnrollAddress        string        // enrollment endpoint (server-auth TLS); used only when no client cert exists
-	EnrollToken          string        // per-tenant bootstrap enrollment token
-	CertCheckInterval    time.Duration // how often to check the client cert for renewal
-	HealthAddr           string        // localhost-only health/status HTTP endpoint (empty disables)
-	CacheMaxBytes        int64         // patch cache size cap (bytes); pre-cache/staging budget
-	CacheTTL             time.Duration // delete unused (non-staged) cached files older than this
-	CacheJanitorInterval time.Duration // how often the cache janitor runs TTL/cap enforcement
-	InstallTimeout       time.Duration // max time for a single DISM install
-	InstallDiskMultiplier int64        // require free disk >= this * patch size before install
-	InstallMaxAttempts   int           // total DISM attempts on a transient failure
-	InstallRetryBackoff  time.Duration // wait between transient-failure retries
+	ServerAddress         string
+	LogLevel              string
+	LogFile               string
+	LogMaxAgeDays         int // retention: keep this many days of daily log files
+	DeviceID              string
+	AgentVersion          string
+	Hostname              string
+	OS                    string
+	HeartbeatInterval     time.Duration
+	HeartbeatJitter       time.Duration
+	KeepaliveTime         time.Duration // gRPC HTTP/2 keepalive ping interval (dead-conn detection)
+	KeepaliveTimeout      time.Duration // how long to wait for a keepalive ping ack
+	ReconnectBackoff      time.Duration
+	CommandTimeout        time.Duration
+	AllowedCommands       []string
+	WsusScanCab           string        // path to the server-provided wsusscn2.cab; empty disables the Layer 4 reconciliation scan
+	DeviceStateInterval   time.Duration // Layer 1: how often to check local installed-KB/build state (sent on change)
+	ReconScanInterval     time.Duration // Layer 4: how often to run the heavier offline cab reconciliation scan (weekly)
+	SecureDir             string        // agent secure dir: DPAPI key + encrypted buffer + patch cache live here
+	DownloadDir           string        // where the server delivers runtime/adhoc patch files (distinct from the staging cache)
+	TLSCAFile             string        // CA bundle to verify the server (mTLS)
+	TLSCertFile           string        // agent client certificate (mTLS)
+	TLSKeyFile            string        // agent client private key (mTLS)
+	TLSServerName         string        // expected server certificate SAN
+	CmdVerifyKey          string        // base64 Ed25519 public key for verifying signed commands
+	CmdVerifyKeyFile      string        // path to a file holding the base64 Ed25519 public key (alt to CmdVerifyKey)
+	EnrollAddress         string        // enrollment endpoint (server-auth TLS); used only when no client cert exists
+	EnrollToken           string        // per-tenant bootstrap enrollment token
+	CertCheckInterval     time.Duration // how often to check the client cert for renewal
+	HealthAddr            string        // localhost-only health/status HTTP endpoint (empty disables)
+	CacheMaxBytes         int64         // patch cache size cap (bytes); pre-cache/staging budget
+	CacheTTL              time.Duration // delete unused (non-staged) cached files older than this
+	CacheJanitorInterval  time.Duration // how often the cache janitor runs TTL/cap enforcement
+	InstallTimeout        time.Duration // max time for a single DISM install
+	InstallDiskMultiplier int64         // require free disk >= this * patch size before install
+	InstallMaxAttempts    int           // total DISM attempts on a transient failure
+	InstallRetryBackoff   time.Duration // wait between transient-failure retries
 }
 
 // defaultConfigMap returns the config.json defaults (keys = env-var names).
@@ -248,45 +249,46 @@ func Load() Config {
 	}
 
 	cfg := Config{
+		SoftdistMaxSecretBytes: int(int64FromEnv("AEGIS_SOFTDIST_MAX_SECRET_BYTES", 64*1024)),
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
-		ServerAddress:     getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
-		LogLevel:          getenv("AEGIS_LOG_LEVEL", "info"),
-		LogFile:           getenv("AEGIS_LOG_FILE", ""),
-		LogMaxAgeDays:     int(int64FromEnv("AEGIS_LOG_MAX_AGE_DAYS", 10)),
-		DeviceID:          getenv("AEGIS_DEVICE_ID", ""), // empty → agent generates + persists a stable UUID
-		AgentVersion:      getenv("AEGIS_AGENT_VERSION", "0.0.1"),
-		Hostname:          getenv("AEGIS_HOSTNAME", defaultHostname()),
-		OS:                getenv("AEGIS_OS", "windows"),
-		HeartbeatInterval: durationFromEnv("AEGIS_HEARTBEAT_INTERVAL", 5*time.Minute),
-		HeartbeatJitter:   durationFromEnv("AEGIS_HEARTBEAT_JITTER", 30*time.Second),
-		KeepaliveTime:     durationFromEnv("AEGIS_KEEPALIVE_TIME", 60*time.Second),
-		KeepaliveTimeout:  durationFromEnv("AEGIS_KEEPALIVE_TIMEOUT", 20*time.Second),
-		ReconnectBackoff:  durationFromEnv("AEGIS_RECONNECT_BACKOFF", 10*time.Second),
-		CommandTimeout:    durationFromEnv("AEGIS_COMMAND_TIMEOUT", 10*time.Second),
-		AllowedCommands:   allowed,
-		WsusScanCab:         getenv("AEGIS_WSUS_SCAN_CAB", ""),
-		DeviceStateInterval: durationFromEnv("AEGIS_DEVICE_STATE_INTERVAL", 5*time.Minute),
-		ReconScanInterval:   durationFromEnv("AEGIS_RECON_SCAN_INTERVAL", 7*24*time.Hour),
-		SecureDir:         getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
-		DownloadDir:          getenv("AEGIS_DOWNLOAD_DIR", `C:\Program Files\AegisOne\Client\SKVC\download`),
-		TLSCAFile:            getenv("AEGIS_TLS_CA", `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`),
-		TLSCertFile:          getenv("AEGIS_TLS_CERT", `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`),
-		TLSKeyFile:           getenv("AEGIS_TLS_KEY", `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`),
-		TLSServerName:        getenv("AEGIS_TLS_SERVER_NAME", "localhost"),
-		CmdVerifyKey:         getenv("AEGIS_CMD_VERIFY_KEY", ""),
-		CmdVerifyKeyFile:     getenv("AEGIS_CMD_VERIFY_KEY_FILE", ""),
-		EnrollAddress:        getenv("AEGIS_ENROLL_ADDRESS", ""),
-		EnrollToken:          getenv("AEGIS_ENROLL_TOKEN", ""),
-		CertCheckInterval:    durationFromEnv("AEGIS_CERT_CHECK_INTERVAL", 12*time.Hour),
-		HealthAddr:           getenv("AEGIS_HEALTH_ADDR", "127.0.0.1:50080"),
-		CacheMaxBytes:        int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
-		CacheTTL:             durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
-		CacheJanitorInterval: durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
-		InstallTimeout:       durationFromEnv("AEGIS_INSTALL_TIMEOUT", 30*time.Minute),
-		InstallDiskMultiplier: int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 2),
-		InstallMaxAttempts:   int(int64FromEnv("AEGIS_INSTALL_MAX_ATTEMPTS", 2)),
-		InstallRetryBackoff:  durationFromEnv("AEGIS_INSTALL_RETRY_BACKOFF", 30*time.Second),
+		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
+		LogLevel:               getenv("AEGIS_LOG_LEVEL", "info"),
+		LogFile:                getenv("AEGIS_LOG_FILE", ""),
+		LogMaxAgeDays:          int(int64FromEnv("AEGIS_LOG_MAX_AGE_DAYS", 10)),
+		DeviceID:               getenv("AEGIS_DEVICE_ID", ""), // empty → agent generates + persists a stable UUID
+		AgentVersion:           getenv("AEGIS_AGENT_VERSION", "0.0.1"),
+		Hostname:               getenv("AEGIS_HOSTNAME", defaultHostname()),
+		OS:                     getenv("AEGIS_OS", "windows"),
+		HeartbeatInterval:      durationFromEnv("AEGIS_HEARTBEAT_INTERVAL", 5*time.Minute),
+		HeartbeatJitter:        durationFromEnv("AEGIS_HEARTBEAT_JITTER", 30*time.Second),
+		KeepaliveTime:          durationFromEnv("AEGIS_KEEPALIVE_TIME", 60*time.Second),
+		KeepaliveTimeout:       durationFromEnv("AEGIS_KEEPALIVE_TIMEOUT", 20*time.Second),
+		ReconnectBackoff:       durationFromEnv("AEGIS_RECONNECT_BACKOFF", 10*time.Second),
+		CommandTimeout:         durationFromEnv("AEGIS_COMMAND_TIMEOUT", 10*time.Second),
+		AllowedCommands:        allowed,
+		WsusScanCab:            getenv("AEGIS_WSUS_SCAN_CAB", ""),
+		DeviceStateInterval:    durationFromEnv("AEGIS_DEVICE_STATE_INTERVAL", 5*time.Minute),
+		ReconScanInterval:      durationFromEnv("AEGIS_RECON_SCAN_INTERVAL", 7*24*time.Hour),
+		SecureDir:              getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
+		DownloadDir:            getenv("AEGIS_DOWNLOAD_DIR", `C:\Program Files\AegisOne\Client\SKVC\download`),
+		TLSCAFile:              getenv("AEGIS_TLS_CA", `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`),
+		TLSCertFile:            getenv("AEGIS_TLS_CERT", `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`),
+		TLSKeyFile:             getenv("AEGIS_TLS_KEY", `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`),
+		TLSServerName:          getenv("AEGIS_TLS_SERVER_NAME", "localhost"),
+		CmdVerifyKey:           getenv("AEGIS_CMD_VERIFY_KEY", ""),
+		CmdVerifyKeyFile:       getenv("AEGIS_CMD_VERIFY_KEY_FILE", ""),
+		EnrollAddress:          getenv("AEGIS_ENROLL_ADDRESS", ""),
+		EnrollToken:            getenv("AEGIS_ENROLL_TOKEN", ""),
+		CertCheckInterval:      durationFromEnv("AEGIS_CERT_CHECK_INTERVAL", 12*time.Hour),
+		HealthAddr:             getenv("AEGIS_HEALTH_ADDR", "127.0.0.1:50080"),
+		CacheMaxBytes:          int64FromEnv("AEGIS_CACHE_MAX_BYTES", 2<<30), // 2 GiB
+		CacheTTL:               durationFromEnv("AEGIS_CACHE_TTL", 24*time.Hour),
+		CacheJanitorInterval:   durationFromEnv("AEGIS_CACHE_JANITOR_INTERVAL", time.Hour),
+		InstallTimeout:         durationFromEnv("AEGIS_INSTALL_TIMEOUT", 30*time.Minute),
+		InstallDiskMultiplier:  int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 2),
+		InstallMaxAttempts:     int(int64FromEnv("AEGIS_INSTALL_MAX_ATTEMPTS", 2)),
+		InstallRetryBackoff:    durationFromEnv("AEGIS_INSTALL_RETRY_BACKOFF", 30*time.Second),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = defaultHostname()

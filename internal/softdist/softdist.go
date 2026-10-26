@@ -3,7 +3,7 @@
 // whatever installer the payload names (msi/exe/ps1/bat): running a PAYLOAD the
 // server signed is a deploy action, NOT the agent using PowerShell for its own
 // logic (the agent never does that). The agent runs as LocalSystem, so the
-// installer inherits SYSTEM and installs silently, machine-wide.
+// installer defaults to SYSTEM; explicit sessions bind user-context actions.
 package softdist
 
 import "time"
@@ -16,7 +16,7 @@ type Params struct {
 	InstallerType string        // "msi" | "exe" | "ps1" | "bat" | "auto" (infer from extension)
 	FilePath      string        // local installer path the server delivered
 	SilentArgs    string        // unattended args ("/qn /norestart", "/S", ...)
-	ExpectedHash  string        // hex digest; "" skips the integrity check (dev/test only)
+	ExpectedHash  string        // required pinned digest for file-based payloads
 	HashAlgorithm string        // "sha256" (default) | "sha512"
 	SuccessCodes  []int32       // extra exit codes to treat as success beyond {0,3010,1641}
 	Timeout       time.Duration // 0 = package default
@@ -38,7 +38,12 @@ type Params struct {
 	// Parameters are name→value pairs (built-in runtime vars + author-supplied)
 	// substituted as ${name} into SilentArgs and the "command" invocation, and also
 	// exported to child scripts as AEGIS_PARAM_<NAME> environment variables.
-	Parameters map[string]string
+	Parameters       map[string]string
+	PublicMetadata   []string          // additional visible task fields checked for accidental secret copies
+	SecureParameters map[string]string // child stdin JSON only; never argv/env/logs
+	MaxSecretBytes   int
+	Sensitive        bool     // account credential jobs also suppress diagnostic payload output
+	Session          *Session // opened once by worker, shared by detection/execution/verification
 	// RequireSignature, when true, makes Run verify the installer's Authenticode
 	// signature (trusted publisher) and REFUSE to run an unsigned/untrusted file —
 	// the standard-UEM publisher check. Left false for internal/unsigned installers.

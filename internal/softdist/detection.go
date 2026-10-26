@@ -13,20 +13,27 @@ type InstalledApp struct {
 	WindowsInstaller                                          bool
 }
 
-// AppSelector identifies one machine-wide registration. Version is an optional
+// AppSelector identifies one registration in the selected scope. Version is an optional
 // exact DisplayVersion filter for uninstall, not a minimum-version comparison.
-// UninstallKey may have an HKLM32\ or HKLM64\ prefix to disambiguate views.
+// UninstallKey may have an HKLM32/64 or HKCU32/64 prefix to disambiguate views.
 type AppSelector struct {
 	UninstallKey, DisplayName, Version string
+	UserSID                            string // derived from execution token, never a browser-supplied SID
 }
 
 func (s AppSelector) keyAndView() (key, view string, err error) {
 	key = strings.TrimSpace(s.UninstallKey)
-	for _, prefix := range []string{`HKLM32\`, `HKLM64\`} {
+	for _, prefix := range []string{`HKLM32\`, `HKLM64\`, `HKCU32\`, `HKCU64\`} {
 		if strings.HasPrefix(strings.ToUpper(key), prefix) {
 			view, key = prefix[:len(prefix)-1], key[len(prefix):]
 			break
 		}
+	}
+	if strings.HasPrefix(view, "HKCU") && s.UserSID == "" {
+		return "", "", fmt.Errorf("per-user/HKCU removal requires a user execution context")
+	}
+	if strings.HasPrefix(view, "HKLM") && s.UserSID != "" {
+		return "", "", fmt.Errorf("HKLM selector conflicts with user detection scope")
 	}
 	if strings.ContainsAny(key, `\/:`) || strings.ContainsRune(key, 0) || (view != "" && key == "") {
 		return "", "", fmt.Errorf("uninstall_key must be one subkey, optionally prefixed HKLM32\\ or HKLM64\\; per-user/HKCU removal requires user-context support")

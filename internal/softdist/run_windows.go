@@ -3,6 +3,7 @@
 package softdist
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -32,6 +33,9 @@ const defaultTimeout = 30 * time.Minute
 // (the agent's softdist worker) has already serialized this against patches and
 // other deploys via the shared install lane, so only one installer runs at once.
 func Run(ctx context.Context, p Params) Result {
+	if err := ValidatePrivateInput(p); err != nil {
+		return Result{Reason: err.Error()}
+	}
 	action := strings.ToLower(strings.TrimSpace(p.Action))
 	if action != "" && action != "install" && action != "uninstall" {
 		return Result{Reason: "invalid software action " + p.Action}
@@ -54,7 +58,10 @@ func Run(ctx context.Context, p Params) Result {
 	// nothing to verify); this is the standard-UEM way to uninstall an MSI product.
 	if isFilelessMSIUninstall(p) {
 		pc := strings.TrimSpace(p.ProductCode)
-		logPath := filepath.Join(os.TempDir(), "aegis-uninstall-"+sanitizeCode(pc)+".log")
+		logPath := ""
+		if !p.sensitive() {
+			logPath = filepath.Join(os.TempDir(), "aegis-uninstall-"+sanitizeCode(pc)+".log")
+		}
 		bin, args := msiUninstallByCode(p, pc, logPath)
 		return execInstaller(ctx, p, bin, args, logPath)
 	}
@@ -125,6 +132,9 @@ func Run(ctx context.Context, p Params) Result {
 	// the MSI log; we write it next to the installer, fold its tail into Detail, and
 	// remove it. buildInvocation adds /l*v only for msi; the file is absent otherwise.
 	logPath := abs + ".aegis-install.log"
+	if p.sensitive() {
+		logPath = ""
+	}
 	bin, args, err := buildInvocation(p, abs, logPath)
 	if err != nil {
 		return Result{Reason: err.Error()}
@@ -189,7 +199,11 @@ func isFilelessRegistryUninstall(p Params) bool {
 // admin's args, it does not invent silent switches. An absent product is a no-op
 // (NOT_APPLICABLE), matching the MSI idempotency behavior.
 func runRegistryUninstall(ctx context.Context, p Params) Result {
-	app, err := ResolveInstalledApp(AppSelector{UninstallKey: p.UninstallKey, DisplayName: p.DisplayName, Version: p.Version})
+	selector := AppSelector{UninstallKey: p.UninstallKey, DisplayName: p.DisplayName, Version: p.Version}
+	if p.Session != nil {
+		selector.UserSID = p.Session.DetectionSID()
+	}
+	app, err := ResolveInstalledApp(selector)
 	if err != nil {
 		return Result{Reason: "uninstall detection failed: " + err.Error()}
 	}
@@ -198,13 +212,15 @@ func runRegistryUninstall(ctx context.Context, p Params) Result {
 	}
 	logPath := ""
 	// MSI planner uses a per-run unique diagnostic file; vendor EXEs do not need it.
-	f, err := os.CreateTemp("", "aegis-uninstall-*.log")
-	if err != nil {
-		return Result{Reason: "create uninstall log: " + err.Error()}
+	if !p.sensitive() {
+		f, err := os.CreateTemp("", "aegis-uninstall-*.log")
+		if err != nil {
+			return Result{Reason: "create uninstall log failed"}
+		}
+		logPath = f.Name()
+		f.Close()
+		defer os.Remove(logPath)
 	}
-	logPath = f.Name()
-	f.Close()
-	defer os.Remove(logPath)
 	bin, args, err := registryUninstallInvocation(p, app, logPath)
 	if err != nil {
 		return Result{Reason: err.Error()}
@@ -264,17 +280,49 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `cmd.exe /D /S /C "` + text + `"`, CreationFlags: 0x08000000}
 	}
+	if p.Session != nil {
+		if err := p.Session.Prepare(cmd); err != nil {
+			return Result{Reason: "prepare execution context failed"}
+		}
+	}
 	// Export parameters to child scripts as AEGIS_PARAM_<NAME> env vars (in addition
 	// to ${name} substitution in the args), so a .ps1/.py/.bat payload can read them.
 	if env := paramEnv(p.Parameters); len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, env...)
 	}
-	slog.Info("softdist: running installer", "name", p.Name, "bin", bin, "args", strings.Join(args, " "), "timeout", timeout.String())
-	out, runErr := cmd.CombinedOutput()
+	if len(p.SecureParameters) > 0 {
+		input, err := secretInput(p.SecureParameters)
+		if err != nil {
+			return Result{Reason: "encode private installer input failed"}
+		}
+		defer clear(input)
+		cmd.Stdin = bytes.NewReader(input)
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, "AEGIS_SECRET_INPUT=stdin-json-v1")
+	}
+	var out []byte
+	var runErr error
+	if p.sensitive() {
+		slog.Info("softdist: running private installer", "timeout", timeout.String())
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		runErr = cmd.Run()
+	} else {
+		slog.Info("softdist: running installer", "name", p.Name, "bin", bin, "args", strings.Join(args, " "), "timeout", timeout.String())
+		out, runErr = cmd.CombinedOutput()
+	}
 
 	// Prefer the MSI log tail over the (empty) console output for Detail.
 	detail := tail(string(out), 600)
-	if logPath != "" {
+	if p.sensitive() {
+		detail = "installer output suppressed for private deployment"
+	}
+	if logPath != "" && !p.sensitive() {
 		if logTail := readInstallLog(logPath); logTail != "" {
 			detail = logTail
 		}
@@ -289,6 +337,9 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 	}
 	if cmd.ProcessState == nil {
 		// The installer failed to even start (missing binary, bad path, etc.).
+		if p.sensitive() {
+			return Result{Reason: "could not start private installer", Detail: detail}
+		}
 		return Result{Reason: "could not start installer", Detail: fmt.Sprintf("%v", runErr)}
 	}
 	res := classify(p, cmd.ProcessState.ExitCode(), string(out))

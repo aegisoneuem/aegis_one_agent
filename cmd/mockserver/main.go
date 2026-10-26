@@ -1014,7 +1014,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				ProductCode:      os.Getenv("AEGIS_DEPLOY_PRODUCT_CODE"),        // MSI GUID → idempotency check
 				UninstallKey:     deployUninstallKey,                            // non-MSI registry subkey
 				DisplayName:      deployDisplayName,                             // non-MSI DisplayName match
-				Parameters:       parseParams(os.Getenv("AEGIS_DEPLOY_PARAMS")), // ${name} substitution, e.g. "LICENSE=ABC,INSTALLDIR=C:\app"
+				Parameters:       parseParams(os.Getenv("AEGIS_DEPLOY_PARAMS")), // ${name} substitution, e.g. "REGION=apac,INSTALLDIR=C:\app"
 				TimeoutSeconds:   options.timeout,
 				SuccessExitCodes: options.successCodes,
 			}
@@ -1024,6 +1024,12 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			// serve (AEGIS_SERVE_SOFTWARE), or from AEGIS_DEPLOY_FILE when that path is
 			// readable on THIS machine (same-box dev). The agent REFUSES unpinned
 			// file-based payloads, so without a hash the deploy will fail by design.
+			commandType, privateErr := applyPrivateDeployment(spec, os.Getenv)
+			if privateErr != nil {
+				mockPrintf("Software deploy private settings refused: %v\n", privateErr)
+				return
+			}
+			defer func() { clear(spec.GetExecution().GetPasswordUtf8()); clear(spec.SecureParameters) }()
 			isCommandType := strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command")
 			if options.autoHash && spec.ExpectedHash == "" && !isCommandType && (deployFile != "" || deployContentID != "") {
 				src := strings.TrimSpace(os.Getenv("AEGIS_SERVE_SOFTWARE"))
@@ -1038,21 +1044,29 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				}
 			}
 			specBytes, err := proto.Marshal(spec)
+			if commandType == "software_deploy_v2" {
+				defer clear(specBytes)
+			}
 			if err != nil {
 				log.Printf("failed to marshal software_deploy spec: %v", err)
 			} else {
 				deploy := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
-					CommandId: "deploy-001", Type: "software_deploy", Payload: specBytes,
+					CommandId: "deploy-001", Type: commandType, Payload: specBytes,
 				})}}
 				if err := connection.send(deploy); err != nil {
 					log.Printf("failed to send software_deploy command: %v", err)
 					return
 				}
+				if commandType == "software_deploy_v2" {
+					clear(specBytes)
+					clear(spec.GetExecution().GetPasswordUtf8())
+					clear(spec.SecureParameters)
+				}
 				src := "file=" + deployFile
 				if deployContentID != "" {
 					src = "content_id=" + deployContentID + " (server-delivered)"
 				}
-				mockPrintf("Sent command -> id: deploy-001, type: software_deploy, name=%s, %s (signed)\n", spec.Name, src)
+				mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s (signed)\n", commandType, spec.Name, src)
 			}
 		}
 
@@ -1293,6 +1307,18 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "secrets" {
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: mockserver.exe secrets <new-file.dpapi>")
+			os.Exit(2)
+		}
+		if err := createDeploymentSecrets(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
+
 	if _, err := readSoftdistTestOptions(os.Getenv); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

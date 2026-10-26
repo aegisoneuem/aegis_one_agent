@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 // splitWindowsArgs uses a dummy executable because CommandLineToArgvW handles
@@ -69,7 +68,7 @@ func registryUninstallInvocation(p Params, app *InstalledApp, logPath string) (s
 	if line == "" {
 		return "", nil, fmt.Errorf("no uninstall command registered for %q", app.DisplayName)
 	}
-	line, err := registry.ExpandString(line)
+	line, err := p.Session.expandEnvironment(line)
 	if err != nil {
 		return "", nil, fmt.Errorf("expand uninstall command: %w", err)
 	}

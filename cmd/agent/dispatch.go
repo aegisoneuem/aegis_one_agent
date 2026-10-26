@@ -32,18 +32,19 @@ type dispatcher struct {
 func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, scanTrigger chan<- struct{}) *dispatcher {
 	d := &dispatcher{cfg: cfg, outbox: outbox, installJobs: installJobs, softdist: softdist, stg: stg, scanTrigger: scanTrigger}
 	d.handlers = map[string]taskHandler{
-		"install_patch":   d.handleInstallPatchCmd,
-		"uninstall_patch": d.handleUninstallPatchCmd,
-		"stage_patch":     d.handleStagePatchCmd,
-		"reboot":          d.handleRebootCmd,
-		"cancel_reboot":   d.handleCancelRebootCmd,
-		"scan_now":        d.handleScanNowCmd,
-		"scan":            d.handleScanNowCmd,
-		"software_deploy": d.handleSoftwareDeployCmd,
-		"collect_file":    d.handleCollectFileCmd,
-		"open_shell":      d.handleOpenShellCmd,
-		"run_command":     d.handleRunCommandCmd,
-		"file_operation":  d.handleFileOperationCmd,
+		"install_patch":      d.handleInstallPatchCmd,
+		"uninstall_patch":    d.handleUninstallPatchCmd,
+		"stage_patch":        d.handleStagePatchCmd,
+		"reboot":             d.handleRebootCmd,
+		"cancel_reboot":      d.handleCancelRebootCmd,
+		"scan_now":           d.handleScanNowCmd,
+		"scan":               d.handleScanNowCmd,
+		"software_deploy":    d.handleSoftwareDeployCmd,
+		"software_deploy_v2": d.handleSoftwareDeployCmd,
+		"collect_file":       d.handleCollectFileCmd,
+		"open_shell":         d.handleOpenShellCmd,
+		"run_command":        d.handleRunCommandCmd,
+		"file_operation":     d.handleFileOperationCmd,
 	}
 	return d
 }
@@ -102,11 +103,32 @@ func (d *dispatcher) handleUninstallPatchCmd(ctx context.Context, _ pb.AgentCont
 // a pre-staged local file); the OS install serializes against patches via
 // machineInstallGate inside the worker.
 func (d *dispatcher) handleSoftwareDeployCmd(ctx context.Context, client pb.AgentControlPlaneClient, cmd *pb.Command) {
+	v2 := strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_v2")
+	if v2 {
+		defer clear(cmd.Payload)
+	}
 	var spec pb.SoftwareDeploySpec
 	if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
 		slog.Error("software_deploy: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
 		send(ctx, d.outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid software_deploy payload"))
 		return
+	}
+	if !v2 && privateDeployment(&spec) {
+		clear(cmd.Payload)
+		clearPrivateDeployment(&spec)
+		send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionSoftwareDeploy, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "execution contexts and secure parameters require signed software_deploy_v2; no SYSTEM fallback")))
+		return
+	}
+	if v2 {
+		if spec.Execution == nil {
+			spec.Execution = &pb.SoftwareExecution{Mode: "system"}
+		}
+		if err := validatePrivateDeployment(&spec, d.cfg.SoftdistMaxSecretBytes); err != nil {
+			clear(spec.Execution.PasswordUtf8)
+			clear(spec.SecureParameters)
+			send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionSoftwareDeploy, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, err.Error())))
+			return
+		}
 	}
 	slog.Info("software_deploy: accepted", "command_id", cmd.CommandId,
 		"name", spec.Name, "version", spec.Version, "action", spec.Action)

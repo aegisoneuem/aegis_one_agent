@@ -12,6 +12,10 @@ func QueryProductInstalled(string) (bool, error) {
 	return false, fmt.Errorf("MSI detection is only supported on Windows")
 }
 
+func QueryProductInScope(string, string) (bool, string, error) {
+	return false, "", fmt.Errorf("MSI scoped detection requires Windows")
+}
+
 func ResolveInstalledApp(AppSelector) (*InstalledApp, error) {
 	return nil, fmt.Errorf("registry detection is only supported on Windows")
 }

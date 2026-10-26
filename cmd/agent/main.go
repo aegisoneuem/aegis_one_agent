@@ -618,6 +618,7 @@ func runProcess(ctx context.Context) {
 	// the encrypted patch cache (server-delivered installers are stored sealed at
 	// rest) and the tmp dir (transient decrypt-to-install, secure-deleted after).
 	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir, cfg.SoftdistVerifyAttempts, cfg.SoftdistVerifyInterval)
+	sdi.maxSecretBytes = cfg.SoftdistMaxSecretBytes
 	go sdi.worker()
 
 	// Stager: server-driven pre-caching of patches (stage_patch) ahead of a

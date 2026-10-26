@@ -2,14 +2,14 @@
 
 Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
-**25 October - SoftDist acceptance handoff:** replace BOTH agent and mockserver
-(or install the matching agent MSI). Start with
-[the 34-case runnable SoftDist guide](../docs/softdist-uninstall-edge-cases.md)
-and copy the entire [test-pack folder](../docs/fixtures/softdist) to
-`C:\temp\AegisSoftDistTests` on both test roles. A
-[results checklist](../docs/fixtures/softdist/softdist-results.md) is included.
-Test 01 passed on Vijay's VM; the remaining new VM/vendor cases are pending.
-Automated Go tests/vet and all 34 server-launcher smoke checks pass.
+**26 October - Run-As and parameter handoff:** replace BOTH agent and mockserver
+(or install the matching agent MSI). Use ONLY
+[the final manual new-feature guide](../docs/softdist-new-features-testing.md)
+for the new cases: logged-in user, specified account, ordinary parameters, secure
+stdin field delivery and per-user detection/repeat/removal. No launcher scripts
+or probe EXE are required. Updated shared protocol source is in aegis_one_proto.
+Automated Go tests/vet pass. Actual VM and real-vendor acceptance is pending.
+The previous uninstall suite was reported passed by Vijay and the server team.
 
 Includes strict uninstall selection/verification, explicit custom payload
 precedence, quoted BAT/CMD paths, and mock controls for timeout/custom success

@@ -39,6 +39,24 @@ func ResolveInstalledApp(s AppSelector) (*InstalledApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.UserSID != "" {
+		sid, err := windows.StringToSid(s.UserSID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid execution SID")
+		}
+		base := sid.String()
+		// HKCU Software is largely shared rather than WOW64 redirected. Enumerate
+		// the two actual registration paths, not the same shared key twice.
+		roots = []uninstallRoot{
+			{registry.USERS, base + `\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`, "HKCU64", 0},
+			{registry.USERS, base + `\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`, "HKCU32", 0},
+		}
+		profile, err := registry.OpenKey(registry.USERS, base, registry.QUERY_VALUE)
+		if err != nil {
+			return nil, fmt.Errorf("execution user's registry profile is unavailable: %w", err)
+		}
+		profile.Close()
+	}
 	return resolveRegistryApp(roots, s)
 }
 

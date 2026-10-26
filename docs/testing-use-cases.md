@@ -133,9 +133,12 @@ the hash inside the signed command — never in the file on disk.
 ## 7. Software deploy — uninstall (fileless)
 
 For the new machine-wide selection/command/verification edge cases, see
-[SoftDist uninstall edge cases](softdist-uninstall-edge-cases.md). This local
-block requires the rebuilt agent and VM acceptance; per-user execution follows
-in the separate Run-As block.
+[SoftDist uninstall edge cases](softdist-uninstall-edge-cases.md). Vijay and the
+server team report this block accepted on 26 October 2026.
+
+The next developer block is [Run-As and secure parameters](softdist-new-features-testing.md),
+using the final manual cases and refreshed `dist` binaries. Its real VM/service-account
+acceptance remains pending; it is not part of the verified cases above.
 
 ```
 set AEGIS_DEPLOY_ACTION=uninstall
