@@ -1,34 +1,28 @@
-# dist — prebuilt artifacts
+# dist - current prebuilt artifacts
 
-Ready-to-run binaries for the server team (no Go build needed). Windows x64.
+Windows x64 server-team handoff, 27 October 2026. Replace BOTH agent and
+mockserver, or install the matching agent MSI.
 
-**27 October - Multi-file bundle handoff:** replace BOTH agent and mockserver
-(or use the matching MSI). Start with [three manual bundle cases](../docs/softdist-bundle-testing.md).
-Server implementation: [bundle contract](../docs/softdist-bundle-server-integration.md).
-Native `mockserver.exe pack`, manifest/member integrity, package working directory,
-default cleanup and custom retention are included. Vijay reports all three cases
-passed. Go tests/vet pass; the MSI payload hash matches the distributed agent.
-Real vendor-installer acceptance is still separate. See `softdist-handoff.json`
-for artifact hashes and the required shared protocol revision.
+**Testing: use only [the single manual guide](../docs/softdist-today-testing.md).**
+It contains 12 manual cases in four blocks: multi-file packages, pre/post commands,
+package dependencies, advanced file/version/registry detection with ALL/ANY.
+Every case states purpose, exact CMD commands and expected results. No test
+launcher scripts or probe EXE are needed. Old split test guides redirect there.
 
-**26 October - Run-As and parameter handoff (still included):** replace BOTH agent and mockserver
-(or install the matching agent MSI). Use ONLY
-[the final manual new-feature guide](../docs/softdist-new-features-testing.md)
-for the new cases: logged-in user, specified account, ordinary parameters, secure
-stdin field delivery and per-user detection/repeat/removal. No launcher scripts
-or probe EXE are required. Updated shared protocol source is in aegis_one_proto.
-Automated Go tests/vet pass. Actual VM and real-vendor acceptance is pending.
-The previous uninstall suite was reported passed by Vijay and the server team.
+Vijay reports all four blocks passed. Go tests/vet and protocol tests pass; the
+rebuilt MSI's extracted agent matches the distributed EXE. Artifact hashes and the
+required shared protocol revision are in `softdist-handoff.json`.
 
-Includes strict uninstall selection/verification, explicit custom payload
-precedence, quoted BAT/CMD paths, and mock controls for timeout/custom success
-codes/missing-hash tests. Normal startup is `mockserver.exe server` (or plain
-mockserver.exe); inherited NSH flags do not open a prompt. Use
-`mockserver.exe nsh` or `mockserver.exe script <file.nsh>` explicitly for NSH.
+Included related fix: explicit CMD quotes/redirection preserve paths containing
+spaces. Normal server mode is `mockserver.exe server`; NSH is explicit.
+Existing Run-As/secure parameters/uninstall and NSH capabilities remain included.
+Real vendor MSI/MST/EXE/runtime acceptance and production backend/UI completion
+remain separate. SoftDist remains the priority before the other module tracks.
 
-**Current priority: finish SoftDist before moving to other tracks.** See
-[the SoftDist completion checklist](../docs/softdist-roadmap.md). Per-user/Run-As
-and complete production workflows are not claimed complete by this handoff.
+## Historical references
+
+The notes below describe earlier increments. For current testing instructions,
+EXE replacement and reported acceptance, use the single guide above.
 
 **Previous NSH replay guide (24 October):**
 [NSH acceptance — 24 October](../docs/nsh-server-acceptance-2026-10-24.md).

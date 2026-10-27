@@ -268,6 +268,13 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 	defer cancel()
 
 	cmd := exec.CommandContext(rctx, bin, args...)
+	// An explicit cmd.exe command owns its /C shell text, including quotes
+	// adjacent to redirection operators. Splitting and re-encoding it as argv
+	// changes that text (notably paths containing spaces). Preserve the signed
+	// author's raw arguments; all other executables keep normal argv handling.
+	if strings.EqualFold(strings.TrimSpace(p.InstallerType), "command") && strings.EqualFold(filepath.Base(bin), "cmd.exe") {
+		cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: syscall.EscapeArg(cmd.Path) + " " + Substitute(p.SilentArgs, p.Parameters), CreationFlags: 0x08000000}
+	}
 	// cmd.exe parses /C text itself; Go's normal argv encoding cannot preserve a
 	// batch filename with spaces inside that command text. Keep the script path
 	// explicitly quoted and preserve the package author's Windows CMD arguments.

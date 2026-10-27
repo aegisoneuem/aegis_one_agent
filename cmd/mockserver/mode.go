@@ -13,6 +13,23 @@ const mockModeUsage = `Usage:
   mockserver.exe nsh                  Server with interactive NSH in this window
   mockserver.exe script <file.nsh>    Server with one non-interactive NSH job
 
+Bundle workflow (software_deploy_workflow):
+  AEGIS_DEPLOY_PRE_COMMAND / PRE_ARGS / PRE_NAME
+  AEGIS_DEPLOY_POST_COMMAND / POST_ARGS / POST_NAME
+  Optional per stage: PRE_TIMEOUT_SECONDS, PRE_SUCCESS_CODES, PRE_SECURE_INPUT
+  (or POST_*). Requires bundle settings; see docs/softdist-today-testing.md#b-prepost-commands.
+
+Package dependency (server-driven plan):
+  Main: AEGIS_DEPLOY_*; prerequisite: AEGIS_DEPENDENCY_ID/TYPE/FILE/ARGS
+  Dependency requires PRODUCT_CODE or UNINSTALL_KEY/DISPLAY_NAME detection.
+  AEGIS_DEPENDENCY_SERVE_FILE supplies its catalog payload separately.
+  See docs/softdist-today-testing.md#c-package-dependencies for three manual cases.
+
+Advanced detection:
+  AEGIS_DEPLOY_DETECT_COUNT=1..32; DETECT_MODE=all|any
+  AEGIS_DEPLOY_DETECT_1_KIND/PATH/MIN_VERSION or HIVE/KEY/VIEW/VALUE_NAME/VALUE_TYPE/EXPECTED
+  See docs/softdist-today-testing.md#d-advanced-detection. Replace BOTH agent and mockserver.
+
 AEGIS_NSH and AEGIS_NSH_SCRIPT never auto-open NSH in normal server mode.
 For "script" only, AEGIS_NSH_SCRIPT can supply the path when no argument is given.
 `

@@ -349,6 +349,18 @@ func (s *softdistInstaller) run(job softdistJob) {
 		}
 	}
 
+	if spec.Detection != nil {
+		skip, reason, err := s.advancedPrecheck(spec, session)
+		if err != nil {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "advanced detection precheck failed: " + err.Error()})
+			return
+		}
+		if skip {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, &softdist.Result{NotApplicable: true, Reason: reason})
+			return
+		}
+	}
+
 	decryptedTemp := ""
 	archiveCleanupDone := false
 	installPath := job.localPath
@@ -437,7 +449,14 @@ func (s *softdistInstaller) run(job softdistJob) {
 		}
 		sendStatus(s.outbox, &pb.ActionStatus{ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID, Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "executing software bundle", StartedAt: started, PackageDirectory: prepared.Directory})
 	}
-	res := softdist.Run(context.Background(), params)
+	var res softdist.Result
+	if spec.Steps != nil {
+		res = softdist.RunWorkflow(context.Background(), params, deploymentSteps(spec), func(stage string, index int, name string) {
+			sendStatus(s.outbox, &pb.ActionStatus{ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID, Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: fmt.Sprintf("%s step %d: %s", stage, index, name), StartedAt: started, PackageDirectory: params.WorkingDirectory})
+		})
+	} else {
+		res = softdist.Run(context.Background(), params)
+	}
 
 	var phase pb.ActionPhase
 	switch {
@@ -463,7 +482,14 @@ func (s *softdistInstaller) run(job softdistJob) {
 		if session != nil {
 			detect = func(p *pb.SoftwareDeploySpec) (bool, string, error) { return scopedDetectProduct(p, session) }
 		}
-		if ok, note := verifyDetectedOutcome(context.Background(), spec, action, s.verifyAttempts, s.verifyInterval, detect); !ok {
+		var ok bool
+		var note string
+		if spec.Detection != nil {
+			ok, note = verifyAdvancedOutcome(context.Background(), spec, s.buildParams(spec), session, s.verifyAttempts, s.verifyInterval)
+		} else {
+			ok, note = verifyDetectedOutcome(context.Background(), spec, action, s.verifyAttempts, s.verifyInterval, detect)
+		}
+		if !ok {
 			phase = pb.ActionPhase_ACTION_PHASE_FAILED
 			res.Reason = fmt.Sprintf("installer exited %d but verification failed: %s", res.ExitCode, note)
 			slog.Warn("software_deploy: post-action verification FAILED", "command_id", cmdID, "name", spec.Name, "note", note)

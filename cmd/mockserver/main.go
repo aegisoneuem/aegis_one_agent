@@ -101,11 +101,15 @@ type server struct {
 	// their terminal ActionStatus. The ActionStatus receive loop forwards a
 	// terminal phase to the channel and closes it; non-REPL (regular) traffic
 	// prints normally.
-	pendingMu    sync.Mutex
-	pending      map[string]chan *pb.ActionStatus
-	nshUploads   map[string]nshUploadTarget // protected by pendingMu
-	fileReceipts map[string]fileReceipt     // protected by pendingMu
-	fileContent  map[string]fileContent     // protected by pendingMu; destination-bound
+	pendingMu     sync.Mutex
+	pending       map[string]chan *pb.ActionStatus
+	nshUploads    map[string]nshUploadTarget // protected by pendingMu
+	fileReceipts  map[string]fileReceipt     // protected by pendingMu
+	fileContent   map[string]fileContent     // protected by pendingMu; destination-bound
+	planPending   map[string]*planWait       // protected by pendingMu; device-bound terminal results
+	planContent   map[string]fileContent     // protected by pendingMu; device/content key
+	planAttempted map[string]bool            // one configured startup plan per device/process; no reconnect replay
+
 }
 
 // liveAgent is one currently-connected agent, discoverable by the REPL.
@@ -550,7 +554,15 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 	case "package":
 		// Software distribution: the installer the admin put in the catalog. The
 		// agent streams it (no internet), stores it encrypted, verifies the hash.
-		path = os.Getenv("AEGIS_SERVE_SOFTWARE")
+		planPath, planned, planErr := s.planPackageContent(clientCertCN(stream.Context()), req.Id, req.Sha256)
+		if planErr != nil {
+			return status.Error(codes.PermissionDenied, planErr.Error())
+		}
+		if planned {
+			path = planPath
+		} else {
+			path = os.Getenv("AEGIS_SERVE_SOFTWARE")
+		}
 	}
 	if path == "" {
 		return fmt.Errorf("no file configured to serve for kind %q (set AEGIS_SERVE_CAB/_PATCH/_SOFTWARE)", req.Kind)
@@ -1040,6 +1052,24 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				commandType = "software_deploy_bundle"
 			}
 
+			workflow, workflowErr := applyMockWorkflow(spec, os.Getenv)
+			if workflowErr != nil {
+				mockPrintf("Software workflow settings refused: %v\n", workflowErr)
+				return
+			}
+			if workflow {
+				commandType = "software_deploy_workflow"
+			}
+
+			detected, detectionErr := applyMockDetection(spec, os.Getenv)
+			if detectionErr != nil {
+				mockPrintf("Software detection settings refused: %v\n", detectionErr)
+				return
+			}
+			if detected {
+				commandType = "software_deploy_detect"
+			}
+
 			isCommandType := strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command")
 			if options.autoHash && spec.ExpectedHash == "" && (!isCommandType || spec.Bundle != nil) && (deployFile != "" || deployContentID != "") {
 				src := strings.TrimSpace(os.Getenv("AEGIS_SERVE_SOFTWARE"))
@@ -1053,30 +1083,32 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					log.Printf("WARNING: no AEGIS_DEPLOY_HASH and cannot read %q to auto-hash (%v) — the agent will REFUSE this unpinned deploy; set AEGIS_DEPLOY_HASH (file is on the agent machine)", src, err)
 				}
 			}
-			specBytes, err := proto.Marshal(spec)
-			if commandType != "software_deploy" {
-				defer clear(specBytes)
-			}
-			if err != nil {
-				log.Printf("failed to marshal software_deploy spec: %v", err)
-			} else {
-				deploy := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
-					CommandId: "deploy-001", Type: commandType, Payload: specBytes,
-				})}}
-				if err := connection.send(deploy); err != nil {
-					log.Printf("failed to send software_deploy command: %v", err)
-					return
-				}
+			if !s.beginDependencyPlan(stream.Context(), connection, spec) {
+				specBytes, err := proto.Marshal(spec)
 				if commandType != "software_deploy" {
-					clear(specBytes)
-					clear(spec.GetExecution().GetPasswordUtf8())
-					clear(spec.SecureParameters)
+					defer clear(specBytes)
 				}
-				src := "file=" + deployFile
-				if deployContentID != "" {
-					src = "content_id=" + deployContentID + " (server-delivered)"
+				if err != nil {
+					log.Printf("failed to marshal software_deploy spec: %v", err)
+				} else {
+					deploy := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+						CommandId: "deploy-001", Type: commandType, Payload: specBytes,
+					})}}
+					if err := connection.send(deploy); err != nil {
+						log.Printf("failed to send software_deploy command: %v", err)
+						return
+					}
+					if commandType != "software_deploy" {
+						clear(specBytes)
+						clear(spec.GetExecution().GetPasswordUtf8())
+						clear(spec.SecureParameters)
+					}
+					src := "file=" + deployFile
+					if deployContentID != "" {
+						src = "content_id=" + deployContentID + " (server-delivered)"
+					}
+					mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s (signed)\n", commandType, spec.Name, src)
 				}
-				mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s (signed)\n", commandType, spec.Name, src)
 			}
 		}
 
@@ -1254,6 +1286,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if result.Status == "success" {
 				synth.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
 			}
+			if s.deliverPlanStatus(connectedDevice, synth) {
+				continue
+			}
 			if s.deliverActionStatus(synth) {
 				continue
 			}
@@ -1263,6 +1298,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				s.identify(connectedDevice), result.CommandId, result.Status, result.Message)
 		}
 		if st := msg.GetActionStatus(); st != nil {
+			if s.deliverPlanStatus(connectedDevice, st) {
+				continue
+			}
 			// Forward to any NSH REPL waiting on this action_id — the REPL
 			// consumes terminal phases quietly so command output is clean.
 			if s.deliverActionStatus(st) {

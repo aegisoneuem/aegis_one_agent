@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
+	"github.com/aegisoneuem/aegis_one_agent/internal/deployspec"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -32,20 +34,22 @@ type dispatcher struct {
 func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, scanTrigger chan<- struct{}) *dispatcher {
 	d := &dispatcher{cfg: cfg, outbox: outbox, installJobs: installJobs, softdist: softdist, stg: stg, scanTrigger: scanTrigger}
 	d.handlers = map[string]taskHandler{
-		"install_patch":          d.handleInstallPatchCmd,
-		"uninstall_patch":        d.handleUninstallPatchCmd,
-		"stage_patch":            d.handleStagePatchCmd,
-		"reboot":                 d.handleRebootCmd,
-		"cancel_reboot":          d.handleCancelRebootCmd,
-		"scan_now":               d.handleScanNowCmd,
-		"scan":                   d.handleScanNowCmd,
-		"software_deploy":        d.handleSoftwareDeployCmd,
-		"software_deploy_v2":     d.handleSoftwareDeployCmd,
-		"software_deploy_bundle": d.handleSoftwareDeployCmd,
-		"collect_file":           d.handleCollectFileCmd,
-		"open_shell":             d.handleOpenShellCmd,
-		"run_command":            d.handleRunCommandCmd,
-		"file_operation":         d.handleFileOperationCmd,
+		"software_deploy_detect":   d.handleSoftwareDeployCmd,
+		"install_patch":            d.handleInstallPatchCmd,
+		"uninstall_patch":          d.handleUninstallPatchCmd,
+		"stage_patch":              d.handleStagePatchCmd,
+		"reboot":                   d.handleRebootCmd,
+		"cancel_reboot":            d.handleCancelRebootCmd,
+		"scan_now":                 d.handleScanNowCmd,
+		"scan":                     d.handleScanNowCmd,
+		"software_deploy":          d.handleSoftwareDeployCmd,
+		"software_deploy_v2":       d.handleSoftwareDeployCmd,
+		"software_deploy_bundle":   d.handleSoftwareDeployCmd,
+		"software_deploy_workflow": d.handleSoftwareDeployCmd,
+		"collect_file":             d.handleCollectFileCmd,
+		"open_shell":               d.handleOpenShellCmd,
+		"run_command":              d.handleRunCommandCmd,
+		"file_operation":           d.handleFileOperationCmd,
 	}
 	return d
 }
@@ -104,8 +108,10 @@ func (d *dispatcher) handleUninstallPatchCmd(ctx context.Context, _ pb.AgentCont
 // a pre-staged local file); the OS install serializes against patches via
 // machineInstallGate inside the worker.
 func (d *dispatcher) handleSoftwareDeployCmd(ctx context.Context, client pb.AgentControlPlaneClient, cmd *pb.Command) {
-	bundleCommand := strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_bundle")
-	v2 := bundleCommand || strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_v2")
+	detectionCommand := strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_detect")
+	workflowCommand := strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_workflow")
+	bundleCommand := workflowCommand || strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_bundle")
+	v2 := detectionCommand || bundleCommand || strings.EqualFold(strings.TrimSpace(cmd.Type), "software_deploy_v2")
 	if v2 {
 		defer clear(cmd.Payload)
 	}
@@ -114,6 +120,36 @@ func (d *dispatcher) handleSoftwareDeployCmd(ctx context.Context, client pb.Agen
 		slog.Error("software_deploy: invalid payload", "command_id", cmd.CommandId, "error", err.Error())
 		send(ctx, d.outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid software_deploy payload"))
 		return
+	}
+	if spec.Detection != nil || detectionCommand {
+		var detectionErr error
+		if !detectionCommand {
+			detectionErr = fmt.Errorf("advanced detection requires signed software_deploy_detect; no fallback")
+		} else {
+			detectionErr = deployspec.ValidateDetection(&spec)
+		}
+		if detectionErr != nil {
+			clear(cmd.Payload)
+			clearPrivateDeployment(&spec)
+			send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionSoftwareDeploy, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, detectionErr.Error())))
+			return
+		}
+		workflowCommand = spec.Steps != nil
+		bundleCommand = spec.Bundle != nil
+	}
+	if spec.Steps != nil || workflowCommand {
+		var validationErr error
+		if !workflowCommand {
+			validationErr = fmt.Errorf("deployment steps require signed software_deploy_workflow; no fallback")
+		} else {
+			validationErr = validateWorkflowDeployment(&spec)
+		}
+		if validationErr != nil {
+			clear(cmd.Payload)
+			clearPrivateDeployment(&spec)
+			send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionSoftwareDeploy, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, validationErr.Error())))
+			return
+		}
 	}
 	if (spec.Bundle != nil && !bundleCommand) || (bundleCommand && spec.Bundle == nil) {
 		clear(cmd.Payload)

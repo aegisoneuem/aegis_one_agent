@@ -1,34 +1,43 @@
 {
   "handoff_date": "2026-10-27",
   "platform": "windows/amd64",
-  "guide": "docs/softdist-bundle-testing.md",
-  "server_contract": "docs/softdist-bundle-server-integration.md",
-  "previous_guide": "docs/softdist-new-features-testing.md",
-  "shared_proto_commit": "f5ee0c9d924540461eacc48508ca254fa8579305",
+  "guide": "docs/softdist-today-testing.md",
+  "manual_cases": 12,
+  "blocks": [
+    "multi-file packages",
+    "pre/post commands",
+    "package dependencies",
+    "advanced file/version/registry detection ALL/ANY"
+  ],
+  "related_fixes": [
+    "explicit CMD quote/redirection preservation for paths with spaces"
+  ],
+  "shared_proto_commit": "c6cc4e4e40f881423848ef631dfe4ea2a5c20f75",
   "shared_proto_repository": "https://github.com/aegisoneuem/aegis_one_proto",
   "validation": {
     "agent_tests": "PASS: go test ./...",
     "agent_vet": "PASS: go vet ./...",
     "proto_tests": "PASS: go test ./...",
-    "msi_payload": "PASS: extracted agent hash matches dist EXE",
-    "vm_acceptance": "PASS: Vijay reports all three manual bundle cases passed, 27 October 2026; individual logs not independently reviewed",
-    "real_vendor_acceptance": "PENDING"
+    "msi_payload": "PASS: extracted agent SHA256 equals dist EXE",
+    "vm_acceptance": "PASS: Vijay reports all four manual blocks passed; individual logs not independently reviewed",
+    "real_vendor_acceptance": "PENDING",
+    "production_backend_ui": "Server team integration remains separate"
   },
   "artifacts": [
     {
       "file": "AegisOneClient.exe",
-      "bytes": 21690368,
-      "sha256": "a87e6813d03473d429c80773b420cc56a27c163b99e7afc0362f1fd9d8b0c33b"
+      "bytes": 21795840,
+      "sha256": "53f73976ac780df0e50e63a553abf17b7f1b3a7f732b6865e70875722326b614"
     },
     {
       "file": "mockserver.exe",
-      "bytes": 19341824,
-      "sha256": "1df272a6cc6c3f4ae753043608ac0b028c05b31883700d6f6378ad14020b275d"
+      "bytes": 19485696,
+      "sha256": "cece2653422f676d19d2fee93db7ebb4f3118d72c23387dbdfa7f327a985a6a1"
     },
     {
       "file": "AegisOneClient.msi",
-      "bytes": 11739136,
-      "sha256": "927158a2c58a9697620a7d2afe2f0c6aaced47bc76bc1a0520d102194b4f26fe"
+      "bytes": 11788288,
+      "sha256": "5d9a13bf1f08a1df500dbba02d45c42b6813b958e6d98d2a635f29ce42e05b62"
     }
   ]
 }

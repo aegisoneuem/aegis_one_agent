@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/deployspec"
 	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
@@ -37,6 +38,10 @@ func validatePrivateDeployment(spec *pb.SoftwareDeploySpec, limit int) error {
 	p := softdist.Params{PublicMetadata: []string{spec.PackageId, spec.ContentId, spec.InstallerType, spec.Action, spec.ExpectedHash, spec.HashAlgorithm, spec.GetExecution().GetUsername(), spec.GetExecution().GetDomain()}, Name: spec.Name, Version: spec.Version, DisplayName: spec.DisplayName, UninstallKey: spec.UninstallKey, ProductCode: spec.ProductCode, FilePath: spec.FilePath, SilentArgs: spec.SilentArgs, Parameters: spec.Parameters, SecureParameters: spec.SecureParameters, MaxSecretBytes: limit}
 	if b := spec.GetBundle(); b != nil {
 		p.PublicMetadata = append(p.PublicMetadata, b.EntryPoint, b.Command, b.Destination, b.Cleanup)
+	}
+	p.PublicMetadata = append(p.PublicMetadata, deploymentSteps(spec).PublicFields()...)
+	if spec.Detection != nil {
+		p.PublicMetadata = append(p.PublicMetadata, deployspec.Detection(spec.Detection).PublicFields()...)
 	}
 	if err := softdist.ValidatePrivateInput(p); err != nil {
 		return err

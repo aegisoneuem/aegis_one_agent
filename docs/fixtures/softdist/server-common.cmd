@@ -46,3 +46,29 @@ if not exist ".\mockserver.exe" (
  exit /b 1
 )
 exit /b 0
+
+rem Clear optional deployment workflow settings.
+set "AEGIS_DEPLOY_PRE_COMMAND="
+set "AEGIS_DEPLOY_PRE_ARGS="
+set "AEGIS_DEPLOY_PRE_NAME="
+set "AEGIS_DEPLOY_PRE_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_PRE_SUCCESS_CODES="
+set "AEGIS_DEPLOY_PRE_SECURE_INPUT="
+set "AEGIS_DEPLOY_POST_COMMAND="
+set "AEGIS_DEPLOY_POST_ARGS="
+set "AEGIS_DEPLOY_POST_NAME="
+set "AEGIS_DEPLOY_POST_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_POST_SUCCESS_CODES="
+set "AEGIS_DEPLOY_POST_SECURE_INPUT="
+
+rem Disable optional dependency plan for standalone regression cases.
+set "AEGIS_DEPENDENCY_ID="
+set "AEGIS_DEPENDENCY_NAME="
+set "AEGIS_DEPENDENCY_FILE="
+set "AEGIS_DEPENDENCY_CONTENT_ID="
+
+rem Clear advanced detection for legacy standalone tests.
+set "AEGIS_DEPLOY_DETECT_COUNT=0"
+set "AEGIS_DEPLOY_DETECT_MODE="
+set "AEGIS_DEPENDENCY_DETECT_COUNT=0"
+set "AEGIS_DEPENDENCY_DETECT_MODE="

@@ -1,7 +1,7 @@
 # Multi-file SoftDist - server/console contract
 
-Agent implementation and mock reference are implemented locally; real VM/vendor
-acceptance remains pending. UI, upload wizard, catalog, scheduling and RBAC belong
+Agent implementation and mock reference are in the current `dist` handoff.
+Vijay reports the three manual cases passed; real vendor acceptance remains pending. UI, upload wizard, catalog, scheduling and RBAC belong
 to the server/console team. The wire format is native ZIP with a manifest.
 
 ## Author and publish
@@ -154,5 +154,5 @@ No automatic dependency chain, pre/post sequence or rollback is added here.
 UI needs to distinguish executable completion, product detection, reboot and
 cleanup instead of declaring every exit=0 a complete enterprise deployment.
 
-Run [the three manual bundle cases](softdist-bundle-testing.md), then real MSI+MST,
+Run [the three manual bundle cases](softdist-today-testing.md#a-multi-file-packages), then real MSI+MST,
 EXE+config and user-context packages appropriate to your environment.

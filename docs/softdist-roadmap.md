@@ -14,7 +14,7 @@ parity. Close a block with actual acceptance results before calling it complete.
 - Fix failures and repeat the affected cases. Preserve quiet/silent arguments,
   exact product identity, pinned file integrity and honest post-verification.
 
-## 2. Current block: Run-As, per-user applications and secure parameters
+## 2. Run-As, per-user applications and secure parameters
 
 - Implemented: SYSTEM, logged-in-user and specified-account execution;
   ordinary parameters plus secure stdin JSON parameters. Native token/profile
@@ -31,32 +31,28 @@ parity. Close a block with actual acceptance results before calling it complete.
 - Test no logged-in user, multiple sessions, unavailable credentials, permissions,
   timeout and reconnect behavior. Reading HKCU alone is not user-context removal.
 
-## 3. Package authoring, variables and automation
+## 3. Accepted engine blocks - current handoff
 
-- Multi-file bundle core is implemented and published in `dist`: native ZIP
-  authoring/manifest, pinned ZIP/member hashes, package working directory, default
-  cleanup and retained custom directories. See [manual bundle cases](softdist-bundle-testing.md)
-  and [server integration contract](softdist-bundle-server-integration.md).
-  Automated tests/vet pass. On 27 October 2026, Vijay reported all three manual
-  bundle cases passed. Matching agent/mockserver/MSI are in `dist`. Real vendor
-  MSI/MST/EXE acceptance remains separate.
-- Next block: explicit pre/post deployment commands with shared Run-As, parameters,
-  package working directory and failure propagation. Prerequisite failure must
-  prevent the main installer; post-step failure must fail the overall job.
-  Dependency package orchestration and rollback remain separate later blocks.
+On 27 October 2026, Vijay reports the manual multi-file, pre/post, dependency and
+advanced detection blocks passed. Individual VM logs were not independently
+reviewed. Current agent/mockserver and matching MSI are in `dist`.
 
-- Complete reusable package definitions with explicit install/uninstall commands,
-  author arguments, static and endpoint-resolved parameters and variables.
-- Existing substitution covers command/arguments and child-script environment;
-  do not claim every package field supports substitution without implementing and
-  testing that field.
-- Validate custom native/script payloads and the shared NSH Runner workflow in
-  the real Software Distribution caller, including parameters, target scope,
-  failure propagation, artifact/result capture and concurrent-job isolation.
-- Close multi-file package/manifest handling, supporting files/MST/configs,
-  advanced detection and dependency/pre/post sequencing gaps as agreed per block.
-- Separate installed-version comparison from package revision/version control,
-  promotion and downgrade/rollback behavior. Define and verify the required rules.
+**Testers use one file:** [single manual testing guide](softdist-today-testing.md).
+It contains all 12 cases, grouped by feature, with purpose/commands/results.
+Previous split guides redirect to it. Native tests/vet/protocol checks also pass.
+
+Included: native ZIP manifests/hashes and cleanup; pre/main/post execution;
+server-driven dependency order/skip/failure gates; file existence/native version,
+custom registry values and ALL/ANY detection. Uninstall checks any-artifact
+presence so old versions or partial groups cannot falsely count as absent.
+The CMD quote/redirection fix for paths containing spaces is included too.
+
+Next: real vendor package acceptance with MSI + MST/supporting config and EXE
+install/upgrade/uninstall, including reboot-sensitive verification. Continue to
+track production API/UI, vault, durable orchestration and fleet concurrency with
+the server team. Keep package revision/promotion/rollback distinct from installed
+version comparison. Do not claim every package field supports substitution or
+that engine cases alone prove end-to-end product parity.
 
 ## 4. Production workflow and acceptance
 
