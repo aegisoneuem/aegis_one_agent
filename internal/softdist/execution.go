@@ -75,7 +75,7 @@ func ValidatePrivateInput(p Params) error {
 				return fmt.Errorf("secure and ordinary parameter names collide")
 			}
 		}
-		for _, text := range append([]string{p.FilePath, p.SilentArgs, p.Name, p.Version, p.DisplayName, p.UninstallKey, p.ProductCode, p.Action, p.InstallerType, p.ExpectedHash, p.HashAlgorithm}, p.PublicMetadata...) {
+		for _, text := range append([]string{p.FilePath, p.SilentArgs, p.Name, p.Version, p.DisplayName, p.UninstallKey, p.ProductCode, p.Action, p.InstallerType, p.ExpectedHash, p.HashAlgorithm, p.WorkingDirectory}, p.PublicMetadata...) {
 			if strings.Contains(text, "${"+key+"}") || (value != "" && strings.Contains(text, value)) {
 				return fmt.Errorf("secure values cannot appear in command text, arguments or names; read stdin JSON")
 			}

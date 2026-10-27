@@ -285,6 +285,9 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 			return Result{Reason: "prepare execution context failed"}
 		}
 	}
+	if p.WorkingDirectory != "" {
+		cmd.Dir = p.WorkingDirectory
+	}
 	// Export parameters to child scripts as AEGIS_PARAM_<NAME> env vars (in addition
 	// to ${name} substitution in the args), so a .ps1/.py/.bat payload can read them.
 	if env := paramEnv(p.Parameters); len(env) > 0 {

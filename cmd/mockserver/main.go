@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
+	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	"github.com/aegisoneuem/aegis_one_proto/commandsign"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
@@ -1030,8 +1031,17 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				return
 			}
 			defer func() { clear(spec.GetExecution().GetPasswordUtf8()); clear(spec.SecureParameters) }()
+			bundled, bundleErr := applyMockBundle(spec, os.Getenv)
+			if bundleErr != nil {
+				mockPrintf("Software bundle settings refused: %v\n", bundleErr)
+				return
+			}
+			if bundled {
+				commandType = "software_deploy_bundle"
+			}
+
 			isCommandType := strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command")
-			if options.autoHash && spec.ExpectedHash == "" && !isCommandType && (deployFile != "" || deployContentID != "") {
+			if options.autoHash && spec.ExpectedHash == "" && (!isCommandType || spec.Bundle != nil) && (deployFile != "" || deployContentID != "") {
 				src := strings.TrimSpace(os.Getenv("AEGIS_SERVE_SOFTWARE"))
 				if src == "" {
 					src = deployFile
@@ -1044,7 +1054,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				}
 			}
 			specBytes, err := proto.Marshal(spec)
-			if commandType == "software_deploy_v2" {
+			if commandType != "software_deploy" {
 				defer clear(specBytes)
 			}
 			if err != nil {
@@ -1057,7 +1067,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					log.Printf("failed to send software_deploy command: %v", err)
 					return
 				}
-				if commandType == "software_deploy_v2" {
+				if commandType != "software_deploy" {
 					clear(specBytes)
 					clear(spec.GetExecution().GetPasswordUtf8())
 					clear(spec.SecureParameters)
@@ -1260,6 +1270,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 			mockPrintf("Received action status -> %s | action_id: %s, type: %s, kb: %s, phase: %s, exit_code: %d, reboot_required: %v, reason: %s\n",
 				s.identify(st.DeviceId), st.ActionId, st.ActionType, st.Kb, st.Phase, st.ExitCode, st.RebootRequired, st.Reason)
+			if st.PackageDirectory != "" {
+				mockPrintf("  package_directory: %s, cleanup: %s\n", st.PackageDirectory, st.PackageCleanup)
+			}
 			if st.Detail != "" {
 				mockPrintf("  detail: %s\n", st.Detail)
 			}
@@ -1307,6 +1320,20 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "pack" {
+		if len(os.Args) != 4 {
+			fmt.Fprintln(os.Stderr, "usage: mockserver.exe pack <source-folder> <new-bundle.zip>")
+			os.Exit(2)
+		}
+		sum, err := softdist.PackBundle(context.Background(), os.Args[2], os.Args[3], softdist.BundleLimits{})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		fmt.Printf("Bundle created: %s\nSHA256: %s\n", os.Args[3], sum)
+		return
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "secrets" {
 		if len(os.Args) != 3 {
 			fmt.Fprintln(os.Stderr, "usage: mockserver.exe secrets <new-file.dpapi>")

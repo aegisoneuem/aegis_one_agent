@@ -33,6 +33,18 @@ parity. Close a block with actual acceptance results before calling it complete.
 
 ## 3. Package authoring, variables and automation
 
+- Multi-file bundle core is implemented and published in `dist`: native ZIP
+  authoring/manifest, pinned ZIP/member hashes, package working directory, default
+  cleanup and retained custom directories. See [manual bundle cases](softdist-bundle-testing.md)
+  and [server integration contract](softdist-bundle-server-integration.md).
+  Automated tests/vet pass. On 27 October 2026, Vijay reported all three manual
+  bundle cases passed. Matching agent/mockserver/MSI are in `dist`. Real vendor
+  MSI/MST/EXE acceptance remains separate.
+- Next block: explicit pre/post deployment commands with shared Run-As, parameters,
+  package working directory and failure propagation. Prerequisite failure must
+  prevent the main installer; post-step failure must fail the overall job.
+  Dependency package orchestration and rollback remain separate later blocks.
+
 - Complete reusable package definitions with explicit install/uninstall commands,
   author arguments, static and endpoint-resolved parameters and variables.
 - Existing substitution covers command/arguments and child-script environment;

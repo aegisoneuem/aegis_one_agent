@@ -6,6 +6,8 @@ import (
 )
 
 const mockModeUsage = `Usage:
+  mockserver.exe pack <source-folder> <new-bundle.zip>  Create a manifest/hash ZIP bundle
+  mockserver.exe secrets <new-file.dpapi>              Enter encrypted credentials
   mockserver.exe                      Normal server; logs stay in this window
   mockserver.exe server               Same normal server mode
   mockserver.exe nsh                  Server with interactive NSH in this window

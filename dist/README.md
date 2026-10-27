@@ -2,7 +2,16 @@
 
 Ready-to-run binaries for the server team (no Go build needed). Windows x64.
 
-**26 October - Run-As and parameter handoff:** replace BOTH agent and mockserver
+**27 October - Multi-file bundle handoff:** replace BOTH agent and mockserver
+(or use the matching MSI). Start with [three manual bundle cases](../docs/softdist-bundle-testing.md).
+Server implementation: [bundle contract](../docs/softdist-bundle-server-integration.md).
+Native `mockserver.exe pack`, manifest/member integrity, package working directory,
+default cleanup and custom retention are included. Vijay reports all three cases
+passed. Go tests/vet pass; the MSI payload hash matches the distributed agent.
+Real vendor-installer acceptance is still separate. See `softdist-handoff.json`
+for artifact hashes and the required shared protocol revision.
+
+**26 October - Run-As and parameter handoff (still included):** replace BOTH agent and mockserver
 (or install the matching agent MSI). Use ONLY
 [the final manual new-feature guide](../docs/softdist-new-features-testing.md)
 for the new cases: logged-in user, specified account, ordinary parameters, secure

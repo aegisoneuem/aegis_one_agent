@@ -40,6 +40,7 @@ type softdistInstaller struct {
 	tmpDir         string            // transient decrypt-to-install dir (secure-deleted after)
 	downloadDir    string            // controlled drop zone for pre-staged local installers
 	verifyAttempts int
+	bundleLimits   softdist.BundleLimits
 	maxSecretBytes int
 	verifyInterval time.Duration
 	jobs           chan softdistJob
@@ -182,7 +183,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 
 	// 0d. Generic "command" type runs an arbitrary command (file_path) directly — no
 	//     installer file to deliver or verify. Enqueue it straight to the worker.
-	if strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+	if spec.Bundle == nil && strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
 		if strings.TrimSpace(spec.FilePath) == "" {
 			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
 				pb.ActionPhase_ACTION_PHASE_FAILED, `installer_type "command" needs file_path set to the command to run`)))
@@ -307,9 +308,15 @@ func (s *softdistInstaller) run(job softdistJob) {
 	cmdID := job.commandID
 	started := time.Now().Unix()
 
+	initialPhase := pb.ActionPhase_ACTION_PHASE_RUNNING
+	initialReason := "starting software action"
+	if spec.Bundle != nil {
+		initialPhase = pb.ActionPhase_ACTION_PHASE_VERIFYING
+		initialReason = "preparing and verifying software bundle"
+	}
 	sendStatus(s.outbox, &pb.ActionStatus{
 		ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
-		Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "starting software action", StartedAt: started,
+		Phase: initialPhase, Reason: initialReason, StartedAt: started,
 	})
 
 	// One installer at a time across the whole machine (shared with patches).
@@ -342,6 +349,8 @@ func (s *softdistInstaller) run(job softdistJob) {
 		}
 	}
 
+	decryptedTemp := ""
+	archiveCleanupDone := false
 	installPath := job.localPath
 	if job.cacheID != "" {
 		// Decrypt the sealed installer to a transient temp (plaintext exists only
@@ -353,7 +362,11 @@ func (s *softdistInstaller) run(job softdistJob) {
 			return
 		}
 		installPath = tmp
+		decryptedTemp = tmp
 		defer func() {
+			if archiveCleanupDone {
+				return
+			}
 			if err := secure.SecureDelete(tmp); err != nil {
 				slog.Warn("software_deploy: could not remove decrypted temp", "temp", tmp, "error", err.Error())
 			}
@@ -363,11 +376,11 @@ func (s *softdistInstaller) run(job softdistJob) {
 	// For the generic "command" type the raw command is in file_path (no delivered
 	// file); otherwise use the resolved/decrypted installer path.
 	filePath := installPath
-	if strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+	if spec.Bundle == nil && strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
 		filePath = spec.FilePath
 	}
 
-	if session != nil && filePath != "" && !strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+	if spec.Bundle == nil && session != nil && filePath != "" && !strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
 		staged, cleanup, err := session.StagePayload(filePath, s.tmpDir)
 		if err != nil {
 			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "user payload staging failed: " + err.Error()})
@@ -376,7 +389,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 		defer cleanup()
 		filePath = staged
 	}
-	res := softdist.Run(context.Background(), softdist.Params{
+	params := softdist.Params{
 		Name:             spec.Name,
 		Action:           spec.Action,
 		InstallerType:    spec.InstallerType,
@@ -396,7 +409,35 @@ func (s *softdistInstaller) run(job softdistJob) {
 		SecureParameters: spec.SecureParameters,
 		Sensitive:        privateDeployment(spec),
 		MaxSecretBytes:   s.maxSecretBytes,
-	})
+	}
+	var prepared *softdist.PreparedBundle
+	if spec.Bundle != nil {
+		options := bundleOptions(spec)
+		options.ManagedRoot = filepath.Join(s.downloadDir, "packages")
+		options.Session = session
+		options.Limits = s.bundleLimits
+		var err error
+		prepared, err = softdist.PrepareBundle(context.Background(), installPath, spec.ExpectedHash, options)
+		if err != nil {
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "bundle preparation failed: " + err.Error()})
+			return
+		}
+		defer func() {
+			if _, err := prepared.Finalize(); err != nil {
+				slog.Warn("software_deploy: bundle cleanup failed", "error", err)
+			}
+		}()
+		params.WorkingDirectory = prepared.Directory
+		params.Parameters["package_dir"] = prepared.Directory
+		params.FilePath = prepared.EntryPath
+		params.ExpectedHash = prepared.EntryHash
+		params.HashAlgorithm = "sha256"
+		if strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+			params.FilePath = spec.Bundle.Command
+		}
+		sendStatus(s.outbox, &pb.ActionStatus{ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID, Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "executing software bundle", StartedAt: started, PackageDirectory: prepared.Directory})
+	}
+	res := softdist.Run(context.Background(), params)
 
 	var phase pb.ActionPhase
 	switch {
@@ -430,6 +471,26 @@ func (s *softdistInstaller) run(job softdistJob) {
 			res.Reason += " — " + note
 		}
 	}
+	if prepared != nil {
+		state, cleanupErr := prepared.Finalize()
+		res.PackageDirectory = prepared.Directory
+		res.PackageCleanup = state
+		if cleanupErr != nil {
+			phase = pb.ActionPhase_ACTION_PHASE_FAILED
+			res.Success = false
+			res.Reason += "; package cleanup failed: " + cleanupErr.Error()
+		}
+	}
+	if prepared != nil && decryptedTemp != "" {
+		if cleanupErr := secure.SecureDelete(decryptedTemp); cleanupErr != nil {
+			phase = pb.ActionPhase_ACTION_PHASE_FAILED
+			res.Success = false
+			res.PackageCleanup = "failed"
+			res.Reason += "; bundle archive cleanup failed: " + cleanupErr.Error()
+		} else {
+			archiveCleanupDone = true
+		}
+	}
 	// A server-delivered installer is single-use per machine — drop it from the
 	// cache after a successful install (orphans are swept by the cache janitor TTL).
 	if job.cacheID != "" && phase == pb.ActionPhase_ACTION_PHASE_SUCCESS {
@@ -446,6 +507,7 @@ func (s *softdistInstaller) finish(cmdID, name string, started int64, phase pb.A
 		ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
 		Phase: phase, ExitCode: int32(res.ExitCode), RebootRequired: res.RebootRequired,
 		Reason: res.Reason, Detail: res.Detail, StartedAt: started, FinishedAt: time.Now().Unix(),
+		PackageDirectory: res.PackageDirectory, PackageCleanup: res.PackageCleanup,
 	})
 	slog.Info("software_deploy: finished", "command_id", cmdID, "name", name,
 		"phase", phase.String(), "exit_code", res.ExitCode, "reboot_required", res.RebootRequired, "reason", res.Reason)
@@ -592,6 +654,9 @@ func isMSIType(spec *pb.SoftwareDeploySpec) bool {
 // installerExt returns the file extension to give the fetched/decrypted installer
 // so the right tool runs it: the file_path hint first, else from installer_type.
 func installerExt(spec *pb.SoftwareDeploySpec) string {
+	if spec.Bundle != nil {
+		return ".zip"
+	}
 	if e := filepath.Ext(strings.TrimSpace(spec.FilePath)); e != "" {
 		return e
 	}
@@ -622,6 +687,6 @@ func pinnedRegistryUninstall(spec *pb.SoftwareDeploySpec, app *softdist.Installe
 // drive idempotency and post-verification; they must not replace the author's
 // custom command/script or bypass a delivered file's hash verification.
 func hasExplicitSoftwarePayload(spec *pb.SoftwareDeploySpec) bool {
-	return strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") ||
+	return spec.Bundle != nil || strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") ||
 		strings.TrimSpace(spec.FilePath) != "" || strings.TrimSpace(spec.ContentId) != ""
 }

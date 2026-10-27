@@ -1,32 +1,34 @@
 {
-  "handoff_date": "2026-10-26",
+  "handoff_date": "2026-10-27",
   "platform": "windows/amd64",
-  "guide": "docs/softdist-new-features-testing.md",
-  "shared_proto_commit": "35e6d8d7e62e74e644e6c9660c96ee2cb7d2706b",
+  "guide": "docs/softdist-bundle-testing.md",
+  "server_contract": "docs/softdist-bundle-server-integration.md",
+  "previous_guide": "docs/softdist-new-features-testing.md",
+  "shared_proto_commit": "f5ee0c9d924540461eacc48508ca254fa8579305",
   "shared_proto_repository": "https://github.com/aegisoneuem/aegis_one_proto",
   "validation": {
     "agent_tests": "PASS: go test ./...",
     "agent_vet": "PASS: go vet ./...",
     "proto_tests": "PASS: go test ./...",
     "msi_payload": "PASS: extracted agent hash matches dist EXE",
-    "vm_acceptance": "PENDING: server team manual cases",
+    "vm_acceptance": "PASS: Vijay reports all three manual bundle cases passed, 27 October 2026; individual logs not independently reviewed",
     "real_vendor_acceptance": "PENDING"
   },
   "artifacts": [
     {
       "file": "AegisOneClient.exe",
-      "bytes": 21538304,
-      "sha256": "730b0eef721e42083930cb7bb3c6c574117a7b1872be15ccddcb223b493e5172"
+      "bytes": 21690368,
+      "sha256": "a87e6813d03473d429c80773b420cc56a27c163b99e7afc0362f1fd9d8b0c33b"
     },
     {
       "file": "mockserver.exe",
-      "bytes": 19201024,
-      "sha256": "5d115808e1e60394d7cb93d29f7c6bc5bd61fa3ba38213c78b4fe974481725e9"
+      "bytes": 19341824,
+      "sha256": "1df272a6cc6c3f4ae753043608ac0b028c05b31883700d6f6378ad14020b275d"
     },
     {
       "file": "AegisOneClient.msi",
-      "bytes": 11669504,
-      "sha256": "02177019f43686a4529278653345ee5c3208eeec5616947874453b0291ae5b85"
+      "bytes": 11739136,
+      "sha256": "927158a2c58a9697620a7d2afe2f0c6aaced47bc76bc1a0520d102194b4f26fe"
     }
   ]
 }

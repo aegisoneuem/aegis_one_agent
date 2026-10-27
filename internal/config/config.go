@@ -85,6 +85,8 @@ func resolve(key string) string {
 }
 
 type Config struct {
+	SoftdistBundleMaxBytes int64
+	SoftdistBundleMaxFiles int
 	SoftdistMaxSecretBytes int           // private task input limit; passwords and secure parameters
 	SoftdistVerifyAttempts int           // post-action checks, including initial detection
 	SoftdistVerifyInterval time.Duration // settle delay for detached uninstallers
@@ -249,6 +251,8 @@ func Load() Config {
 	}
 
 	cfg := Config{
+		SoftdistBundleMaxBytes: int64FromEnv("AEGIS_SOFTDIST_BUNDLE_MAX_BYTES", 4<<30),
+		SoftdistBundleMaxFiles: int(int64FromEnv("AEGIS_SOFTDIST_BUNDLE_MAX_FILES", 10000)),
 		SoftdistMaxSecretBytes: int(int64FromEnv("AEGIS_SOFTDIST_MAX_SECRET_BYTES", 64*1024)),
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),

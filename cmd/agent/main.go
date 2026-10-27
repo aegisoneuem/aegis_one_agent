@@ -21,6 +21,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
 	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
+	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	"github.com/aegisoneuem/aegis_one_proto/commandsign"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/grpc"
@@ -619,6 +620,7 @@ func runProcess(ctx context.Context) {
 	// rest) and the tmp dir (transient decrypt-to-install, secure-deleted after).
 	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir, cfg.SoftdistVerifyAttempts, cfg.SoftdistVerifyInterval)
 	sdi.maxSecretBytes = cfg.SoftdistMaxSecretBytes
+	sdi.bundleLimits = softdist.BundleLimits{MaxBytes: cfg.SoftdistBundleMaxBytes, MaxFiles: cfg.SoftdistBundleMaxFiles}
 	go sdi.worker()
 
 	// Stager: server-driven pre-caching of patches (stage_patch) ahead of a
