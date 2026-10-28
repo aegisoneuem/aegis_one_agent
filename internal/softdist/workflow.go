@@ -17,14 +17,14 @@ type CommandStep struct {
 }
 
 type DeploymentSteps struct {
-	Before, After []CommandStep
+	Before, After, Rollback []CommandStep
 }
 
 func (steps DeploymentSteps) Validate() error {
-	if len(steps.Before)+len(steps.After) == 0 {
-		return fmt.Errorf("workflow needs at least one pre/post command")
+	if len(steps.Before)+len(steps.After)+len(steps.Rollback) == 0 {
+		return fmt.Errorf("workflow needs at least one pre/post/rollback command")
 	}
-	for _, list := range [][]CommandStep{steps.Before, steps.After} {
+	for _, list := range [][]CommandStep{steps.Before, steps.After, steps.Rollback} {
 		if len(list) > 8 {
 			return fmt.Errorf("workflow supports at most eight commands per stage")
 		}
@@ -50,7 +50,7 @@ func (steps DeploymentSteps) Validate() error {
 // public job metadata, even when an earlier step would prevent their execution.
 func (steps DeploymentSteps) PublicFields() []string {
 	var fields []string
-	for _, list := range [][]CommandStep{steps.Before, steps.After} {
+	for _, list := range [][]CommandStep{steps.Before, steps.After, steps.Rollback} {
 		for _, step := range list {
 			fields = append(fields, step.Name, step.Command, step.Arguments)
 		}
@@ -109,11 +109,52 @@ func runWorkflow(ctx context.Context, p Params, steps DeploymentSteps, progress 
 		}
 		return nil
 	}
+	// runRollback: best-effort cleanup after a failure. Each rollback step runs
+	// even if an earlier one fails — the signed admin ordered the full sequence,
+	// and a half-done rollback is worse than one that reports every failure.
+	// Rollback failures append to the main reason so the console sees both.
+	runRollback := func(trigger string) string {
+		if len(steps.Rollback) == 0 {
+			return ""
+		}
+		var failures []string
+		for i, step := range steps.Rollback {
+			if progress != nil {
+				progress("rollback", i+1, step.Name)
+			}
+			timeout := time.Duration(step.TimeoutSeconds) * time.Second
+			if timeout == 0 {
+				timeout = 5 * time.Minute
+			}
+			// Rollback runs in a FRESH context so an already-cancelled parent
+			// context (e.g. caller abort) does not immediately skip cleanup.
+			rctx, cancel := context.WithTimeout(context.Background(), timeout)
+			cp := Params{Name: step.Name, Action: "install", InstallerType: "command",
+				FilePath: step.Command, SilentArgs: step.Arguments, Timeout: timeout,
+				SuccessCodes: step.SuccessCodes, WorkingDirectory: p.WorkingDirectory,
+				Parameters: p.Parameters, Session: p.Session, MaxSecretBytes: p.MaxSecretBytes,
+				Sensitive: p.Sensitive || len(p.SecureParameters) > 0}
+			if step.UseSecureParameters {
+				cp.SecureParameters = p.SecureParameters
+			}
+			rres := run(rctx, cp)
+			cancel()
+			if !rres.Success {
+				failures = append(failures, fmt.Sprintf("rollback step %d (%s) exit %d", i+1, step.Name, rres.ExitCode))
+			}
+		}
+		if len(failures) == 0 {
+			return fmt.Sprintf("; rollback after %s completed (%d step(s))", trigger, len(steps.Rollback))
+		}
+		return fmt.Sprintf("; rollback after %s partial — %s", trigger, strings.Join(failures, ", "))
+	}
+
 	if failure := runSteps("pre-deployment", steps.Before); failure != nil {
+		failure.Reason += runRollback("pre-deployment failure")
 		return *failure
 	}
 	if err := ctx.Err(); err != nil {
-		return Result{Reason: "deployment cancelled", RebootRequired: reboot}
+		return Result{Reason: "deployment cancelled" + runRollback("cancellation"), RebootRequired: reboot}
 	}
 	if progress != nil {
 		progress("main", 0, p.Name)
@@ -122,7 +163,7 @@ func runWorkflow(ctx context.Context, p Params, steps DeploymentSteps, progress 
 	reboot = reboot || res.RebootRequired
 	res.RebootRequired = reboot
 	if !res.Success || res.NotApplicable {
-		res.Reason = "main deployment: " + res.Reason
+		res.Reason = "main deployment: " + res.Reason + runRollback("main failure")
 		return res
 	}
 	if res.ExitCode == 1641 && len(steps.After) > 0 {
@@ -131,6 +172,7 @@ func runWorkflow(ctx context.Context, p Params, steps DeploymentSteps, progress 
 		return res
 	}
 	if failure := runSteps("post-deployment", steps.After); failure != nil {
+		failure.Reason += runRollback("post-deployment failure")
 		return *failure
 	}
 	res.RebootRequired = reboot

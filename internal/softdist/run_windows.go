@@ -315,16 +315,56 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 		}
 		cmd.Env = append(cmd.Env, "AEGIS_SECRET_INPUT=stdin-json-v1")
 	}
+	invokeStart := time.Now()
+	// Descendant termination: wrap the installer in a Windows Job Object so a
+	// timeout, cancel or agent crash kills every child (msiexec engines, EXE
+	// post-install helpers, batch chains). Without this, Context-cancel only
+	// kills the top-level process and orphaned installers survive.
+	job, err := newJobGroup(p.Name)
+	if err != nil {
+		slog.Warn("softdist: job object setup failed, continuing without descendant guard", "error", err.Error())
+	}
+	defer func() {
+		if job != nil {
+			_ = job.Close() // KILL_ON_JOB_CLOSE sweeps any remaining descendants
+		}
+	}()
+
 	var out []byte
 	var runErr error
 	if p.sensitive() {
 		slog.Info("softdist: running private installer", "timeout", timeout.String())
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
-		runErr = cmd.Run()
+		if runErr = cmd.Start(); runErr == nil {
+			if job != nil {
+				if err := job.Attach(cmd); err != nil {
+					slog.Warn("softdist: job object attach failed", "pid", cmd.Process.Pid, "error", err.Error())
+				}
+			}
+			runErr = cmd.Wait()
+		}
 	} else {
 		slog.Info("softdist: running installer", "name", p.Name, "bin", bin, "args", strings.Join(args, " "), "timeout", timeout.String())
-		out, runErr = cmd.CombinedOutput()
+		pr, pw, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return Result{Reason: "pipe creation failed: " + pipeErr.Error()}
+		}
+		cmd.Stdout = pw
+		cmd.Stderr = pw
+		if runErr = cmd.Start(); runErr == nil {
+			if job != nil {
+				if err := job.Attach(cmd); err != nil {
+					slog.Warn("softdist: job object attach failed", "pid", cmd.Process.Pid, "error", err.Error())
+				}
+			}
+			pw.Close()
+			out, _ = io.ReadAll(pr)
+			runErr = cmd.Wait()
+		} else {
+			pw.Close()
+		}
+		pr.Close()
 	}
 
 	// Prefer the MSI log tail over the (empty) console output for Detail.
@@ -339,11 +379,12 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 		_ = os.Remove(logPath)
 	}
 
+	elapsed := time.Since(invokeStart)
 	if rctx.Err() == context.Canceled {
-		return Result{Reason: "installer cancelled; already-started child operations may still be running", Detail: detail}
+		return Result{Reason: fmt.Sprintf("installer cancelled after %s; already-started child operations may still be running%s", elapsed.Round(time.Second), describeDiagnostics(job)), Detail: detail}
 	}
 	if rctx.Err() == context.DeadlineExceeded {
-		return Result{Reason: fmt.Sprintf("installer timed out after %s", timeout), Detail: detail}
+		return Result{Reason: fmt.Sprintf("installer timed out after %s%s", timeout, describeDiagnostics(job)), Detail: detail}
 	}
 	if cmd.ProcessState == nil {
 		// The installer failed to even start (missing binary, bad path, etc.).
@@ -355,6 +396,25 @@ func execInstaller(ctx context.Context, p Params, bin string, args []string, log
 	res := classify(p, cmd.ProcessState.ExitCode(), string(out))
 	res.Detail = detail
 	return res
+}
+
+// describeDiagnostics appends causal signals that help root-cause isolation
+// when an installer times out or is cancelled. The Firefox / MSI acceptance
+// gap flagged in memory ("original MSI timeout and missing post-step root
+// causes not isolated") was invisible without this: now a timeout reason
+// carries "2 descendants still alive at kill" vs "0 descendants" so the
+// operator can tell a stuck parent apart from stuck children. The signal is
+// best-effort — a kernel race may make the count 0 even when children were
+// present a millisecond earlier; this is still much better than silence.
+func describeDiagnostics(job *jobGroup) string {
+	if job == nil {
+		return ""
+	}
+	n := job.activeDescendants()
+	if n == 0 {
+		return "; no descendants were alive at kill (parent process was likely stuck)"
+	}
+	return fmt.Sprintf("; %d descendant process(es) killed with parent (child installer helpers were still running)", n)
 }
 
 // readInstallLog returns the tail of an MSI log (where the failing action and

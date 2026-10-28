@@ -15,7 +15,7 @@ func deploymentSteps(spec *pb.SoftwareDeploySpec) softdist.DeploymentSteps {
 		}
 		return out
 	}
-	return softdist.DeploymentSteps{Before: convert(spec.GetSteps().GetBefore()), After: convert(spec.GetSteps().GetAfter())}
+	return softdist.DeploymentSteps{Before: convert(spec.GetSteps().GetBefore()), After: convert(spec.GetSteps().GetAfter()), Rollback: convert(spec.GetSteps().GetRollback())}
 }
 
 func validateWorkflowDeployment(spec *pb.SoftwareDeploySpec) error {

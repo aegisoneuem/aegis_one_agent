@@ -14,7 +14,7 @@ import (
 func applyMockWorkflow(spec *pb.SoftwareDeploySpec, lookup func(string) string) (bool, error) {
 	steps := &pb.SoftwareDeploymentSteps{}
 	native := softdist.DeploymentSteps{}
-	for _, stage := range []string{"PRE", "POST"} {
+	for _, stage := range []string{"PRE", "POST", "ROLLBACK"} {
 		prefix := "AEGIS_DEPLOY_" + stage + "_"
 		command, args, name := lookup(prefix+"COMMAND"), lookup(prefix+"ARGS"), lookup(prefix+"NAME")
 		timeout, codes, secure := lookup(prefix+"TIMEOUT_SECONDS"), lookup(prefix+"SUCCESS_CODES"), lookup(prefix+"SECURE_INPUT")
@@ -54,15 +54,19 @@ func applyMockWorkflow(spec *pb.SoftwareDeploySpec, lookup func(string) string) 
 			}
 		}
 		commandStep := softdist.CommandStep{Name: name, Command: command, Arguments: args, TimeoutSeconds: step.TimeoutSeconds, SuccessCodes: step.SuccessExitCodes, UseSecureParameters: step.UseSecureParameters}
-		if stage == "PRE" {
+		switch stage {
+		case "PRE":
 			steps.Before = append(steps.Before, step)
 			native.Before = append(native.Before, commandStep)
-		} else {
+		case "POST":
 			steps.After = append(steps.After, step)
 			native.After = append(native.After, commandStep)
+		case "ROLLBACK":
+			steps.Rollback = append(steps.Rollback, step)
+			native.Rollback = append(native.Rollback, commandStep)
 		}
 	}
-	if len(native.Before)+len(native.After) == 0 {
+	if len(native.Before)+len(native.After)+len(native.Rollback) == 0 {
 		return false, nil
 	}
 	if spec.Bundle == nil {

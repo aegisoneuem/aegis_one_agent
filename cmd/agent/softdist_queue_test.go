@@ -13,7 +13,7 @@ import (
 func TestSoftdistReportsWaitingBeforeRunning(t *testing.T) {
 	out := make(chan *pb.AgentMessage, 16)
 	base := t.TempDir()
-	s := newSoftdistInstaller(out, "test-device", nil, base, base, 1, time.Millisecond)
+	s := newSoftdistInstaller(out, "test-device", nil, base, base, 1, time.Millisecond, nil)
 	job := softdistJob{commandID: "gate-wait-test", spec: &pb.SoftwareDeploySpec{
 		Name: "Gate wait", Action: "install", InstallerType: "command",
 		FilePath: "cmd.exe", SilentArgs: "/D /C exit 7", TimeoutSeconds: 5,

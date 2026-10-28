@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,11 +45,98 @@ type softdistInstaller struct {
 	bundleLimits   softdist.BundleLimits
 	maxSecretBytes int
 	verifyInterval time.Duration
+	journal        *jobJournal // durable per-job state for crash/power-loss recovery
 	jobs           chan softdistJob
 }
 
-func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration) *softdistInstaller {
-	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, jobs: make(chan softdistJob, 32)}
+func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration, journal *jobJournal) *softdistInstaller {
+	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, journal: journal, jobs: make(chan softdistJob, 32)}
+}
+
+// recoverIncompleteJobs scans the journal for in-flight entries left behind
+// after a crash/restart. Each such entry is reported honestly as RECOVERED_FAILED
+// and its orphaned extraction directory removed. This is called once from main
+// at agent startup, BEFORE the worker begins consuming new jobs, so recovery
+// status reaches the console before any fresh execution noise. The outbox is
+// buffered (buffer.Buffer), so these status messages persist across the next
+// server reconnect.
+func (s *softdistInstaller) recoverIncompleteJobs() {
+	if s == nil || s.journal == nil {
+		return
+	}
+	entries, err := s.journal.recover()
+	if err != nil {
+		slog.Warn("softdist: journal recovery read failed", "error", err.Error())
+		return
+	}
+	for _, entry := range entries {
+		switch entry.State {
+		case journalCompleted:
+			// A completed record that was never deleted indicates the terminal
+			// finish succeeded but journal cleanup failed last time. Delete the
+			// record now; do NOT re-emit a status — the terminal was already sent.
+			if err := s.journal.delete(entry.CommandID); err != nil {
+				slog.Warn("softdist: could not delete completed journal entry", "command_id", entry.CommandID, "error", err.Error())
+			}
+			continue
+		}
+		slog.Warn("softdist: recovered in-flight job after restart", "command_id", entry.CommandID, "state", string(entry.State), "name", entry.Name)
+		reason := fmt.Sprintf("agent restarted while %s; result unknown — not retried automatically", entry.State)
+		pkgCleanup := ""
+		if entry.PackageDir != "" {
+			if err := recoverCleanupPackageDir(entry.PackageDir, s.downloadDir); err != nil {
+				pkgCleanup = "failed: " + err.Error()
+				slog.Warn("softdist: recovery package-dir cleanup failed", "command_id", entry.CommandID, "dir", entry.PackageDir, "error", err.Error())
+			} else {
+				pkgCleanup = "removed"
+			}
+		}
+		sendStatus(s.outbox, &pb.ActionStatus{
+			ActionId:         entry.CommandID,
+			ActionType:       actionSoftwareDeploy,
+			DeviceId:         s.deviceID,
+			Phase:            pb.ActionPhase_ACTION_PHASE_FAILED,
+			Reason:           reason,
+			StartedAt:        entry.StartedAt,
+			FinishedAt:       time.Now().Unix(),
+			PackageDirectory: entry.PackageDir,
+			PackageCleanup:   pkgCleanup,
+		})
+		if err := s.journal.delete(entry.CommandID); err != nil {
+			slog.Warn("softdist: journal delete after recovery failed", "command_id", entry.CommandID, "error", err.Error())
+		}
+	}
+}
+
+// recoverCleanupPackageDir removes an orphaned extraction directory left behind
+// by an interrupted bundle deploy. It REFUSES to delete anything that is not
+// clearly inside the agent's own packages root (<downloadDir>/packages/...) so
+// a corrupted or tampered journal cannot be used to delete arbitrary paths.
+func recoverCleanupPackageDir(packageDir, downloadDir string) error {
+	if packageDir == "" {
+		return nil
+	}
+	absDir, err := filepath.Abs(packageDir)
+	if err != nil {
+		return err
+	}
+	absRoot, err := filepath.Abs(filepath.Join(downloadDir, "packages"))
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, absDir)
+	if err != nil {
+		return err
+	}
+	// Refuse anything that is NOT a strict descendant of the packages root —
+	// corrupt or tampered journals must never widen deletion scope.
+	if rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("refusing to delete non-package path %q", packageDir)
+	}
+	if _, err := os.Stat(absDir); errors.Is(err, fs.ErrNotExist) {
+		return nil // already gone — fine
+	}
+	return os.RemoveAll(absDir)
 }
 
 // resolveLocal resolves a pre-staged installer path. A bare name / relative path
@@ -310,6 +399,22 @@ func (s *softdistInstaller) run(job softdistJob) {
 	started := time.Now().Unix()
 	slog.Info("software_deploy: worker picked up job", "command_id", cmdID)
 
+	// Durable journal: record this job as in-flight so a crash before terminal
+	// finish is reported honestly by the next recoverIncompleteJobs() sweep.
+	// The entry is deleted in finish(); writes are best-effort — journal
+	// failures must never block an install the admin asked for.
+	entry := &journalEntry{
+		CommandID: cmdID,
+		DeviceID:  s.deviceID,
+		Name:      spec.Name,
+		Action:    spec.Action,
+		State:     journalQueued,
+		StartedAt: started,
+	}
+	if err := s.journal.write(entry); err != nil {
+		slog.Warn("software_deploy: journal write failed (continuing)", "command_id", cmdID, "error", err.Error())
+	}
+
 	// Report contention explicitly rather than appearing to run an installer
 	// while another patch/software action still owns the machine install gate.
 	if !machineInstallGate.TryLock() {
@@ -436,6 +541,10 @@ func (s *softdistInstaller) run(job softdistJob) {
 	}
 	var prepared *softdist.PreparedBundle
 	if spec.Bundle != nil {
+		entry.State = journalExtracting
+		if err := s.journal.write(entry); err != nil {
+			slog.Warn("software_deploy: journal extracting-state write failed", "command_id", cmdID, "error", err.Error())
+		}
 		options := bundleOptions(spec)
 		options.ManagedRoot = filepath.Join(s.downloadDir, "packages")
 		options.Session = session
@@ -446,6 +555,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "bundle preparation failed: " + err.Error()})
 			return
 		}
+		entry.PackageDir = prepared.Directory
 		defer func() {
 			if _, err := prepared.Finalize(); err != nil {
 				slog.Warn("software_deploy: bundle cleanup failed", "error", err)
@@ -460,6 +570,10 @@ func (s *softdistInstaller) run(job softdistJob) {
 			params.FilePath = spec.Bundle.Command
 		}
 		sendStatus(s.outbox, &pb.ActionStatus{ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID, Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "executing software bundle", StartedAt: started, PackageDirectory: prepared.Directory})
+	}
+	entry.State = journalRunning
+	if err := s.journal.write(entry); err != nil {
+		slog.Warn("software_deploy: journal running-state write failed", "command_id", cmdID, "error", err.Error())
 	}
 	var res softdist.Result
 	slog.Info("software_deploy: starting installer/workflow", "command_id", cmdID)
@@ -487,6 +601,10 @@ func (s *softdistInstaller) run(job softdistJob) {
 	// contradiction is reported honestly as FAILED. Specs without identifiers (plain
 	// scripts) are trusted on exit code alone.
 	if phase == pb.ActionPhase_ACTION_PHASE_SUCCESS || phase == pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE {
+		entry.State = journalVerifying
+		if err := s.journal.write(entry); err != nil {
+			slog.Warn("software_deploy: journal verifying-state write failed", "command_id", cmdID, "error", err.Error())
+		}
 		action := strings.ToLower(strings.TrimSpace(spec.Action))
 		if action == "" {
 			action = "install"
@@ -540,7 +658,10 @@ func (s *softdistInstaller) run(job softdistJob) {
 	s.finish(cmdID, spec.Name, started, phase, &res)
 }
 
-// finish streams the terminal ActionStatus and logs the outcome.
+// finish streams the terminal ActionStatus and logs the outcome. The durable
+// journal entry (if any) is removed last so a crash between the terminal send
+// and the journal delete still shows up as a stale completed-state record in
+// recoverIncompleteJobs() — the recovery sweep handles that case cleanly.
 func (s *softdistInstaller) finish(cmdID, name string, started int64, phase pb.ActionPhase, res *softdist.Result) {
 	sendStatus(s.outbox, &pb.ActionStatus{
 		ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID,
@@ -550,6 +671,11 @@ func (s *softdistInstaller) finish(cmdID, name string, started int64, phase pb.A
 	})
 	slog.Info("software_deploy: finished", "command_id", cmdID, "name", name,
 		"phase", phase.String(), "exit_code", res.ExitCode, "reboot_required", res.RebootRequired, "reason", res.Reason)
+	if s.journal != nil {
+		if err := s.journal.delete(cmdID); err != nil {
+			slog.Warn("software_deploy: journal cleanup failed", "command_id", cmdID, "error", err.Error())
+		}
+	}
 }
 
 // fileExists reports whether path is present on disk.

@@ -2,45 +2,55 @@
     "handoff_date":  "2026-10-28",
     "platform":  "windows/amd64",
     "guide":  "docs/softdist-today-testing.md",
-    "manual_cases":  18,
+    "manual_cases":  27,
     "blocks":  [
                    "multi-file packages",
                    "pre/post commands",
                    "package dependencies",
                    "advanced file/version/registry detection ALL/ANY",
                    "real 7-Zip MSI install/repeat-skip/upgrade/uninstall/repeat-uninstall",
-                   "real Firefox EXE plus configuration and active homepage policy"
+                   "real Firefox EXE plus configuration and active homepage policy",
+                   "rollback-on-failure orchestration (new)",
+                   "crash recovery and durable journal (new)",
+                   "descendant termination on timeout (new)",
+                   "reboot-sensitive post-verification + MSI/MST + config-only (new)"
                ],
+    "engine_updates":  [
+                          "durable per-job state journal at <SKVC>/jobs/<id>.state with atomic rename writes and startup recovery sweep that reports in-flight jobs as RECOVERED_FAILED and removes orphan package extraction directories",
+                          "Windows Job Object wrapper around every installer so timeouts, cancels and agent crashes terminate the whole process tree (descendant installer helpers no longer survive)",
+                          "signed SoftwareDeploymentSteps.rollback field (max 8 steps) that runs best-effort on pre/main/post failure; a failing rollback step reports its exit without stopping remaining rollback commands",
+                          "structured timeout diagnostics: terminal reason now carries elapsed/timeout plus live descendant-count hint so a stuck parent process can be told apart from a stuck child installer helper"
+                      ],
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
                       ],
-    "shared_proto_commit":  "c6cc4e4e40f881423848ef631dfe4ea2a5c20f75",
+    "shared_proto_commit":  "a06654111ff4afd4fd53a39abeff2e3b2d4b0bfd",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
-                       "agent_tests":  "PASS: go test ./... (2026-10-28), including install-gate contention regression",
+                       "agent_tests":  "PASS: go test ./... (2026-10-28), including journal, rollback, job-object and descendant-count regressions",
                        "agent_vet":  "PASS: go vet ./... (2026-10-28)",
-                       "proto_tests":  "PASS: go test ./... (2026-10-28), unchanged shared proto revision",
-                       "msi_payload":  "PASS: diagnostic rebuild extracted agent SHA256 equals dist EXE",
-                       "vm_acceptance":  "Vijay reports original 12 engine cases PASS; new diagnostic logging/gate-status change has automated regression coverage, latest VM retest not confirmed",
-                       "real_vendor_acceptance":  "PASS reported 2026-10-27: five 7-Zip MSI cases (action logs reviewed); Firefox install/config after recovery and active-policy confirmation reported by Vijay. Original MSI timeout and missing post-step root causes not isolated.",
+                       "proto_tests":  "PASS: go test ./... on new shared proto revision",
+                       "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
+                       "vm_acceptance":  "Native unit regressions cover the new A1-A3/C1 engine updates. VM acceptance of G/H/I/J blocks is pending Vijay or server-team runs on a Windows endpoint.",
+                       "real_vendor_acceptance":  "Previous release reported 7-Zip and Firefox PASS on 2026-10-27 (logs reviewed by Vijay). New J block (reboot-sensitive EXE, MSI+MST, config-only) is PENDING server-team curated vendor packages.",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21799936,
-                          "sha256":  "fc8b612f0203011a1e00d2173e065814854b20a109aa08c7317fb77d91b82752"
+                          "bytes":  21844992,
+                          "sha256":  "62687239b1a8c900a0eababcf9ae0766ea28f9931a0077530f1f0c0d8703f52a"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19485696,
-                          "sha256":  "cece2653422f676d19d2fee93db7ebb4f3118d72c23387dbdfa7f327a985a6a1"
+                          "bytes":  19486720,
+                          "sha256":  "26cdf73134ef0b5d592a1df1f594478b27ab8f9e12858dffae32d3c9c581dd34"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11788288,
-                          "sha256":  "ee443f03d900b825d1ba9e82fcff04c398650a19e162076a3118e6f8dfd04f7d"
+                          "bytes":  11730944,
+                          "sha256":  "202c860d9bb38ac745a646c6aa5ea2d9e6fd0c66145aca72220b64991cb9ddbf"
                       }
                   ]
 }

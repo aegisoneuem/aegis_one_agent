@@ -15,6 +15,10 @@ vendor cases. Run the real cases in E and F in their stated order.
 | [D. Advanced detection](#d-advanced-detection) | File skip, native file version, registry ALL/ANY | Vijay reports PASS |
 | [E. Real 7-Zip MSI lifecycle](#e-real-7-zip-msi-lifecycle) | Install, repeat skip, upgrade, uninstall, repeat uninstall | PASS reported; action logs reviewed |
 | [F. Real Firefox installer and configuration](#f-real-firefox-installer-and-configuration) | EXE + JSON bundle, post-copy, active browser policy | PASS reported after recovery |
+| [G. Rollback-on-failure orchestration](#g-rollback-on-failure-orchestration-new-block-28-october-2026) | Main-failure rollback, partial rollback, success skips rollback | Native regression PASS, VM acceptance pending |
+| [H. Crash recovery and durable journal](#h-crash-recovery-and-durable-journal-new-block-28-october-2026) | Agent restart, orphan package directory sweep | Native regression PASS, VM acceptance pending |
+| [I. Descendant termination on timeout](#i-descendant-termination-on-timeout-new-block-28-october-2026) | Timeout kills children, reports count hint | Native regression PASS, VM acceptance pending |
+| [J. Reboot-sensitive + MST + config-only](#j-reboot-sensitive-post-verification-new-28-october-2026) | 3010 reboot_required, MSI+MST transform, config-only parameter update | VM acceptance pending (server-team curated vendor packages) |
 
 All commands are manual CMD commands. Open a NEW MOCKSERVER CMD for each block
 with your normal TLS settings; stop the previous server first. Each block states
@@ -1331,3 +1335,455 @@ Waiting for another patch/software installer reports QUEUED with an explicit
 reason; RUNNING starts after the machine gate is acquired. A native regression
 test holds that gate and checks status ordering. This is diagnostic visibility,
 not a claimed fix for the original vendor MSI timeout.
+
+
+## G. Rollback-on-failure orchestration (new block, 28 October 2026)
+
+This block exercises the signed `SoftwareDeploymentSteps.rollback` field. The
+agent runs the rollback steps IN ORDER when the main action or any pre/post
+step fails. Rollback is best-effort: a failing rollback step does NOT stop the
+remaining rollback commands — the admin's signed sequence is executed in full.
+
+### Prepare once
+
+MOCKSERVER - in a fresh CMD with your normal TLS settings:
+
+```cmd
+cd /d C:\temp\mock
+if not exist C:\temp\AegisBundleDemo-src\settings mkdir C:\temp\AegisBundleDemo-src\settings
+echo REGION=apac>C:\temp\AegisBundleDemo-src\settings\app.ini
+echo Rollback sample bundle>C:\temp\AegisBundleDemo-src\readme.txt
+if exist C:\temp\AegisRollbackBundle.zip del C:\temp\AegisRollbackBundle.zip
+mockserver.exe pack C:\temp\AegisBundleDemo-src C:\temp\AegisRollbackBundle.zip
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisRollbackBundle.zip"
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_PRODUCT_CODE="
+set "AEGIS_DEPLOY_UNINSTALL_KEY="
+set "AEGIS_DEPLOY_DISPLAY_NAME="
+set "AEGIS_DEPLOY_REQUIRE_SIG=0"
+set "AEGIS_DEPLOY_TIMEOUT=60"
+set "AEGIS_DEPLOY_BUNDLE_ENTRY="
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=xcopy.exe"
+set "AEGIS_DEPLOY_BUNDLE_DEST="
+set "AEGIS_DEPLOY_BUNDLE_CLEANUP="
+set "AEGIS_DEPLOY_PRE_COMMAND="
+set "AEGIS_DEPLOY_PRE_ARGS="
+set "AEGIS_DEPLOY_PRE_NAME="
+set "AEGIS_DEPLOY_PRE_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_POST_COMMAND="
+set "AEGIS_DEPLOY_POST_ARGS="
+set "AEGIS_DEPLOY_POST_NAME="
+set "AEGIS_DEPLOY_POST_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_ROLLBACK_COMMAND="
+set "AEGIS_DEPLOY_ROLLBACK_ARGS="
+set "AEGIS_DEPLOY_ROLLBACK_NAME="
+set "AEGIS_DEPLOY_ROLLBACK_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_DETECT_COUNT=0"
+set "AEGIS_DEPLOY_DETECT_MODE="
+set "AEGIS_DEPENDENCY_DETECT_COUNT=0"
+set "AEGIS_DEPENDENCY_DETECT_MODE="
+set "AEGIS_DEPENDENCY_ID="
+set "AEGIS_DEPENDENCY_NAME="
+set "AEGIS_NSH="
+```
+
+### Case G1 — Main action fails: rollback runs and leaves a marker
+
+#### 1. Purpose
+
+Prove that when the main `xcopy` deliberately targets an invalid flag so it
+fails, the agent executes the rollback command. The rollback writes a marker
+file so the ENDPOINT check does not depend on log parsing.
+
+#### 2. Commands
+
+**ENDPOINT**, before the run:
+
+```cmd
+if exist C:\temp\AegisRollbackMarker.txt del C:\temp\AegisRollbackMarker.txt
+```
+
+**MOCKSERVER**, after the common preparation:
+
+```cmd
+set "AEGIS_DEPLOY_NAME=Rollback-on-main-failure"
+set "AEGIS_DEPLOY_ARGS=/this-flag-does-not-exist"
+set "AEGIS_DEPLOY_ROLLBACK_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ROLLBACK_ARGS=/D /C echo rollback-fired > C:\temp\AegisRollbackMarker.txt"
+set "AEGIS_DEPLOY_ROLLBACK_NAME=Write rollback marker file"
+set "AEGIS_DEPLOY_ROLLBACK_TIMEOUT_SECONDS=30"
+mockserver.exe server
+```
+
+**ENDPOINT**, after the terminal action status arrives:
+
+```cmd
+type C:\temp\AegisRollbackMarker.txt
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_FAILED` with a reason that includes
+  `rollback after main failure completed (1 step(s))`.
+- `C:\temp\AegisRollbackMarker.txt` exists and contains `rollback-fired`.
+- The package extraction directory is removed.
+
+### Case G2 — Rollback itself has a failing step: later rollback commands still run
+
+#### 1. Purpose
+
+Prove rollback is best-effort. The first rollback step is deliberately broken;
+the second must still run and leave its marker. The final reason must call
+out the first rollback failure explicitly.
+
+#### 2. Commands
+
+**ENDPOINT**, before the run:
+
+```cmd
+if exist C:\temp\AegisRollbackSecondMarker.txt del C:\temp\AegisRollbackSecondMarker.txt
+```
+
+**MOCKSERVER**, after the common preparation:
+
+```cmd
+set "AEGIS_DEPLOY_NAME=Partial-rollback-visibility"
+set "AEGIS_DEPLOY_ARGS=/this-flag-does-not-exist"
+set "AEGIS_DEPLOY_ROLLBACK_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ROLLBACK_ARGS=/D /C exit 9"
+set "AEGIS_DEPLOY_ROLLBACK_NAME=Rollback step that fails"
+set "AEGIS_DEPLOY_ROLLBACK_TIMEOUT_SECONDS=30"
+mockserver.exe server
+```
+
+> This mock exposes ONE rollback command for readable manual cases. The real
+> protocol accepts up to eight rollback steps per workflow; the agent native
+> regression tests cover the partial-rollback semantics across multiple
+> rollback steps (`TestRollbackContinuesPastFailure`,
+> `TestRollbackRunsOnMainFailure`,
+> `TestRollbackRunsOnPostFailure`).
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_FAILED`.
+- Reason mentions `rollback after main failure partial — rollback step 1
+  (Rollback step that fails) exit 9` so the operator sees the partial state.
+- Package directory removed; agent did not re-queue the job.
+
+### Case G3 — Successful deployment skips rollback
+
+#### 1. Purpose
+
+Prove rollback is NOT executed when the main deployment succeeds, so a healthy
+install never undoes itself.
+
+#### 2. Commands
+
+**ENDPOINT**, before the run:
+
+```cmd
+if exist C:\temp\AegisRollbackMustNotFire.txt del C:\temp\AegisRollbackMustNotFire.txt
+if exist C:\temp\AegisWorkflowSuccess rmdir /S /Q C:\temp\AegisWorkflowSuccess
+```
+
+**MOCKSERVER**, after the common preparation:
+
+```cmd
+set "AEGIS_DEPLOY_NAME=Success-skips-rollback"
+set "AEGIS_DEPLOY_ARGS=. C:\temp\AegisWorkflowSuccess /E /I /Y"
+set "AEGIS_DEPLOY_ROLLBACK_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ROLLBACK_ARGS=/D /C echo rollback-should-not-fire > C:\temp\AegisRollbackMustNotFire.txt"
+set "AEGIS_DEPLOY_ROLLBACK_NAME=Must not fire"
+set "AEGIS_DEPLOY_ROLLBACK_TIMEOUT_SECONDS=30"
+mockserver.exe server
+```
+
+**ENDPOINT**, after the terminal action status arrives:
+
+```cmd
+dir C:\temp\AegisRollbackMustNotFire.txt
+dir C:\temp\AegisWorkflowSuccess
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_SUCCESS`.
+- `C:\temp\AegisRollbackMustNotFire.txt` DOES NOT exist (rollback skipped).
+- `C:\temp\AegisWorkflowSuccess` was created by the main xcopy.
+
+
+## H. Crash recovery and durable journal (new block, 28 October 2026)
+
+The agent writes a per-job state file to `C:\Program Files\AegisOne\Client\
+SKVC\jobs\<command_id>.state` and deletes it on terminal finish. A journal
+record that outlives the agent process is reported as `ACTION_PHASE_FAILED`
+with reason `agent restarted while <state>; result unknown — not retried
+automatically` the next time the agent starts, and any orphaned package
+extraction directory under `<download_dir>/packages/` is removed.
+
+### Case H1 — Agent restart during install is reported honestly
+
+#### 1. Purpose
+
+Prove in-flight state survives a service restart as an honest failure signal.
+The console learns the install did NOT reach a terminal result; it is NOT
+silently retried.
+
+#### 2. Commands
+
+**ENDPOINT**, before the run:
+
+```cmd
+if exist "C:\Program Files\AegisOne\Client\SKVC\jobs\recovery-demo.state" del "C:\Program Files\AegisOne\Client\SKVC\jobs\recovery-demo.state"
+```
+
+Create a FAKE in-flight record so the recovery sweep sees it on next start.
+Using PowerShell for the here-doc write (JSON content, UTF-8, no BOM required):
+
+```cmd
+powershell -NoProfile -Command "@{command_id='recovery-demo'; device_id='test'; name='Recovery demo'; action='install'; state='running'; started_at=1709999999; last_updated=1709999999} | ConvertTo-Json | Set-Content -Encoding ASCII 'C:\Program Files\AegisOne\Client\SKVC\jobs\recovery-demo.state'"
+```
+
+Then restart the agent service:
+
+```cmd
+sc stop AegisOneAgent
+sc start AegisOneAgent
+```
+
+**MOCKSERVER**, keep running (or restart it; the ActionStatus is buffered
+until the next connect so the order does not matter).
+
+#### 3. Expected results
+
+- Mock prints an ActionStatus for `action_id = recovery-demo` with phase
+  `ACTION_PHASE_FAILED` and reason starting
+  `agent restarted while running; result unknown — not retried automatically`.
+- The journal file at `C:\Program Files\AegisOne\Client\SKVC\jobs\
+  recovery-demo.state` is deleted.
+
+### Case H2 — Orphan package directory from an interrupted bundle is removed
+
+#### 1. Purpose
+
+Prove orphaned extraction directories do not leak to disk after an
+interrupted bundle deploy — the recovery sweep removes them.
+
+#### 2. Commands
+
+**ENDPOINT**, before the run:
+
+```cmd
+set "AEGIS_PACKAGES_ROOT=C:\Program Files\AegisOne\Client\SKVC\download\packages"
+if not exist "%AEGIS_PACKAGES_ROOT%" mkdir "%AEGIS_PACKAGES_ROOT%"
+mkdir "%AEGIS_PACKAGES_ROOT%\aegis-package-recovery-h2"
+echo leftover>"%AEGIS_PACKAGES_ROOT%\aegis-package-recovery-h2\leftover.txt"
+powershell -NoProfile -Command "@{command_id='recovery-h2'; device_id='test'; name='Recovery H2'; action='install'; state='extracting'; package_dir='C:\Program Files\AegisOne\Client\SKVC\download\packages\aegis-package-recovery-h2'; started_at=1709999999; last_updated=1709999999} | ConvertTo-Json | Set-Content -Encoding ASCII 'C:\Program Files\AegisOne\Client\SKVC\jobs\recovery-h2.state'"
+sc stop AegisOneAgent
+sc start AegisOneAgent
+```
+
+#### 3. Expected results
+
+- The directory `C:\Program Files\AegisOne\Client\SKVC\download\packages\
+  aegis-package-recovery-h2` and its contents are gone.
+- Mock shows ActionStatus for `recovery-h2` with `package_cleanup = removed`.
+- Journal file deleted.
+
+
+## I. Descendant termination on timeout (new block, 28 October 2026)
+
+The agent wraps each installer in a Windows Job Object. On timeout or kill,
+every descendant process dies with the parent; a QUEUED patch install, a
+scanning child, or an installer helper cannot be left behind. The agent
+reports a descendant hint in the failure reason so a timeout root cause can
+be isolated: `; 2 descendant process(es) killed with parent` vs
+`; no descendants were alive at kill (parent process was likely stuck)`.
+
+### Case I1 — Timeout reports descendant count honestly
+
+#### 1. Purpose
+
+Prove the agent kills every descendant on timeout AND reports the live child
+count in the terminal status — the Firefox / MSI acceptance gap flagged as
+"timeout root cause not isolated" is now observable.
+
+#### 2. Commands
+
+**MOCKSERVER**, after Case G1's common preparation (bundle re-used):
+
+```cmd
+set "AEGIS_DEPLOY_NAME=Descendant kill with diagnostic"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ARGS=/D /C ping -n 30 127.0.0.1 ^> nul"
+set "AEGIS_DEPLOY_TIMEOUT=5"
+set "AEGIS_DEPLOY_ROLLBACK_COMMAND="
+mockserver.exe server
+```
+
+**ENDPOINT**, during the five-second window, confirm `ping.exe` runs under
+`cmd.exe` under the agent service:
+
+```cmd
+tasklist /FI "IMAGENAME eq ping.exe"
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_FAILED` after ~5 seconds.
+- Reason includes `installer timed out after 5s` and either:
+  - `; 1 descendant process(es) killed with parent (child installer helpers
+    were still running)` — when the ping child is still alive at kill, or
+  - `; no descendants were alive at kill (parent process was likely stuck)` —
+    when the kernel race has already reaped the ping child; retry if needed.
+- After the status, `tasklist /FI "IMAGENAME eq ping.exe"` returns no rows.
+
+
+## J. Reboot-sensitive post-verification (new, 28 October 2026)
+
+Reboot-sensitive EXE acceptance (vendor driver EXEs, some Firefox-with-service
+scenarios, kernel-mode runtimes) remains part of the vendor matrix. The agent
+honors `ACTION_PHASE_SUCCESS` with `reboot_required = true` and does NOT
+treat a pending reboot as a failed verification. Vijay runs this against a
+real vendor payload on a staging endpoint and captures the ActionStatus log.
+
+### Case J1 — Reboot-required success is accepted, not re-queued
+
+#### 1. Purpose
+
+Prove the agent accepts exit code 3010 (`ERROR_SUCCESS_REBOOT_REQUIRED`) as
+a successful install and surfaces `reboot_required = true` without re-queuing
+the install. This case gates the vendor matrix for reboot-dependent EXE
+installers.
+
+#### 2. Commands
+
+MOCKSERVER prepares the bundle used in G/I. Replace the main command with the
+real vendor installer EXE and silent/no-restart flags. For the exact vendor
+case the server team runs on a staging VM, the signed command is the vendor's
+documented silent/no-restart invocation (for example a vendor-signed EXE
+whose silent flag is `/S` and no-restart is `/norestart`).
+
+```cmd
+set "AEGIS_DEPLOY_NAME=Vendor EXE with reboot required"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=<vendor-installer-under-package.exe>"
+set "AEGIS_DEPLOY_ARGS=<vendor-silent-and-norestart-flags>"
+set "AEGIS_DEPLOY_TIMEOUT=600"
+mockserver.exe server
+```
+
+**ENDPOINT**, after terminal status:
+
+```cmd
+powershell -NoProfile -Command "Get-ChildItem -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'"
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_SUCCESS`, `exit_code = 3010`, and
+  `reboot_required = true`.
+- Reason reports the vendor's exit code without claiming an unverified install
+  state; verification runs after the next successful boot, not now.
+- The agent does NOT re-queue the signed command. Server team's console
+  should display a pending-restart state consistent with the ActionStatus.
+
+### Case J2 — Vendor MSI + MST (transform) acceptance
+
+#### 1. Purpose
+
+Prove the agent runs an MSI with a signed MST transform file inside the same
+bundle. MST acceptance was flagged outstanding in prior handoffs; this case
+closes the gap for the specific vendor the server team selects.
+
+#### 2. Commands
+
+MOCKSERVER builds a bundle containing BOTH the vendor `.msi` and the
+transform `.mst` in the same package root:
+
+```cmd
+mkdir C:\temp\AegisMSTDemo-src
+copy C:\path\to\vendor.msi C:\temp\AegisMSTDemo-src\
+copy C:\path\to\vendor.mst C:\temp\AegisMSTDemo-src\
+if exist C:\temp\AegisMSTDemo.zip del C:\temp\AegisMSTDemo.zip
+mockserver.exe pack C:\temp\AegisMSTDemo-src C:\temp\AegisMSTDemo.zip
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisMSTDemo.zip"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=msiexec.exe"
+set "AEGIS_DEPLOY_ARGS=/i vendor.msi TRANSFORMS=vendor.mst /qn /norestart /L*v C:\Windows\Temp\Aegis-vendor-mst.log"
+set "AEGIS_DEPLOY_TIMEOUT=600"
+set "AEGIS_DEPLOY_PRODUCT_CODE=<vendor-ProductCode-GUID>"
+set "AEGIS_DEPLOY_ACTION=install"
+mockserver.exe server
+```
+
+**ENDPOINT**, after terminal status:
+
+```cmd
+powershell -NoProfile -Command "Get-Content 'C:\Windows\Temp\Aegis-vendor-mst.log' -Tail 80"
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_SUCCESS` with `exit_code = 0` or `3010`.
+- The MSI log shows the transform was applied — look for `TRANSFORMS` set in
+  the Property table and transform-specific property/feature changes.
+- Post-action detection confirms installed product (via `ProductCode`).
+
+### Case J3 — Config-only parameterized update (no reinstall)
+
+#### 1. Purpose
+
+Prove the signed `parameters` map can carry configuration-only changes that
+flow to a post-step that updates a configuration file for an already-installed
+product WITHOUT reinstalling the main package. Detection must mark the product
+`already installed`; the main action must NOT run; the post-step must still
+apply the parameter change.
+
+#### 2. Commands
+
+Precondition: the real vendor product is already installed and detected by
+`ProductCode`, `UninstallKey` or `DisplayName`.
+
+MOCKSERVER, after common preparation and after the product is already present:
+
+```cmd
+set "AEGIS_DEPLOY_NAME=Config-only parameter update"
+set "AEGIS_DEPLOY_PRODUCT_CODE=<installed-ProductCode-GUID>"
+set "AEGIS_DEPLOY_PARAMS=REGION=emea,CONFIG_PATH=C:\ProgramData\Vendor\settings.ini"
+set "AEGIS_DEPLOY_POST_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_POST_ARGS=/D /C echo REGION=${REGION}> ${CONFIG_PATH}"
+set "AEGIS_DEPLOY_POST_NAME=Apply config-only update"
+set "AEGIS_DEPLOY_POST_TIMEOUT_SECONDS=30"
+mockserver.exe server
+```
+
+**ENDPOINT**, after terminal status:
+
+```cmd
+type C:\ProgramData\Vendor\settings.ini
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_SUCCESS`.
+- Reason indicates main action skipped (`already installed (skipped)` on the
+  earlier RUNNING line), then post-step ran.
+- `settings.ini` contains `REGION=emea`. The parameter substitution ran on
+  the server-signed command before dispatch; the post-step consumed the
+  resolved arguments. No reinstall of the main vendor payload occurred.
+
+### Remaining acceptance after J
+
+- Reboot-sensitive EXE vendor matrix: beyond J1, confirm the specific vendor
+  packages the server team selects (driver EXEs, service installers).
+- MST transforms: beyond J2, confirm the specific transforms the server team
+  curates per vendor.
+- Config-only parameterized updates: beyond J3, cover vendors whose
+  configuration flows through registry hives rather than files.
+
+The agent-side gaps in the 27 October handoff — durable crash recovery, orphan
+sweep, descendant termination, rollback orchestration, structured timeout
+diagnostics — are now implemented and native-tested. Real-vendor matrix
+closure remains the final SoftDist checkpoint and is tracked here, not in
+project memory alone.
