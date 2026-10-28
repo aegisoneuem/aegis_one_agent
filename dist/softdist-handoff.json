@@ -3,24 +3,20 @@
     "platform":  "windows/amd64",
     "guide":  "docs/softdist-today-testing.md",
     "manual_cases":  27,
+    "primary_focus":  "Real-vendor acceptance of the J block: reboot-sensitive EXE handling, MSI + MST transform, config-only parameter update without reinstall. These are the pending items after 7-Zip (E) and Firefox (F) acceptance.",
     "blocks":  [
-                   "multi-file packages",
-                   "pre/post commands",
-                   "package dependencies",
-                   "advanced file/version/registry detection ALL/ANY",
-                   "real 7-Zip MSI install/repeat-skip/upgrade/uninstall/repeat-uninstall",
-                   "real Firefox EXE plus configuration and active homepage policy",
-                   "rollback-on-failure orchestration (new)",
-                   "crash recovery and durable journal (new)",
-                   "descendant termination on timeout (new)",
-                   "reboot-sensitive post-verification + MSI/MST + config-only (new)"
+                   "A. multi-file packages (PASS)",
+                   "B. pre/post commands (PASS)",
+                   "C. package dependencies (PASS)",
+                   "D. advanced file/version/registry detection ALL/ANY (PASS)",
+                   "E. real 7-Zip MSI install/repeat-skip/upgrade/uninstall/repeat-uninstall (PASS)",
+                   "F. real Firefox EXE plus configuration and active homepage policy (PASS)",
+                   "G. rollback-on-failure orchestration (native regression PASS; VM pending)",
+                   "H. crash recovery and durable journal (native regression PASS; VM pending)",
+                   "I. descendant termination on timeout (native regression PASS; VM pending)",
+                   "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PRIMARY FOCUS; VM pending)"
                ],
-    "engine_updates":  [
-                          "durable per-job state journal at <SKVC>/jobs/<id>.state with atomic rename writes and startup recovery sweep that reports in-flight jobs as RECOVERED_FAILED and removes orphan package extraction directories",
-                          "Windows Job Object wrapper around every installer so timeouts, cancels and agent crashes terminate the whole process tree (descendant installer helpers no longer survive)",
-                          "signed SoftwareDeploymentSteps.rollback field (max 8 steps) that runs best-effort on pre/main/post failure; a failing rollback step reports its exit without stopping remaining rollback commands",
-                          "structured timeout diagnostics: terminal reason now carries elapsed/timeout plus live descendant-count hint so a stuck parent process can be told apart from a stuck child installer helper"
-                      ],
+    "additive_engine_updates":  "Agent-side durability improvements landed alongside the J block: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics. These are additive (older servers keep working) and native-tested. VM acceptance of G/H/I is pending but is NOT a prerequisite for the primary J focus.",
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
@@ -28,12 +24,12 @@
     "shared_proto_commit":  "a06654111ff4afd4fd53a39abeff2e3b2d4b0bfd",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
-                       "agent_tests":  "PASS: go test ./... (2026-10-28), including journal, rollback, job-object and descendant-count regressions",
+                       "agent_tests":  "PASS: go test ./... (2026-10-28)",
                        "agent_vet":  "PASS: go vet ./... (2026-10-28)",
-                       "proto_tests":  "PASS: go test ./... on new shared proto revision",
+                       "proto_tests":  "PASS: go test ./... on shared proto a066541",
                        "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
-                       "vm_acceptance":  "Native unit regressions cover the new A1-A3/C1 engine updates. VM acceptance of G/H/I/J blocks is pending Vijay or server-team runs on a Windows endpoint.",
-                       "real_vendor_acceptance":  "Previous release reported 7-Zip and Firefox PASS on 2026-10-27 (logs reviewed by Vijay). New J block (reboot-sensitive EXE, MSI+MST, config-only) is PENDING server-team curated vendor packages.",
+                       "vm_acceptance":  "A-F blocks PASS. G/H/I/J blocks VM acceptance pending.",
+                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. The remaining real-vendor matrix is the J block: reboot-sensitive EXE, MSI with MST transform, config-only parameter update. Server-team can run them independently with the concrete sample packages listed in the J preflight.",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [

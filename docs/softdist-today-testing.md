@@ -18,7 +18,7 @@ vendor cases. Run the real cases in E and F in their stated order.
 | [G. Rollback-on-failure orchestration](#g-rollback-on-failure-orchestration-new-block-28-october-2026) | Main-failure rollback, partial rollback, success skips rollback | Native regression PASS, VM acceptance pending |
 | [H. Crash recovery and durable journal](#h-crash-recovery-and-durable-journal-new-block-28-october-2026) | Agent restart, orphan package directory sweep | Native regression PASS, VM acceptance pending |
 | [I. Descendant termination on timeout](#i-descendant-termination-on-timeout-new-block-28-october-2026) | Timeout kills children, reports count hint | Native regression PASS, VM acceptance pending |
-| [J. Reboot-sensitive + MST + config-only](#j-reboot-sensitive-post-verification-new-28-october-2026) | 3010 reboot_required, MSI+MST transform, config-only parameter update | VM acceptance pending (server-team curated vendor packages) |
+| [J. Reboot-sensitive + MST + config-only (PRIMARY FOCUS)](#j-reboot-sensitive--msimst--config-only-primary-focus-28-october-2026) | Deterministic 3010 handling, 7-Zip MSI + MST transform, config-only parameter update via post-step | VM acceptance pending; concrete sample packages pinned in the J preflight |
 
 All commands are manual CMD commands. Open a NEW MOCKSERVER CMD for each block
 with your normal TLS settings; stop the previous server first. Each block states
@@ -1641,116 +1641,190 @@ tasklist /FI "IMAGENAME eq ping.exe"
 - After the status, `tasklist /FI "IMAGENAME eq ping.exe"` returns no rows.
 
 
-## J. Reboot-sensitive post-verification (new, 28 October 2026)
+## J. Reboot-sensitive + MSI/MST + config-only (PRIMARY FOCUS 28 October 2026)
 
-Reboot-sensitive EXE acceptance (vendor driver EXEs, some Firefox-with-service
-scenarios, kernel-mode runtimes) remains part of the vendor matrix. The agent
-honors `ACTION_PHASE_SUCCESS` with `reboot_required = true` and does NOT
-treat a pending reboot as a failed verification. Vijay runs this against a
-real vendor payload on a staging endpoint and captures the ActionStatus log.
+This block is the remaining real-vendor matrix after E (7-Zip) and F (Firefox):
+3010 reboot-required handling, MSI + MST transform acceptance, and a
+config-only parameter update that does NOT reinstall an already-present
+product. Each case names a concrete sample package so no extra inputs are
+needed to begin running.
 
-### Case J1 — Reboot-required success is accepted, not re-queued
+### Preflight — one-time endpoint setup
 
-#### 1. Purpose
+**ENDPOINT**, as the LocalSystem agent will see it:
 
-Prove the agent accepts exit code 3010 (`ERROR_SUCCESS_REBOOT_REQUIRED`) as
-a successful install and surfaces `reboot_required = true` without re-queuing
-the install. This case gates the vendor matrix for reboot-dependent EXE
-installers.
+1. **7-Zip MSI** for J1 harness and J2 transform. Download the 7-Zip MSI
+   (`7z<version>-x64.msi`) from <https://www.7-zip.org/download.html>. For
+   this guide the server team can reuse the exact file used in Block E.
+2. **ORCA** for authoring the MST in J2. ORCA ships with the Windows SDK
+   (`Microsoft Windows SDK/bin/x64/Orca-x86_en-us.msi`) or install from
+   <https://learn.microsoft.com/en-us/windows/win32/msi/platform-sdk-components-for-windows-installer-developers>.
+3. **PsExec** optional for running MSI logs under a specific user if you
+   need to retest Run-As from §I. Not required for J1/J2/J3.
 
-#### 2. Commands
-
-MOCKSERVER prepares the bundle used in G/I. Replace the main command with the
-real vendor installer EXE and silent/no-restart flags. For the exact vendor
-case the server team runs on a staging VM, the signed command is the vendor's
-documented silent/no-restart invocation (for example a vendor-signed EXE
-whose silent flag is `/S` and no-restart is `/norestart`).
-
-```cmd
-set "AEGIS_DEPLOY_NAME=Vendor EXE with reboot required"
-set "AEGIS_DEPLOY_BUNDLE_COMMAND=<vendor-installer-under-package.exe>"
-set "AEGIS_DEPLOY_ARGS=<vendor-silent-and-norestart-flags>"
-set "AEGIS_DEPLOY_TIMEOUT=600"
-mockserver.exe server
-```
-
-**ENDPOINT**, after terminal status:
-
-```cmd
-powershell -NoProfile -Command "Get-ChildItem -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'"
-```
-
-#### 3. Expected results
-
-- Terminal status is `ACTION_PHASE_SUCCESS`, `exit_code = 3010`, and
-  `reboot_required = true`.
-- Reason reports the vendor's exit code without claiming an unverified install
-  state; verification runs after the next successful boot, not now.
-- The agent does NOT re-queue the signed command. Server team's console
-  should display a pending-restart state consistent with the ActionStatus.
-
-### Case J2 — Vendor MSI + MST (transform) acceptance
+### Case J1 — 3010 reboot-required is accepted as SUCCESS + reboot_required
 
 #### 1. Purpose
 
-Prove the agent runs an MSI with a signed MST transform file inside the same
-bundle. MST acceptance was flagged outstanding in prior handoffs; this case
-closes the gap for the specific vendor the server team selects.
+Prove the agent accepts `ERROR_SUCCESS_REBOOT_REQUIRED` (exit code 3010) as a
+successful install and surfaces `reboot_required = true` without re-queuing
+the install or marking it FAILED. The exact deterministic signal (exit 3010)
+is produced by `cmd /C exit 3010` so the behavior under test is the agent's
+3010 handling, not whether a specific vendor's installer requires reboot on
+this particular VM today.
 
 #### 2. Commands
 
-MOCKSERVER builds a bundle containing BOTH the vendor `.msi` and the
-transform `.mst` in the same package root:
+**MOCKSERVER**, after common preparation (clear PRE/POST/ROLLBACK/dependency
+envs from the top of the guide, keep TLS):
 
 ```cmd
-mkdir C:\temp\AegisMSTDemo-src
-copy C:\path\to\vendor.msi C:\temp\AegisMSTDemo-src\
-copy C:\path\to\vendor.mst C:\temp\AegisMSTDemo-src\
-if exist C:\temp\AegisMSTDemo.zip del C:\temp\AegisMSTDemo.zip
-mockserver.exe pack C:\temp\AegisMSTDemo-src C:\temp\AegisMSTDemo.zip
-set "AEGIS_DEPLOY_FILE=C:\temp\AegisMSTDemo.zip"
-set "AEGIS_DEPLOY_BUNDLE_COMMAND=msiexec.exe"
-set "AEGIS_DEPLOY_ARGS=/i vendor.msi TRANSFORMS=vendor.mst /qn /norestart /L*v C:\Windows\Temp\Aegis-vendor-mst.log"
-set "AEGIS_DEPLOY_TIMEOUT=600"
-set "AEGIS_DEPLOY_PRODUCT_CODE=<vendor-ProductCode-GUID>"
+if not exist C:\temp\AegisBundleDemo-src\settings mkdir C:\temp\AegisBundleDemo-src\settings
+echo REGION=apac>C:\temp\AegisBundleDemo-src\settings\app.ini
+echo J1 bundle>C:\temp\AegisBundleDemo-src\readme.txt
+if exist C:\temp\AegisJ1Bundle.zip del C:\temp\AegisJ1Bundle.zip
+mockserver.exe pack C:\temp\AegisBundleDemo-src C:\temp\AegisJ1Bundle.zip
+
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisJ1Bundle.zip"
+set "AEGIS_DEPLOY_HASH="
 set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_NAME=J1 - deterministic 3010 handling"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ARGS=/D /C exit 3010"
+set "AEGIS_DEPLOY_TIMEOUT=60"
+mockserver.exe server
+```
+
+#### 3. Expected results
+
+- Terminal status is `ACTION_PHASE_SUCCESS` with `exit_code = 3010` and
+  `reboot_required = true`. The reason mentions `restart required`.
+- The agent does NOT re-queue the signed command (no second RUNNING for the
+  same action_id).
+- The package extraction directory is removed (default cleanup for a
+  non-custom destination).
+
+> OPTIONAL real-vendor variant: replace the main command with
+> `AEGIS_DEPLOY_BUNDLE_COMMAND=vc_redist.x64.exe` plus `AEGIS_DEPLOY_ARGS=
+> /quiet /norestart` after copying `vc_redist.x64.exe` into
+> `C:\temp\AegisBundleDemo-src`. Microsoft's Visual C++ 2015-2022
+> Redistributable returns 3010 only when a reboot is already queued on the
+> endpoint; its 0 return is also an accepted PASS. The deterministic case
+> above remains the acceptance test for the agent's 3010 policy.
+
+### Case J2 — 7-Zip MSI + MST transform acceptance
+
+#### 1. Purpose
+
+Prove the agent runs an MSI with an MST transform packaged alongside it in the
+same signed bundle. The transform changes the install directory to a
+non-default path so the test does not depend on the vendor logging the
+transform id itself.
+
+#### 2. Author a tiny MST once (ONE-TIME, on MOCKSERVER)
+
+With `7z<version>-x64.msi` already downloaded:
+
+1. Open ORCA, `File > Open > 7z<version>-x64.msi`.
+2. `Transform > New Transform`.
+3. In the `Property` table, locate `INSTALLDIR` (or `TARGETDIR`) and change
+   its value to `C:\7ZipMST`.
+4. `Transform > Generate Transform` and save as
+   `C:\temp\7zip-installdir.mst`.
+5. Close ORCA without saving over the MSI.
+
+#### 3. Commands
+
+**ENDPOINT**, before the run (if 7-Zip is already installed from block E,
+uninstall it first so the transform's install directory can be observed):
+
+```cmd
+wmic product where "Name like '7-Zip%%'" call uninstall /nointeractive
+rmdir /S /Q C:\7ZipMST
+```
+
+**MOCKSERVER**, after common preparation:
+
+```cmd
+mkdir C:\temp\AegisJ2-src
+copy C:\path\to\7z<version>-x64.msi C:\temp\AegisJ2-src\7zip.msi
+copy C:\temp\7zip-installdir.mst C:\temp\AegisJ2-src\
+if exist C:\temp\AegisJ2Bundle.zip del C:\temp\AegisJ2Bundle.zip
+mockserver.exe pack C:\temp\AegisJ2-src C:\temp\AegisJ2Bundle.zip
+
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisJ2Bundle.zip"
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_NAME=J2 - 7-Zip MSI with MST transform"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=msiexec.exe"
+set "AEGIS_DEPLOY_ARGS=/i 7zip.msi TRANSFORMS=7zip-installdir.mst /qn /norestart /L*v C:\Windows\Temp\Aegis-7zip-mst.log"
+set "AEGIS_DEPLOY_TIMEOUT=600"
 mockserver.exe server
 ```
 
 **ENDPOINT**, after terminal status:
 
 ```cmd
-powershell -NoProfile -Command "Get-Content 'C:\Windows\Temp\Aegis-vendor-mst.log' -Tail 80"
+dir C:\7ZipMST
+powershell -NoProfile -Command "Get-Content 'C:\Windows\Temp\Aegis-7zip-mst.log' -Tail 80"
 ```
 
-#### 3. Expected results
+#### 4. Expected results
 
-- Terminal status is `ACTION_PHASE_SUCCESS` with `exit_code = 0` or `3010`.
-- The MSI log shows the transform was applied — look for `TRANSFORMS` set in
-  the Property table and transform-specific property/feature changes.
-- Post-action detection confirms installed product (via `ProductCode`).
+- Terminal status is `ACTION_PHASE_SUCCESS` with `exit_code = 0`.
+- `C:\7ZipMST` exists and contains `7-Zip.chm`, `7z.exe` and sibling files -
+  the transform took effect; without the transform, 7-Zip installs under
+  `C:\Program Files\7-Zip`.
+- `Aegis-7zip-mst.log` tail shows `TRANSFORMS=` set and the install actions
+  running under the transformed INSTALLDIR path.
+- The package extraction directory is removed.
 
-### Case J3 — Config-only parameterized update (no reinstall)
+### Case J3 — Config-only parameter update without reinstall
 
 #### 1. Purpose
 
-Prove the signed `parameters` map can carry configuration-only changes that
-flow to a post-step that updates a configuration file for an already-installed
-product WITHOUT reinstalling the main package. Detection must mark the product
-`already installed`; the main action must NOT run; the post-step must still
-apply the parameter change.
+Prove that a signed `parameters` map carrying a configuration-only update
+flows to a post-step that writes/updates a product's config file for an
+already-installed product, WITHOUT reinstalling the main package. The main
+action is a deliberate no-op (`cmd /C echo config-only ...`) that only runs
+through the workflow so the post-step applies the parameter. This exercises
+the parameter substitution + post-step pipeline; it is NOT a product_code
+detection skip test (ProductCode detection short-circuits before any workflow
+step runs, so a config-only update must drive through the main action).
 
 #### 2. Commands
 
-Precondition: the real vendor product is already installed and detected by
-`ProductCode`, `UninstallKey` or `DisplayName`.
-
-MOCKSERVER, after common preparation and after the product is already present:
+**ENDPOINT**, before the run:
 
 ```cmd
-set "AEGIS_DEPLOY_NAME=Config-only parameter update"
-set "AEGIS_DEPLOY_PRODUCT_CODE=<installed-ProductCode-GUID>"
-set "AEGIS_DEPLOY_PARAMS=REGION=emea,CONFIG_PATH=C:\ProgramData\Vendor\settings.ini"
+if not exist C:\ProgramData\AegisVendor mkdir C:\ProgramData\AegisVendor
+if exist C:\ProgramData\AegisVendor\settings.ini del C:\ProgramData\AegisVendor\settings.ini
+```
+
+**MOCKSERVER**, after common preparation (make sure
+`AEGIS_DEPLOY_PRODUCT_CODE` is empty so the main workflow runs; the post-step
+is where the config change lives):
+
+```cmd
+if not exist C:\temp\AegisJ3-src mkdir C:\temp\AegisJ3-src
+echo J3 bundle>C:\temp\AegisJ3-src\readme.txt
+if exist C:\temp\AegisJ3Bundle.zip del C:\temp\AegisJ3Bundle.zip
+mockserver.exe pack C:\temp\AegisJ3-src C:\temp\AegisJ3Bundle.zip
+
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisJ3Bundle.zip"
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_NAME=J3 - config-only parameter update"
+set "AEGIS_DEPLOY_PRODUCT_CODE="
+set "AEGIS_DEPLOY_UNINSTALL_KEY="
+set "AEGIS_DEPLOY_DISPLAY_NAME="
+set "AEGIS_DEPLOY_PARAMS=REGION=emea,CONFIG_PATH=C:\ProgramData\AegisVendor\settings.ini"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ARGS=/D /C echo config-only run on %COMPUTERNAME%"
+set "AEGIS_DEPLOY_TIMEOUT=60"
 set "AEGIS_DEPLOY_POST_COMMAND=cmd.exe"
 set "AEGIS_DEPLOY_POST_ARGS=/D /C echo REGION=${REGION}> ${CONFIG_PATH}"
 set "AEGIS_DEPLOY_POST_NAME=Apply config-only update"
@@ -1761,29 +1835,36 @@ mockserver.exe server
 **ENDPOINT**, after terminal status:
 
 ```cmd
-type C:\ProgramData\Vendor\settings.ini
+type C:\ProgramData\AegisVendor\settings.ini
 ```
 
 #### 3. Expected results
 
-- Terminal status is `ACTION_PHASE_SUCCESS`.
-- Reason indicates main action skipped (`already installed (skipped)` on the
-  earlier RUNNING line), then post-step ran.
-- `settings.ini` contains `REGION=emea`. The parameter substitution ran on
-  the server-signed command before dispatch; the post-step consumed the
-  resolved arguments. No reinstall of the main vendor payload occurred.
+- Terminal status is `ACTION_PHASE_SUCCESS`, exit code 0.
+- `C:\ProgramData\AegisVendor\settings.ini` exists and contains `REGION=emea`.
+- Progress order was `main` -> `post-deployment`. The post-step consumed the
+  substituted path and value from the signed parameters.
+- Package directory removed.
+
+> Note: config-only updates that must bypass the main action entirely require
+> product_code to be absent (so the ProductCode gate does not short-circuit)
+> and a benign main command that always succeeds. Driving the parameter
+> change through the post-step is the recommended production pattern because
+> post-step failures appear separately from main-install failures in the
+> console.
 
 ### Remaining acceptance after J
 
-- Reboot-sensitive EXE vendor matrix: beyond J1, confirm the specific vendor
-  packages the server team selects (driver EXEs, service installers).
-- MST transforms: beyond J2, confirm the specific transforms the server team
-  curates per vendor.
-- Config-only parameterized updates: beyond J3, cover vendors whose
-  configuration flows through registry hives rather than files.
+- Specific reboot-sensitive EXE packages the server team curates (vendor
+  driver EXEs, kernel-mode runtimes) beyond the deterministic J1 case.
+- Additional MST transforms the server team authors per vendor beyond J2.
+- Config-only updates that write to registry hives in addition to the file
+  path covered by J3.
+- Section 4 (production backend/UI/authorization, package library,
+  targeting, scheduling, retry/job persistence, audit views) remains the
+  server-team track and is not gated on this handoff.
 
-The agent-side gaps in the 27 October handoff — durable crash recovery, orphan
-sweep, descendant termination, rollback orchestration, structured timeout
-diagnostics — are now implemented and native-tested. Real-vendor matrix
-closure remains the final SoftDist checkpoint and is tracked here, not in
-project memory alone.
+The additive agent-side durability updates summarized in
+`dist/softdist-handoff.json` (`additive_engine_updates`) carry their own
+native regression coverage. Their VM acceptance is tracked in blocks G, H
+and I of this guide and is not a prerequisite for closing the J block.
