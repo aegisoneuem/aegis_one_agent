@@ -1,23 +1,34 @@
 # dist - current prebuilt artifacts
 
-Windows x64 server-team handoff, 27 October 2026. Replace BOTH agent and
+Windows x64 server-team handoff, 28 October 2026. Replace BOTH agent and
 mockserver, or install the matching agent MSI.
 
 **Testing: use only [the single manual guide](../docs/softdist-today-testing.md).**
-It contains 12 manual cases in four blocks: multi-file packages, pre/post commands,
-package dependencies, advanced file/version/registry detection with ALL/ANY.
+It contains 18 manual cases in six blocks: multi-file packages, pre/post commands,
+package dependencies, advanced file/version/registry detection with ALL/ANY,
+five real 7-Zip MSI lifecycle cases and Firefox EXE/config/active-policy acceptance.
 Every case states purpose, exact CMD commands and expected results. No test
 launcher scripts or probe EXE are needed. Old split test guides redirect there.
 
-Vijay reports all four blocks passed. Go tests/vet and protocol tests pass; the
+Vijay reports all four engine blocks and both real-vendor blocks passed. The guide
+records the Firefox recovery and the first MSI timeout without claiming a proven
+root cause. Go tests/vet and protocol tests pass; the
 rebuilt MSI's extracted agent matches the distributed EXE. Artifact hashes and the
 required shared protocol revision are in `softdist-handoff.json`.
+
+27 October diagnostic rebuild: agent EXE/MSI now log SoftDist queue handoff,
+worker pickup, machine-install gate waits and execution stages. A job waiting
+behind another installer reports QUEUED with an explicit wait reason. Mockserver
+is unchanged. This improves diagnostics; the real 7-Zip MSI timeout remains under
+investigation. Restarting mockserver can submit the same `deploy-001` again while
+an earlier attempt is still running on the agent.
 
 Included related fix: explicit CMD quotes/redirection preserve paths containing
 spaces. Normal server mode is `mockserver.exe server`; NSH is explicit.
 Existing Run-As/secure parameters/uninstall and NSH capabilities remain included.
-Real vendor MSI/MST/EXE/runtime acceptance and production backend/UI completion
-remain separate. SoftDist remains the priority before the other module tracks.
+Remaining: parameterized config-only update, real runtime dependencies, MST and
+failure/reboot acceptance, plus production backend/UI integration. SoftDist
+remains the priority before the other module tracks.
 
 ## Historical references
 

@@ -286,6 +286,7 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 func (s *softdistInstaller) enqueue(ctx context.Context, job softdistJob) {
 	select {
 	case s.jobs <- job:
+		slog.Info("software_deploy: handed to worker queue", "command_id", job.commandID, "pending_jobs", len(s.jobs))
 	case <-ctx.Done():
 		clearPrivateDeployment(job.spec)
 	}
@@ -307,6 +308,17 @@ func (s *softdistInstaller) run(job softdistJob) {
 	spec := job.spec
 	cmdID := job.commandID
 	started := time.Now().Unix()
+	slog.Info("software_deploy: worker picked up job", "command_id", cmdID)
+
+	// Report contention explicitly rather than appearing to run an installer
+	// while another patch/software action still owns the machine install gate.
+	if !machineInstallGate.TryLock() {
+		slog.Info("software_deploy: waiting for another patch/software installation to finish", "command_id", cmdID)
+		sendStatus(s.outbox, simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "", pb.ActionPhase_ACTION_PHASE_QUEUED, "waiting for another patch/software installation to finish"))
+		machineInstallGate.Lock()
+	}
+	defer machineInstallGate.Unlock()
+	slog.Info("software_deploy: machine install gate acquired", "command_id", cmdID)
 
 	initialPhase := pb.ActionPhase_ACTION_PHASE_RUNNING
 	initialReason := "starting software action"
@@ -319,13 +331,10 @@ func (s *softdistInstaller) run(job softdistJob) {
 		Phase: initialPhase, Reason: initialReason, StartedAt: started,
 	})
 
-	// One installer at a time across the whole machine (shared with patches).
-	machineInstallGate.Lock()
-	defer machineInstallGate.Unlock()
-
 	defer clearPrivateDeployment(spec)
 	var session *softdist.Session
 	if privateDeployment(spec) {
+		slog.Info("software_deploy: opening execution context", "command_id", cmdID)
 		var err error
 		session, err = softdist.OpenSession(deploymentExecution(spec))
 		clear(spec.GetExecution().GetPasswordUtf8())
@@ -338,6 +347,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 				slog.Warn("software_deploy: profile cleanup failed", "error", err)
 			}
 		}()
+		slog.Info("software_deploy: checking installed state in execution context", "command_id", cmdID)
 		skip, reason, err := scopedDeploymentPrecheck(spec, session)
 		if err != nil {
 			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "execution-scope detection failed: " + err.Error()})
@@ -365,6 +375,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 	archiveCleanupDone := false
 	installPath := job.localPath
 	if job.cacheID != "" {
+		slog.Info("software_deploy: decrypting cached payload", "command_id", cmdID)
 		// Decrypt the sealed installer to a transient temp (plaintext exists only
 		// here, only during the install) and secure-delete it afterwards.
 		tmp := filepath.Join(s.tmpDir, "softdist-install-"+sanitize(cmdID)+s.cache.Ext(job.cacheID))
@@ -393,6 +404,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 	}
 
 	if spec.Bundle == nil && session != nil && filePath != "" && !strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+		slog.Info("software_deploy: staging payload for execution context", "command_id", cmdID)
 		staged, cleanup, err := session.StagePayload(filePath, s.tmpDir)
 		if err != nil {
 			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "user payload staging failed: " + err.Error()})
@@ -450,6 +462,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 		sendStatus(s.outbox, &pb.ActionStatus{ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID, Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: "executing software bundle", StartedAt: started, PackageDirectory: prepared.Directory})
 	}
 	var res softdist.Result
+	slog.Info("software_deploy: starting installer/workflow", "command_id", cmdID)
 	if spec.Steps != nil {
 		res = softdist.RunWorkflow(context.Background(), params, deploymentSteps(spec), func(stage string, index int, name string) {
 			sendStatus(s.outbox, &pb.ActionStatus{ActionId: cmdID, ActionType: actionSoftwareDeploy, DeviceId: s.deviceID, Phase: pb.ActionPhase_ACTION_PHASE_RUNNING, Reason: fmt.Sprintf("%s step %d: %s", stage, index, name), StartedAt: started, PackageDirectory: params.WorkingDirectory})

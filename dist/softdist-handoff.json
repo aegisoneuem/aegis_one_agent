@@ -1,43 +1,46 @@
-{
-  "handoff_date": "2026-10-27",
-  "platform": "windows/amd64",
-  "guide": "docs/softdist-today-testing.md",
-  "manual_cases": 12,
-  "blocks": [
-    "multi-file packages",
-    "pre/post commands",
-    "package dependencies",
-    "advanced file/version/registry detection ALL/ANY"
-  ],
-  "related_fixes": [
-    "explicit CMD quote/redirection preservation for paths with spaces"
-  ],
-  "shared_proto_commit": "c6cc4e4e40f881423848ef631dfe4ea2a5c20f75",
-  "shared_proto_repository": "https://github.com/aegisoneuem/aegis_one_proto",
-  "validation": {
-    "agent_tests": "PASS: go test ./...",
-    "agent_vet": "PASS: go vet ./...",
-    "proto_tests": "PASS: go test ./...",
-    "msi_payload": "PASS: extracted agent SHA256 equals dist EXE",
-    "vm_acceptance": "PASS: Vijay reports all four manual blocks passed; individual logs not independently reviewed",
-    "real_vendor_acceptance": "PENDING",
-    "production_backend_ui": "Server team integration remains separate"
-  },
-  "artifacts": [
-    {
-      "file": "AegisOneClient.exe",
-      "bytes": 21795840,
-      "sha256": "53f73976ac780df0e50e63a553abf17b7f1b3a7f732b6865e70875722326b614"
-    },
-    {
-      "file": "mockserver.exe",
-      "bytes": 19485696,
-      "sha256": "cece2653422f676d19d2fee93db7ebb4f3118d72c23387dbdfa7f327a985a6a1"
-    },
-    {
-      "file": "AegisOneClient.msi",
-      "bytes": 11788288,
-      "sha256": "5d9a13bf1f08a1df500dbba02d45c42b6813b958e6d98d2a635f29ce42e05b62"
-    }
-  ]
+﻿{
+    "handoff_date":  "2026-10-28",
+    "platform":  "windows/amd64",
+    "guide":  "docs/softdist-today-testing.md",
+    "manual_cases":  18,
+    "blocks":  [
+                   "multi-file packages",
+                   "pre/post commands",
+                   "package dependencies",
+                   "advanced file/version/registry detection ALL/ANY",
+                   "real 7-Zip MSI install/repeat-skip/upgrade/uninstall/repeat-uninstall",
+                   "real Firefox EXE plus configuration and active homepage policy"
+               ],
+    "related_fixes":  [
+                          "explicit CMD quote/redirection preservation for paths with spaces",
+                          "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
+                      ],
+    "shared_proto_commit":  "c6cc4e4e40f881423848ef631dfe4ea2a5c20f75",
+    "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
+    "validation":  {
+                       "agent_tests":  "PASS: go test ./... (2026-10-28), including install-gate contention regression",
+                       "agent_vet":  "PASS: go vet ./... (2026-10-28)",
+                       "proto_tests":  "PASS: go test ./... (2026-10-28), unchanged shared proto revision",
+                       "msi_payload":  "PASS: diagnostic rebuild extracted agent SHA256 equals dist EXE",
+                       "vm_acceptance":  "Vijay reports original 12 engine cases PASS; new diagnostic logging/gate-status change has automated regression coverage, latest VM retest not confirmed",
+                       "real_vendor_acceptance":  "PASS reported 2026-10-27: five 7-Zip MSI cases (action logs reviewed); Firefox install/config after recovery and active-policy confirmation reported by Vijay. Original MSI timeout and missing post-step root causes not isolated.",
+                       "production_backend_ui":  "Server team integration remains separate"
+                   },
+    "artifacts":  [
+                      {
+                          "file":  "AegisOneClient.exe",
+                          "bytes":  21799936,
+                          "sha256":  "fc8b612f0203011a1e00d2173e065814854b20a109aa08c7317fb77d91b82752"
+                      },
+                      {
+                          "file":  "mockserver.exe",
+                          "bytes":  19485696,
+                          "sha256":  "cece2653422f676d19d2fee93db7ebb4f3118d72c23387dbdfa7f327a985a6a1"
+                      },
+                      {
+                          "file":  "AegisOneClient.msi",
+                          "bytes":  11788288,
+                          "sha256":  "ee443f03d900b825d1ba9e82fcff04c398650a19e162076a3118e6f8dfd04f7d"
+                      }
+                  ]
 }

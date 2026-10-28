@@ -1,10 +1,11 @@
 # SoftDist - single manual testing guide
 
-27 October 2026. This is the ONE testing file for the current server-team handoff.
+28 October 2026. This is the ONE testing file for the current server-team handoff.
 Use `dist/AegisOneClient.exe` on the stopped endpoint service, then restart it
 (or use the matching `dist/AegisOneClient.msi`). Use `dist/mockserver.exe` in
 C:\temp\mock with existing certificates. Replace BOTH agent and mockserver.
-All four feature blocks below are included in this release.
+All six blocks below are included in this release: 12 engine cases and six real
+vendor cases. Run the real cases in E and F in their stated order.
 
 | Block | Manual cases | Current reported status |
 |---|---|---|
@@ -12,6 +13,8 @@ All four feature blocks below are included in this release.
 | [B. Pre/post commands](#b-prepost-commands) | Success, pre-failure, post-failure | Vijay reports PASS |
 | [C. Package dependencies](#c-package-dependencies) | Missing install, installed skip, failure blocks main | Vijay reports PASS |
 | [D. Advanced detection](#d-advanced-detection) | File skip, native file version, registry ALL/ANY | Vijay reports PASS |
+| [E. Real 7-Zip MSI lifecycle](#e-real-7-zip-msi-lifecycle) | Install, repeat skip, upgrade, uninstall, repeat uninstall | PASS reported; action logs reviewed |
+| [F. Real Firefox installer and configuration](#f-real-firefox-installer-and-configuration) | EXE + JSON bundle, post-copy, active browser policy | PASS reported after recovery |
 
 All commands are manual CMD commands. Open a NEW MOCKSERVER CMD for each block
 with your normal TLS settings; stop the previous server first. Each block states
@@ -27,8 +30,10 @@ Expected FAILED results in negative cases mean the protection test PASSED.
 Vijay reports the cases in all four blocks passed. The server team can repeat
 and record them independently; individual VM logs were not independently reviewed.
 
-These fixture/configuration cases prove the engine behaviors described. Real
-vendor MSI/MST/EXE/runtime package acceptance remains separate.
+Blocks A-D use fixture/configuration packages. E-F record real MSI/EXE and config
+acceptance. MST transforms, real runtime dependencies, config-only parameterized
+updates and failure/reboot recovery still need separate acceptance. Do not mark
+all of SoftDist complete from these cases alone.
 
 
 ## A. Multi-file packages
@@ -888,8 +893,441 @@ del /Q C:\temp\AegisDetectionDemo\installed.txt C:\temp\AegisDetectionDemo\app.e
 Production mapping and uninstall semantics:
 [advanced detection contract](softdist-detection-server-integration.md).
 
+## E. Real 7-Zip MSI lifecycle
+
+Reported PASS on 27 October: install 26.04, repeat install skip, upgrade to
+26.05, uninstall, repeat uninstall skip. Target was WIN-TUES4V46T7I, UUID
+`b3dea9f7-5df8-4765-ad8b-621307ef5f41`. Server team: use your test device UUID.
+
+### Prepare once for E and F
+
+Use an endpoint with the LocalSystem agent service and no existing 7-Zip or
+Firefox installation. Do not manually run either installer on the endpoint.
+On MOCKSERVER, replace `C:\temp\mock\mockserver.exe` from current `/dist` while
+stopped. Keep certificates and your existing TLS/enrollment settings.
+
+In the MOCKSERVER CMD, stop any previous mockserver with Ctrl+C, then run these
+resets ONCE. They remove old test-job options; replacing an EXE does not clear
+the environment of its CMD. These are manual commands, not a launcher script.
+
+```cmd
+cd /d C:\temp\mock
+mkdir C:\temp\AegisRealTests
+set "AEGIS_NSH="
+set "AEGIS_NSH_SCRIPT="
+set "AEGIS_INSTALL_FILE="
+set "AEGIS_UNINSTALL_KB="
+set "AEGIS_STAGE_KB="
+set "AEGIS_COLLECT_PATHS="
+set "AEGIS_REBOOT_DELAY="
+set "AEGIS_SCAN_NOW="
+set "AEGIS_CANCEL_REBOOT="
+set "AEGIS_DEPENDENCY_ID="
+set "AEGIS_DEPENDENCY_NAME="
+set "AEGIS_DEPENDENCY_FILE="
+set "AEGIS_DEPENDENCY_CONTENT_ID="
+set "AEGIS_DEPLOY_PRE_COMMAND="
+set "AEGIS_DEPLOY_PRE_ARGS="
+set "AEGIS_DEPLOY_PRE_NAME="
+set "AEGIS_DEPLOY_PRE_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_PRE_SUCCESS_CODES="
+set "AEGIS_DEPLOY_PRE_SECURE_INPUT="
+set "AEGIS_DEPLOY_POST_COMMAND="
+set "AEGIS_DEPLOY_POST_ARGS="
+set "AEGIS_DEPLOY_POST_NAME="
+set "AEGIS_DEPLOY_POST_TIMEOUT_SECONDS="
+set "AEGIS_DEPLOY_POST_SUCCESS_CODES="
+set "AEGIS_DEPLOY_POST_SECURE_INPUT="
+set "AEGIS_DEPLOY_BUNDLE_ENTRY="
+set "AEGIS_DEPLOY_BUNDLE_COMMAND="
+set "AEGIS_DEPLOY_BUNDLE_DEST="
+set "AEGIS_DEPLOY_BUNDLE_CLEANUP="
+set "AEGIS_DEPLOY_SESSION_ID="
+set "AEGIS_DEPLOY_SECRETS_FILE="
+set "AEGIS_DEPLOY_PARAMS="
+set "AEGIS_DEPLOY_PRODUCT_CODE="
+set "AEGIS_DEPLOY_UNINSTALL_KEY="
+set "AEGIS_DEPLOY_REQUIRE_SIG="
+set "AEGIS_DEPLOY_SUCCESS_CODES="
+set "AEGIS_DEPLOY_FILE="
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_HASH_ALGO=sha256"
+set "AEGIS_DEPLOY_AUTO_HASH=1"
+set "AEGIS_DEPLOY_RUN_AS=system"
+set "AEGIS_DEPLOY_DETECTION_SCOPE=machine"
+set "AEGIS_DEPLOY_DETECT_COUNT=0"
+set "AEGIS_DEPLOY_TIMEOUT=300"
+set "AEGIS_TARGET_DEVICE=b3dea9f7-5df8-4765-ad8b-621307ef5f41"
+```
+
+An existing test directory is OK. Stay in this CMD for E1-E5. Wait for the
+terminal status for your device before Ctrl+C and the next case. Restarting
+mockserver while an installer is running can submit `deploy-001` again; the
+agent's worker survives a connection loss. Two attempts sharing that ID can then
+appear as FAILED followed by RUNNING. QUEUED alone is not a terminal result.
+
+Download both official x64 MSIs to MOCKSERVER:
+
+- [7-Zip 26.04 x64 MSI](https://github.com/ip7z/7zip/releases/download/26.04/7z2604-x64.msi)
+  -> `C:\temp\AegisRealTests\7z2604-x64.msi`.
+- [7-Zip 26.05 x64 MSI](https://github.com/ip7z/7zip/releases/download/26.05/7z2605-x64.msi)
+  -> `C:\temp\AegisRealTests\7z2605-x64.msi`.
+
+### Case 1 - Fresh MSI install and installed-version verification
+
+#### 1. Purpose
+
+Deliver the actual MSI, verify its hash, install silently as SYSTEM, then verify
+the product version from installed state.
+
+#### 2. Commands
+
+**MOCKSERVER**, after preparation:
+
+```cmd
+set "AEGIS_DEPLOY_PACKAGE_ID=7zip-x64-msi-26.04"
+set "AEGIS_DEPLOY_NAME=7-Zip 26.04 real MSI install"
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=msi"
+set "AEGIS_DEPLOY_CONTENT_ID=7zip-x64-msi-26.04"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisRealTests\7z2604-x64.msi"
+set "AEGIS_DEPLOY_DISPLAY_NAME=7-Zip"
+set "AEGIS_DEPLOY_VERSION=26.04"
+set "AEGIS_DEPLOY_ARGS=/qn /norestart ALLUSERS=1 /L*v C:\Windows\Temp\Aegis-7zip-install.log"
+mockserver.exe server
+```
+
+**ENDPOINT - CMD**, after terminal success:
+
+```cmd
+dir "C:\Program Files\7-Zip\7z.exe"
+"C:\Program Files\7-Zip\7z.exe" | findstr /C:"7-Zip 26.04"
+```
+
+#### 3. Expected results
+
+- Terminal `ACTION_PHASE_SUCCESS`, exit `0`; verified installed version
+  `26.04.00.0` in the observed run, no restart required.
+- `7z.exe` exists and prints the 26.04 version line.
+- `/qn` means no UI; `/norestart` prevents automatic restart; `ALLUSERS=1`
+  requests a machine installation. `/L*v` writes the detailed MSI log on the
+  ENDPOINT, not on mockserver.
+
+### Case 2 - Repeat install skips an already installed version
+
+#### 1. Purpose
+
+Prove the same installed version prevents installer execution.
+
+#### 2. Commands
+
+**MOCKSERVER**, after Case 1 completes: Ctrl+C, then in the same CMD, without
+changing any settings:
+
+```cmd
+mockserver.exe server
+```
+
+**ENDPOINT:** no command required; 26.04 remains installed.
+
+#### 3. Expected results
+
+`ACTION_PHASE_NOT_APPLICABLE` with
+`already installed in the selected execution scope (skipped)`.
+The current Run-As flow can fetch the MSI before worker-side detection; a
+download here does not mean the installer ran. Avoiding that extra fetch remains
+an optimization, not something this release claims to fix.
+
+### Case 3 - Upgrade 26.04 to 26.05
+
+#### 1. Purpose
+
+An older installed version must not skip a newer requested version. Leave 26.04
+installed; the new vendor MSI performs the upgrade.
+
+#### 2. Commands
+
+**MOCKSERVER:** Ctrl+C, then in the same prepared CMD:
+
+```cmd
+set "AEGIS_DEPLOY_PACKAGE_ID=7zip-x64-msi-26.05"
+set "AEGIS_DEPLOY_NAME=7-Zip upgrade 26.04 to 26.05"
+set "AEGIS_DEPLOY_CONTENT_ID=7zip-x64-msi-26.05"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisRealTests\7z2605-x64.msi"
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_VERSION=26.05"
+set "AEGIS_DEPLOY_ARGS=/qn /norestart ALLUSERS=1 /L*v C:\Windows\Temp\Aegis-7zip-upgrade.log"
+mockserver.exe server
+```
+
+**ENDPOINT - CMD**, after terminal success:
+
+```cmd
+"C:\Program Files\7-Zip\7z.exe" | findstr /C:"7-Zip 26.05"
+```
+
+#### 3. Expected results
+
+`ACTION_PHASE_SUCCESS`, exit `0`, verified installed version `26.05.00.0` in the
+observed run. The command prints 26.05. It must not skip because 26.04 existed.
+The action stays `install`; higher requested version plus vendor MSI supplies
+the upgrade behavior.
+
+### Case 4 - Uninstall through the installed registry registration
+
+#### 1. Purpose
+
+Find the exact installed 26.05 registration, uninstall without downloading an
+MSI, and verify the product was removed.
+
+#### 2. Commands
+
+**MOCKSERVER:** Ctrl+C, then in the same CMD:
+
+```cmd
+set "AEGIS_DEPLOY_NAME=7-Zip 26.05 uninstall"
+set "AEGIS_DEPLOY_ACTION=uninstall"
+set "AEGIS_DEPLOY_FILE="
+set "AEGIS_DEPLOY_CONTENT_ID="
+set "AEGIS_SERVE_SOFTWARE="
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_PRODUCT_CODE="
+set "AEGIS_DEPLOY_UNINSTALL_KEY="
+set "AEGIS_DEPLOY_DISPLAY_NAME=7-Zip"
+set "AEGIS_DEPLOY_VERSION=26.05.00.0"
+set "AEGIS_DEPLOY_ARGS=/qn /norestart /L*v C:\Windows\Temp\Aegis-7zip-uninstall.log"
+mockserver.exe server
+```
+
+**ENDPOINT - CMD**, after terminal success:
+
+```cmd
+if exist "C:\Program Files\7-Zip\7z.exe" (echo FAIL: 7z.exe still exists) else (echo PASS: 7z.exe removed)
+```
+
+#### 3. Expected results
+
+- Agent resolves `7-Zip 26.05 (x64 edition)` in HKLM64. The observed product key
+  was `{23170F69-40C1-2702-2605-000001000000}`; the test does not require typing it.
+- `ACTION_PHASE_SUCCESS`, exit `0`, reason includes `verified removed`.
+- No installer fetch is needed. `7z.exe removed` prints. A leftover settings
+  folder alone is not proof that the product is still installed.
+
+### Case 5 - Repeat uninstall skips an absent product
+
+#### 1. Purpose
+
+Prove an already removed application does not run an uninstaller again.
+
+#### 2. Commands
+
+**MOCKSERVER:** after Case 4 completes, Ctrl+C; same CMD, unchanged settings:
+
+```cmd
+mockserver.exe server
+```
+
+**ENDPOINT:** no command required.
+
+#### 3. Expected results
+
+`ACTION_PHASE_NOT_APPLICABLE`, exit `0`, reason
+`not installed in the selected execution scope (nothing to uninstall)`.
+No download or uninstaller execution.
+
+## F. Real Firefox installer and configuration
+
+### Case 1 - Deliver EXE and JSON, apply configuration, verify active policy
+
+#### 1. Purpose
+
+One package carries the real Firefox ESR x64 EXE and `distribution\policies.json`.
+The main action installs Firefox; the post-command copies the config. Verify
+Firefox actually applies the policy, not just that the EXE exists. Vijay reports
+this case passed on 27 October after the recovery below; installed version in
+the supplied log was `153.6.0`.
+
+#### 2. Commands
+
+Use the E preparation/reset first (or continue in the same CMD after E5).
+For the first run Firefox must be absent on the endpoint. Keep this real test
+away from an existing managed Firefox installation or policies.
+
+**MOCKSERVER - CMD:**
+
+```cmd
+mkdir C:\temp\AegisRealTests\FirefoxPackage\distribution
+```
+
+From [Mozilla's ESR downloads](https://www.firefox.com/en-US/download/all/desktop-esr/),
+choose Windows 64-bit EXE full installer. Save/rename it as
+`C:\temp\AegisRealTests\FirefoxPackage\FirefoxSetup.exe`. Record the downloaded
+version for your own run; a later ESR may differ from the accepted run above.
+
+In Notepad paste the following and Save As **All Files, UTF-8** to
+`C:\temp\AegisRealTests\FirefoxPackage\distribution\policies.json`.
+Check the name is not `policies.json.txt`. This is application config, not a
+test script:
+
+```json
+{
+  "policies": {
+    "Homepage": {
+      "URL": "https://example.org",
+      "Locked": true
+    }
+  }
+}
+```
+
+**MOCKSERVER - CMD**, after stopping the previous server:
+
+```cmd
+cd /d C:\temp\mock
+dir C:\temp\AegisRealTests\FirefoxPackage\FirefoxSetup.exe
+type C:\temp\AegisRealTests\FirefoxPackage\distribution\policies.json
+mockserver.exe pack C:\temp\AegisRealTests\FirefoxPackage C:\temp\AegisRealTests\FirefoxPackage.zip
+set "AEGIS_DEPLOY_PACKAGE_ID=firefox-esr-config-v1"
+set "AEGIS_DEPLOY_NAME=Firefox ESR with homepage configuration"
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=exe"
+set "AEGIS_DEPLOY_FILE="
+set "AEGIS_DEPLOY_CONTENT_ID=firefox-esr-config-v1"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisRealTests\FirefoxPackage.zip"
+set "AEGIS_DEPLOY_HASH="
+set "AEGIS_DEPLOY_HASH_ALGO=sha256"
+set "AEGIS_DEPLOY_AUTO_HASH=1"
+set "AEGIS_DEPLOY_RUN_AS=system"
+set "AEGIS_DEPLOY_DETECTION_SCOPE=machine"
+set "AEGIS_DEPLOY_DETECT_COUNT=0"
+set "AEGIS_DEPLOY_PRODUCT_CODE="
+set "AEGIS_DEPLOY_UNINSTALL_KEY="
+set "AEGIS_DEPLOY_DISPLAY_NAME=Mozilla Firefox"
+set "AEGIS_DEPLOY_VERSION="
+set "AEGIS_DEPLOY_ARGS=/S"
+set "AEGIS_DEPLOY_TIMEOUT=600"
+set "AEGIS_DEPLOY_BUNDLE_ENTRY=FirefoxSetup.exe"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND="
+set "AEGIS_DEPLOY_BUNDLE_DEST="
+set "AEGIS_DEPLOY_BUNDLE_CLEANUP="
+set "AEGIS_DEPLOY_POST_COMMAND=xcopy.exe"
+set "AEGIS_DEPLOY_POST_ARGS=distribution "C:\Program Files\Mozilla Firefox\distribution" /E /I /Y"
+set "AEGIS_DEPLOY_POST_NAME=Apply Firefox configuration"
+set "AEGIS_DEPLOY_POST_TIMEOUT_SECONDS=60"
+set "AEGIS_DEPLOY_POST_SUCCESS_CODES=0"
+set "AEGIS_DEPLOY_POST_SECURE_INPUT=0"
+mockserver.exe server
+```
+
+`BUNDLE_ENTRY` selects the EXE inside the extracted ZIP. `/S` silently installs
+Firefox. The post-command is `xcopy.exe`: its source `distribution` is relative
+to the extracted package directory; the quoted destination is on the endpoint.
+`/E` includes subfolders, `/I` treats a new destination as a directory, and `/Y`
+suppresses overwrite confirmation. Arguments alone do not define a post-command.
+
+**Before marking PASS**, confirm the server sends
+`type: software_deploy_workflow`, followed by main and
+`post-deployment step 1: Apply Firefox configuration` progress.
+
+**ENDPOINT - CMD**, after terminal success:
+
+```cmd
+dir "C:\Program Files\Mozilla Firefox\firefox.exe"
+type "C:\Program Files\Mozilla Firefox\distribution\policies.json"
+```
+
+Close all Firefox windows, open Firefox on the endpoint, and type
+`about:policies` in the address bar. Inspect Active and Errors. In Settings >
+Home, check the managed homepage value.
+
+Copy the actual `package_directory` from the result; on ENDPOINT run:
+
+```cmd
+dir "<paste the exact package_directory here>"
+```
+
+#### 3. Expected results
+
+- Terminal `ACTION_PHASE_SUCCESS`, workflow steps completed, Firefox installed
+  verification when DISPLAY_NAME is set, post-copy successful.
+- Both files exist; JSON prints exactly the configured URL and Locked value.
+- `about:policies` Active lists Homepage with `https://example.org` and
+  `Locked: true`; no error for this policy. The homepage setting is managed.
+  An external page loading is not required to prove policy activation.
+- Terminal `package_cleanup: removed`; the extracted package directory is gone.
+  Installed Firefox and `distribution\policies.json` remain.
+
+#### Recovery used in the accepted run - install succeeded but JSON was missing
+
+The first run installed Firefox and cleaned staging, but had no post-step
+progress; it was not a complete workflow acceptance. Replacing mockserver from
+`/dist` AND explicitly setting POST_COMMAND/ARGS together resolved the issue.
+Those changes were made together, so old binary versus missing settings was
+not isolated. Do not claim either as the proven root cause.
+
+On MOCKSERVER stop the server, replace the EXE from current `/dist`, and retain
+the Firefox package settings above. Re-enter the six POST settings above. Since
+Firefox is now installed, deliberately clear its legacy selector for this
+controlled reinstall/config recovery:
+
+```cmd
+set "AEGIS_DEPLOY_DISPLAY_NAME="
+set "AEGIS_DEPLOY_PRODUCT_CODE="
+set "AEGIS_DEPLOY_UNINSTALL_KEY="
+set "AEGIS_DEPLOY_VERSION="
+set "AEGIS_DEPLOY_DETECT_COUNT=0"
+mockserver.exe server
+```
+
+This reruns the EXE and post-copy; it is NOT a config-only update or proof of
+automatic installed-product verification. Repeat the endpoint file and active
+policy checks above. Vijay confirmed the JSON and then reported all OK. A
+config-only update without reinstall is next, still pending. Do not leave this
+selector-cleared recovery configuration as a production detection policy.
+
+### Troubleshooting the accepted real cases
+
+- `installer bundle needs entry_point and no bundle.command`: old bundle options
+  remained in CMD during a plain MSI test. Run E's explicit bundle reset. No
+  installer was sent by that rejected configuration.
+- `installer output suppressed for private deployment` is informational. Current
+  explicit Run-As contexts, including SYSTEM, suppress diagnostic output to the
+  server. For E's non-secret packages the explicit `/L*v` creates a local MSI
+  log. Do not add verbose logging to a package carrying credentials/secrets.
+- The first 7-Zip attempt timed out after five minutes. It had also been
+  resubmitted during a server restart. Later successful runs used explicit MSI
+  logging and default install path; the original timeout cause was not isolated.
+  This release does not claim a timeout fix or duplicate-submission fix.
+- CAB scan errors are separate patch reconciliation actions. Scans do not take
+  the SoftDist machine-install gate. A patch INSTALL can hold that gate; the new
+  diagnostic agent logs an explicit wait. Do not infer a CAB scan blocked an MSI
+  merely from QUEUED.
+- For an E failure, on ENDPOINT use the relevant log filename:
+
+```cmd
+powershell -NoProfile -Command "Get-Content 'C:\Windows\Temp\Aegis-7zip-install.log' -Tail 60"
+powershell -NoProfile -Command "Get-Content 'C:\Windows\Temp\Aegis-7zip-upgrade.log' -Tail 60"
+powershell -NoProfile -Command "Get-Content 'C:\Windows\Temp\Aegis-7zip-uninstall.log' -Tail 60"
+```
+
+### Remaining acceptance after E and F
+
+Next: ordinary parameters/variables and an installed-app config-only update
+without reinstall. Then real runtime dependencies and failure/reboot handling;
+MST transforms remain untested. Automatic JSON template substitution is not
+implemented: current substitution applies to command arguments. Production
+server/API/UI/vault and durable orchestration remain server-team integration.
+SoftDist stays the priority before the other module tracks.
+
 ## Related fix included
 
 Explicit CMD arguments retain author quotes around paths containing spaces,
 including redirection. Native regression tests cover this fix. No extra test
 launcher or generated probe EXE is required.
+
+The diagnostic agent additionally logs queue handoff, worker pickup, install-gate
+wait/acquisition and execution stages without credentials or installer arguments.
+Waiting for another patch/software installer reports QUEUED with an explicit
+reason; RUNNING starts after the machine gate is acquired. A native regression
+test holds that gate and checks status ordering. This is diagnostic visibility,
+not a claimed fix for the original vendor MSI timeout.
