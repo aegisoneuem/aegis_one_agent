@@ -18,7 +18,7 @@ vendor cases. Run the real cases in E and F in their stated order.
 | [G. Rollback-on-failure orchestration](#g-rollback-on-failure-orchestration-new-block-28-october-2026) | Main-failure rollback, partial rollback, success skips rollback | Native regression PASS, VM acceptance pending |
 | [H. Crash recovery and durable journal](#h-crash-recovery-and-durable-journal-new-block-28-october-2026) | Agent restart, orphan package directory sweep | Native regression PASS, VM acceptance pending |
 | [I. Descendant termination on timeout](#i-descendant-termination-on-timeout-new-block-28-october-2026) | Timeout kills children, reports count hint | Native regression PASS, VM acceptance pending |
-| [J. Reboot-sensitive + MST + config-only (PRIMARY FOCUS)](#j-reboot-sensitive--msimst--config-only-primary-focus-28-october-2026) | Deterministic 3010 handling, 7-Zip MSI + MST transform, config-only parameter update via post-step | VM acceptance pending; concrete sample packages pinned in the J preflight |
+| [J. Reboot-sensitive + MST + config-only](#j-reboot-sensitive--msimst--config-only-primary-focus-28-october-2026) | Deterministic 3010 handling, 7-Zip MSI + MST transform, config-only parameter update via post-step | **PASS 2026-10-29 (Vijay VM run)** |
 
 All commands are manual CMD commands. Open a NEW MOCKSERVER CMD for each block
 with your normal TLS settings; stop the previous server first. Each block states
@@ -1853,11 +1853,34 @@ type C:\ProgramData\AegisVendor\settings.ini
 > post-step failures appear separately from main-install failures in the
 > console.
 
+### J block run record
+
+2026-10-29 (Vijay VM run on WIN-TUES4V46T7I, device_id b3dea9f7-5df8-4765-ad8b-621307ef5f41):
+
+- **J1 PASS** — `cmd /D /C exit 3010` returned
+  `ACTION_PHASE_SUCCESS exit_code=3010 reboot_required=true reason="installed — RESTART REQUIRED to complete"`.
+  Mock did not re-queue the signed command.
+- **J2 PASS** — 7-Zip MSI with INSTALLDIR=C:\7ZipMST transform. `C:\7ZipMST`
+  on the endpoint lists `7z.exe`, `7z.dll`, `7zFM.exe`, `Lang\`, etc. with
+  LastWriteTime at the J2 run (20:08 PM). Agent delivered the bundle via
+  content_id, msiexec applied the transform, terminal status
+  `ACTION_PHASE_SUCCESS exit_code=0 cleanup=removed`.
+- **J3 PASS** — After pre-creating `C:\ProgramData\AegisVendor` on the
+  endpoint, the POST step consumed resolved `${REGION}` and `${CONFIG_PATH}`
+  parameters and wrote `REGION=emea` into
+  `C:\ProgramData\AegisVendor\settings.ini`. Terminal status
+  `ACTION_PHASE_SUCCESS`.
+
+> J3 setup caveat: the POST echo+redirect fails with exit 1 if the parent
+> directory of `${CONFIG_PATH}` does not exist. The endpoint pre-cleanup step
+> (`mkdir C:\ProgramData\AegisVendor`) is required before the first run.
+
 ### Remaining acceptance after J
 
 - Specific reboot-sensitive EXE packages the server team curates (vendor
   driver EXEs, kernel-mode runtimes) beyond the deterministic J1 case.
-- Additional MST transforms the server team authors per vendor beyond J2.
+- Additional MST transforms the server team authors per vendor beyond the
+  INSTALLDIR override exercised in J2.
 - Config-only updates that write to registry hives in addition to the file
   path covered by J3.
 - Section 4 (production backend/UI/authorization, package library,

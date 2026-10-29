@@ -1,9 +1,9 @@
 ﻿{
-    "handoff_date":  "2026-10-28",
+    "handoff_date":  "2026-10-29",
     "platform":  "windows/amd64",
     "guide":  "docs/softdist-today-testing.md",
     "manual_cases":  27,
-    "primary_focus":  "Real-vendor acceptance of the J block: reboot-sensitive EXE handling, MSI + MST transform, config-only parameter update without reinstall. These are the pending items after 7-Zip (E) and Firefox (F) acceptance.",
+    "primary_focus":  "J block real-vendor acceptance PASS 2026-10-29 (Vijay VM run). SoftDist agent-track feature set is complete for the current release. Remaining items are server-team Section 4 (production backend/UI) and additional vendor-curated packages beyond the deterministic J1/J2/J3 cases.",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -14,7 +14,7 @@
                    "G. rollback-on-failure orchestration (native regression PASS; VM pending)",
                    "H. crash recovery and durable journal (native regression PASS; VM pending)",
                    "I. descendant termination on timeout (native regression PASS; VM pending)",
-                   "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PRIMARY FOCUS; VM pending)"
+                   "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PASS 2026-10-29)"
                ],
     "additive_engine_updates":  "Agent-side durability improvements landed alongside the J block: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics. These are additive (older servers keep working) and native-tested. VM acceptance of G/H/I is pending but is NOT a prerequisite for the primary J focus.",
     "related_fixes":  [
@@ -28,8 +28,8 @@
                        "agent_vet":  "PASS: go vet ./... (2026-10-28)",
                        "proto_tests":  "PASS: go test ./... on shared proto a066541",
                        "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
-                       "vm_acceptance":  "A-F blocks PASS. G/H/I/J blocks VM acceptance pending.",
-                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. The remaining real-vendor matrix is the J block: reboot-sensitive EXE, MSI with MST transform, config-only parameter update. Server-team can run them independently with the concrete sample packages listed in the J preflight.",
+                       "vm_acceptance":  "A-F and J blocks PASS. G/H/I blocks native regression PASS; VM acceptance pending but not blocking.",
+                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29: deterministic 3010 handling, 7-Zip MSI + MST INSTALLDIR transform (install verified at C:\\7ZipMST), config-only parameter update via POST step (settings.ini contents verified). Vendor-curated matrix beyond J1/J2/J3 remains server-team selection.",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [
