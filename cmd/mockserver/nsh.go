@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/peterh/liner"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
@@ -173,6 +175,15 @@ func (s *nshSession) prompt() string {
 }
 
 func (s *nshSession) readLoop(src io.Reader, interactive bool) {
+	// Interactive mode uses peterh/liner for Tab completion + line editing.
+	// Tab on a prefix completes the verb if there is exactly one match, or
+	// prints the candidate list if there are several (plain prefix echo on
+	// zero matches). Non-interactive (script) mode still uses bufio since
+	// there is no terminal to configure.
+	if interactive && src == os.Stdin {
+		s.interactiveLoop()
+		return
+	}
 	br := bufio.NewReader(src)
 	for {
 		if interactive {
@@ -191,6 +202,69 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 			return
 		}
 		if err != nil {
+			return
+		}
+	}
+}
+
+// nshVerbNames lists every top-level verb the REPL dispatcher recognizes, used
+// for Tab completion. Keep it alphabetical so the candidate list a user sees
+// after `inv<Tab>` is predictable.
+var nshVerbNames = []string{
+	"cd", "copy", "cp", "delete", "del", "exec", "exit", "fanout", "grab",
+	"help", "history", "hosts", "inventory", "mkdir", "md", "move", "mv",
+	"pull", "pwd", "quit", "rm", "run", "script", "search", "set", "shell",
+	"source", "touch", "use",
+}
+
+// interactiveLoop drives the Tab-completing readline on the mockserver's stdin.
+// The completer receives the full line prefix and returns every verb whose name
+// starts with the first token the user typed. Multiple matches are shown as a
+// candidate list under the prompt (liner prints them automatically). History
+// is kept per-process (not persisted) — a REPL session's history dies with
+// the process, matching the mock's dev-tool scope.
+func (s *nshSession) interactiveLoop() {
+	line := liner.NewLiner()
+	defer line.Close()
+	line.SetCtrlCAborts(true)
+	line.SetTabCompletionStyle(liner.TabPrints)
+	line.SetCompleter(func(prefix string) []string {
+		// Match on the FIRST token of the prefix (verb name). If the user
+		// has already typed a verb + space, there is no suggestion to make.
+		head := prefix
+		if i := strings.IndexAny(prefix, " \t"); i >= 0 {
+			head = prefix[:i]
+		}
+		if head == "" {
+			return nshVerbNames
+		}
+		lower := strings.ToLower(head)
+		var out []string
+		for _, v := range nshVerbNames {
+			if strings.HasPrefix(v, lower) {
+				out = append(out, v+prefix[len(head):])
+			}
+		}
+		return out
+	})
+	for _, h := range s.history {
+		line.AppendHistory(h)
+	}
+	for {
+		input, err := line.Prompt(s.prompt())
+		if err == liner.ErrPromptAborted || err == io.EOF {
+			return
+		}
+		if err != nil {
+			s.printf("nsh: input error: %v\n", err)
+			return
+		}
+		input = strings.TrimRight(input, "\r\n")
+		if strings.TrimSpace(input) != "" {
+			line.AppendHistory(input)
+			s.history = append(s.history, input)
+		}
+		if cont := s.engine.execLine(input); !cont {
 			return
 		}
 	}
@@ -244,6 +318,8 @@ func (s *nshSession) exec(line string) bool {
 		}
 	case "script":
 		s.verbScript(rest)
+	case "inventory":
+		s.verbInventory(rest)
 	default:
 		// Bare command text → `run` on current target(s). Keeps the REPL feel.
 		s.verbRun(line, len(s.targets) > 1)

@@ -42,8 +42,8 @@
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19504640,
-                          "sha256":  "800b216be04e6920076c39bb0b36301102f18e2feb67b1e4598e560d8ec3b08b"
+                          "bytes":  19629056,
+                          "sha256":  "5eeab375b8b9077554628d239ca2ca0fdcb1ab725e1d932d7d90500ee6f18716"
                       },
                       {
                           "file":  "AegisOneClient.msi",
