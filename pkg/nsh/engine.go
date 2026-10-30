@@ -447,7 +447,7 @@ func (e *Engine) dispatchVerb(line string) bool {
 		}
 	case "end", "else":
 		e.fail(fmt.Errorf("unexpected %s", verb))
-	case "help", "hosts", "search", "copy", "cp", "move", "mv", "delete", "del", "rm", "mkdir", "md", "touch", "cd", "pwd", "run", "grab", "pull", "fanout", "shell", "use", "history", "job":
+	case "help", "hosts", "search", "copy", "cp", "move", "mv", "delete", "del", "rm", "mkdir", "md", "touch", "cd", "pwd", "run", "grab", "pull", "fanout", "shell", "use", "history", "job", "inventory":
 		e.dispatch(Command{Verb: strings.ToLower(verb), Text: rest})
 	default:
 		e.dispatch(Command{Verb: "run", Text: line, Fanout: len(e.backend.SelectedTargets()) > 1})
