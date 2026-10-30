@@ -7,10 +7,15 @@ import (
 )
 
 // InstalledApp identifies one registration, including its registry view.
+// InstallDate and EstimatedSizeKB are read for the inventory report path but
+// are optional on the detect/verify path (vendors do not reliably populate
+// them, so the operation code paths never depend on their presence).
 type InstalledApp struct {
 	Key, RegistryView, DisplayName, DisplayVersion, Publisher string
 	UninstallString, QuietUninstallString                     string
 	WindowsInstaller                                          bool
+	InstallDate                                               string // yyyymmdd; empty when the vendor did not set it
+	EstimatedSizeKB                                           int64  // Uninstall hive EstimatedSize (KB); 0 when missing
 }
 
 // AppSelector identifies one registration in the selected scope. Version is an optional

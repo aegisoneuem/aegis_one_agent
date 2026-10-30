@@ -423,3 +423,121 @@ The mock fakes these; production builds them for real:
 
 For deeper mock-server scenarios + the full env-var reference see
 [mockserver-guide.md](mockserver-guide.md).
+
+---
+
+## 9. Third-party installed-apps inventory (30 October 2026)
+
+### What this covers
+
+Agent reports every registration from the Windows registry Uninstall hive
+(HKLM native + WOW6432Node) inside each `DeviceStateReport`. The server team
+matches that inventory against its third-party patch catalog (Chrome,
+Firefox, Adobe, Java, ...) and dispatches signed `software_deploy` tasks to
+update outdated apps — exactly the same pipeline used in SoftDist blocks E/F.
+
+**No agent-side cap on inventory size.** However many apps are installed on
+the endpoint, the full list is reported. BigFix limits to ~350 apps on its
+catalog side; the Aegis server team targets 1000+ apps on their catalog, and
+the agent must not pre-filter.
+
+### What's NOT in this block (deferred, tracked in project memory)
+
+- **Office 365 Click-to-Run** (OfficeC2RClient.exe) — separate update
+  mechanism; not WUA-scannable; different task type when added.
+- **Windows 10/11 Feature Updates** — version jumps (24H2 to 25H2). WUA scan
+  excludes feature-updates today by design; separate scope.
+- **Patch corruption detection** — WUA has corruption APIs; not wired.
+- **Language-aware applicability** — not wired.
+
+### How the end-to-end flow works
+
+1. Agent collects installed-apps on each `DeviceStateReport` cycle
+   (`AEGIS_DEVICE_STATE_INTERVAL`, default 5 minutes). Sent only on CHANGE —
+   adding/removing/upgrading an app triggers an immediate resend.
+2. Mock prints the installed_apps count on every received report:
+   ```
+   Received patch state report -> device=..., installed_apps: 47
+   ```
+3. Server team (real server) stores the inventory per device and runs its
+   catalog matcher: "Chrome 118 installed; latest catalog version 120 →
+   dispatch signed software_deploy with Chrome 120 bundle".
+4. Agent runs the software_deploy via the existing SoftDist pipeline — no
+   new task type needed.
+
+### UC-18 — Fast-lane installed-apps inventory
+
+**Purpose:** prove the agent reports every HKLM Uninstall hive entry and
+that an install or uninstall triggers a resend without waiting for the
+weekly reconciliation scan.
+
+**MOCKSERVER:**
+```cmd
+set AEGIS_NSH=1
+mockserver.exe
+```
+
+Wait for the first `Received patch state report` line (within one
+`AEGIS_DEVICE_STATE_INTERVAL` after the agent connects). Note the
+`installed_apps` count.
+
+**NSH REPL:**
+```
+nsh> cd \\<hostname>
+<hostname>> inventory apps
+<hostname>> inventory apps chrome
+<hostname>> inventory apps mozilla
+```
+
+**ENDPOINT** (admin CMD): install a small app and wait for the next
+`DeviceStateReport` interval:
+```cmd
+msiexec /i C:\deploy\7z<version>-x64.msi /qn
+```
+
+**Expected:**
+- First `Received patch state report` shows `installed_apps: N` where N is
+  the count of all HKLM + WOW6432Node entries with a `DisplayName`.
+- `inventory apps` prints a table of DisplayName, DisplayVersion, Publisher,
+  Hive for every reported app.
+- `inventory apps chrome` (or `mozilla`, `adobe`, etc.) filters by
+  case-insensitive substring match against DisplayName or Publisher.
+- After the 7-Zip install, the next FAST-LANE patch-state log line shows
+  `installed_apps: N+1` and the mock logs a fresh `Received patch state
+  report` with the bumped count — proof that the fingerprint caught the
+  app list change and triggered a resend.
+
+### What the real server catalog service must do
+
+1. **Store the inventory** per device from the DeviceStateReport stream.
+2. **Match against a catalog** of known-outdated apps:
+   - BigFix hosts ~350 fixlets on their 3rd Party Windows Application site.
+   - Aegis server team maintains a 1000+ app catalog (vendor name, latest
+     version, download URL, silent args, detection rule).
+3. **Dispatch SoftDist tasks** for outdated apps — nothing new on the agent
+   side. Vendor installer EXE / MSI → `software_deploy` with the right
+   silent args. Agent runs via the existing SoftDist pipeline (A-F / J
+   blocks in the SoftDist testing guide).
+4. **Reboot handling** — if a vendor installer returns 3010, the agent
+   reports `reboot_required=true` via the SoftDist action status (same as
+   J1). Server team schedules reboot per policy.
+
+### Agent-side proto additions (for the server team)
+
+```proto
+message DeviceStateReport {
+  // ... existing fields ...
+  repeated InstalledApp installed_apps = 11;
+}
+
+message InstalledApp {
+  string display_name = 1;
+  string display_version = 2;
+  string publisher = 3;
+  string install_date = 4;       // yyyymmdd; empty when the vendor didn't set it
+  string uninstall_key = 5;      // registry subkey name — stable id for later actions
+  string hive = 6;               // "HKLM" | "HKLM\WOW6432Node"
+  int64 estimated_size_kb = 7;
+  string uninstall_string = 8;   // vendor-registered uninstall command
+}
+```

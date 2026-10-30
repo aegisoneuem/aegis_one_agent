@@ -2,8 +2,9 @@
     "handoff_date":  "2026-10-30",
     "platform":  "windows/amd64",
     "guide":  "docs/softdist-today-testing.md",
-    "manual_cases":  30,
-    "primary_focus":  "Bandwidth throttling (K block) agent-side implementation shipped alongside the existing A-J blocks. BigFix-aligned: agent config env caps + signed per-task rate, lower-wins across both sources. Server-side cumulative throttle remains server-team work; gRPC backpressure composes naturally.",
+    "secondary_guide":  "docs/patching-test-guide.md (UC-18 adds third-party installed-apps inventory)",
+    "manual_cases":  31,
+    "primary_focus":  "Third-party patch inventory shipped (DeviceStateReport.installed_apps + InstalledApp message, HKLM Uninstall hive enumeration, send-on-change on inventory diff, NSH inventory apps verb). Server-team's catalog matcher consumes the inventory and dispatches signed software_deploy tasks for outdated apps - reuses the existing A-F / J pipeline, no new task type on the agent side. Follows BigFix 11.0 Patch for Windows third-party model: agent reports facts, server owns catalog. No cap on reported app count.",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -22,7 +23,7 @@
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
                       ],
-    "shared_proto_commit":  "6236f8b",
+    "shared_proto_commit":  "1529c27",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
                        "agent_tests":  "PASS: go test ./... (2026-10-28)",
@@ -36,18 +37,18 @@
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21851136,
-                          "sha256":  "a60442d0a37d2ec813045bf4bf2654bf97f4b1d60e838ca5f216a6e6973b4c44"
+                          "bytes":  21869056,
+                          "sha256":  "c34bd47da7ea2884ca0810d2375639be4171c4a50d3185ee63a695c05bb249d6"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19488256,
-                          "sha256":  "57e3f8000608af42547d50a488ab1448bcd46edbb69ba009236afe69ec2b1065"
+                          "bytes":  19504640,
+                          "sha256":  "800b216be04e6920076c39bb0b36301102f18e2feb67b1e4598e560d8ec3b08b"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11735040,
-                          "sha256":  "991e7fbfc1726d8a310f43f9a52f91681c50426cb0e7a9c792a2995e8bea3315"
+                          "bytes":  11739136,
+                          "sha256":  "c152c3ce2956c9b5724faa74acc49f58359bdfade4ebbfc4d229426d267993fa"
                       }
                   ]
 }

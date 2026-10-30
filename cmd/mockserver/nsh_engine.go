@@ -258,6 +258,8 @@ func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(n
 			return err
 		}
 		s.verbHosts(c.Text)
+	case "inventory":
+		s.verbInventory(c.Text)
 	case "help":
 		s.verbHelp(c.Text)
 	case "history":

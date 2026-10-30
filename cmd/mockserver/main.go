@@ -110,6 +110,14 @@ type server struct {
 	planContent   map[string]fileContent     // protected by pendingMu; device/content key
 	planAttempted map[string]bool            // one configured startup plan per device/process; no reconnect replay
 
+	// lastInventory caches the most recent DeviceStateReport per device so the
+	// NSH `inventory apps` verb can answer ad-hoc operator queries about which
+	// third-party apps the endpoint reported (and at which versions). The server
+	// team's real catalog match runs server-side; this cache is a dev/testing
+	// convenience, not a durable store.
+	inventoryMu   sync.Mutex
+	lastInventory map[string]*pb.DeviceStateReport
+
 }
 
 // liveAgent is one currently-connected agent, discoverable by the REPL.
@@ -1332,12 +1340,21 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			mockPrintf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v",
-				s.identify(ds.DeviceId), ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending)
+			mockPrintf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v, installed_apps: %d",
+				s.identify(ds.DeviceId), ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending, len(ds.InstalledApps))
 			if ds.RebootPending {
 				mockPrintf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}
 			mockPrintln()
+			// Cache the most recent inventory per device so NSH `inventory apps`
+			// can query it ad-hoc. Writes are small (a snapshot pointer swap);
+			// reads happen from the REPL goroutine so a mutex is enough.
+			s.inventoryMu.Lock()
+			if s.lastInventory == nil {
+				s.lastInventory = make(map[string]*pb.DeviceStateReport)
+			}
+			s.lastInventory[ds.DeviceId] = ds
+			s.inventoryMu.Unlock()
 		}
 		if cf := msg.GetCacheFull(); cf != nil {
 			mockPrintf("Received CACHE-FULL report -> device: %s, pending: %s, needed: %d, cap: %d, in_use: %d, msg: %s\n",

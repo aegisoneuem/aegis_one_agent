@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/patch"
+	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -72,6 +74,29 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		// authoritative cumulative level) + pending-reboot. The installed-updates
 		// LIST is NOT sent here (the coarse CBS list was misleading) — the
 		// authoritative installed set comes from the full scan (PatchScanResult).
+		// Enriched installed-apps inventory for the server's third-party patch
+		// catalog. The agent reports facts only; catalog policy (which apps the
+		// server tracks, which are outdated, what the latest version is) is
+		// entirely server-team territory. Enumeration is best-effort — a
+		// registry read failure here NEVER blocks the fast-lane KB report.
+		var installedApps []*pb.InstalledApp
+		if apps, aerr := softdist.EnumerateInstalledApps(); aerr != nil {
+			slog.Warn("FAST-LANE patch-state: could not enumerate installed apps for inventory", "error", aerr.Error())
+		} else {
+			installedApps = make([]*pb.InstalledApp, 0, len(apps))
+			for _, a := range apps {
+				installedApps = append(installedApps, &pb.InstalledApp{
+					DisplayName:     a.DisplayName,
+					DisplayVersion:  a.DisplayVersion,
+					Publisher:       a.Publisher,
+					InstallDate:     a.InstallDate,
+					UninstallKey:    a.Key,
+					Hive:            a.RegistryView,
+					EstimatedSizeKb: a.EstimatedSizeKB,
+					UninstallString: a.UninstallString,
+				})
+			}
+		}
 		rep := &pb.DeviceStateReport{
 			DeviceId:             cfg.DeviceID,
 			ProductName:          state.ProductName,
@@ -82,6 +107,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			RebootPending:        rebootPending,
 			RebootPendingKbs:     pendingKBs,
 			RebootPendingSources: rebootSources,
+			InstalledApps:        installedApps,
 		}
 		fp := deviceStateFingerprint(rep)
 		if fp == lastFingerprint {
@@ -98,7 +124,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			return
 		}
 		lastFingerprint = fp
-		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "reboot_pending", rep.RebootPending)
+		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "reboot_pending", rep.RebootPending, "installed_apps", len(rep.InstalledApps))
 		signalDrain(drainSignal)
 	}
 
@@ -145,7 +171,9 @@ func offlineSelfDiff(baseline *baselineStore, state *patch.LocalState) []string 
 }
 
 // deviceStateFingerprint is a stable hash of the fields that matter for change
-// detection (build + architecture + the installed-KB set, which is already sorted).
+// detection (build + architecture + reboot state + the installed-apps inventory).
+// A newly installed/uninstalled/upgraded app triggers a resend so the server
+// catalog stays in sync without waiting for the weekly reconciliation scan.
 func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 	h := sha256.New()
 	h.Write([]byte(rep.Build))
@@ -161,6 +189,30 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 	for _, kb := range rep.RebootPendingKbs {
 		h.Write([]byte(kb))
 		h.Write([]byte{','})
+	}
+	// Installed-apps inventory: hash only (hive, uninstall_key, display_name,
+	// display_version). Install_date and estimated_size churn too easily to
+	// drive change detection (install_date can refresh on repair, size can
+	// drift on cache updates). Sort by (hive, key) so enumeration order never
+	// causes a false fingerprint mismatch.
+	apps := make([]*pb.InstalledApp, len(rep.InstalledApps))
+	copy(apps, rep.InstalledApps)
+	sort.Slice(apps, func(i, j int) bool {
+		if apps[i].Hive != apps[j].Hive {
+			return apps[i].Hive < apps[j].Hive
+		}
+		return apps[i].UninstallKey < apps[j].UninstallKey
+	})
+	h.Write([]byte{'|'})
+	for _, a := range apps {
+		h.Write([]byte(a.Hive))
+		h.Write([]byte{0x1F}) // unit separator
+		h.Write([]byte(a.UninstallKey))
+		h.Write([]byte{0x1F})
+		h.Write([]byte(a.DisplayName))
+		h.Write([]byte{0x1F})
+		h.Write([]byte(a.DisplayVersion))
+		h.Write([]byte{0x1E}) // record separator
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -139,6 +139,7 @@ func readInstalledApp(root uninstallRoot, subkey string, selector AppSelector) (
 		{"DisplayVersion", &app.DisplayVersion},
 		{"Publisher", &app.Publisher}, {"UninstallString", &app.UninstallString},
 		{"QuietUninstallString", &app.QuietUninstallString},
+		{"InstallDate", &app.InstallDate},
 	} {
 		value, _, err := k.GetStringValue(field.name)
 		if errors.Is(err, registry.ErrNotExist) {
@@ -154,7 +155,66 @@ func readInstalledApp(root uninstallRoot, subkey string, selector AppSelector) (
 		return nil, fmt.Errorf("read %s\\%s WindowsInstaller: %w", root.view, subkey, err)
 	}
 	app.WindowsInstaller = value == 1
+	sizeKB, _, err := k.GetIntegerValue("EstimatedSize")
+	if err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return nil, fmt.Errorf("read %s\\%s EstimatedSize: %w", root.view, subkey, err)
+	}
+	app.EstimatedSizeKB = int64(sizeKB)
 	// A nameless entry can still be selected explicitly by key, but must not
 	// accidentally match a display-name search.
 	return app, nil
+}
+
+// EnumerateInstalledApps returns every registration in the HKLM Uninstall hive
+// (native + WOW6432Node). It is intended for inventory reporting to the server
+// (DeviceStateReport.installed_apps) so a third-party patch catalog can match
+// installed apps against known-outdated versions.
+//
+// No limit is imposed on the returned list: however many apps are installed,
+// the full inventory is returned. The server catalog (BigFix lists ~350
+// apps; the Aegis server team targets 1000+) is the only policy point for
+// which apps are patched; the agent only reports facts.
+//
+// Per-user (HKCU) enumeration is not included here — reporting all logged-off
+// user hives from a LocalSystem service would require loading each profile
+// hive, which has reliability + privacy implications. HKLM covers the common
+// vendor install path (both 32-bit and 64-bit) which is what the catalog
+// usually targets.
+//
+// Entries with no DisplayName are skipped — they are typically Windows
+// Installer rollback artifacts that are not useful for catalog matching.
+func EnumerateInstalledApps() ([]InstalledApp, error) {
+	roots, err := machineUninstallRoots()
+	if err != nil {
+		return nil, err
+	}
+	var out []InstalledApp
+	for _, root := range roots {
+		k, err := registry.OpenKey(root.key, root.path, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE|root.flags)
+		if errors.Is(err, registry.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("open %s uninstall registry: %w", root.view, err)
+		}
+		names, err := k.ReadSubKeyNames(-1)
+		k.Close()
+		if err != nil {
+			return nil, fmt.Errorf("enumerate %s uninstall registry: %w", root.view, err)
+		}
+		for _, name := range names {
+			app, err := readInstalledApp(root, name, AppSelector{})
+			if err != nil {
+				// Skip malformed/unreadable subkeys instead of failing the whole
+				// enumeration: a single corrupt registration must not deny the
+				// server its inventory snapshot.
+				continue
+			}
+			if app == nil || strings.TrimSpace(app.DisplayName) == "" {
+				continue
+			}
+			out = append(out, *app)
+		}
+	}
+	return out, nil
 }

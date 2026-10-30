@@ -259,6 +259,7 @@ TARGETING
   hosts [filter]            known devices + ONLINE/OFFLINE (20 rows by default)
   search <text>             search hostname/device_id/computer_id
   hosts --status offline --page 2 --limit 20   filter/paginate (max 100 rows)
+  inventory apps [filter]   third-party installed-apps from latest DeviceStateReport
   cd \\<host>               set single target (hostname / device_id / computer_id)
   cd \\<h1>,<h2>            set multiple targets
   cd *                      target all online
@@ -327,6 +328,88 @@ LAST-RESULT VARS (after each command, usable in if-conditions / substitution)
 
 func (s *nshSession) verbHosts(filter string) {
 	s.printHosts(filter)
+}
+
+// verbInventory answers "inventory apps [filter]" by listing the installed-apps
+// snapshot from the most recent DeviceStateReport for the current target. The
+// optional filter is a case-insensitive substring match against DisplayName or
+// Publisher. With no cd target, the mock summarises counts per connected
+// device so the operator can see fleet-wide inventory presence at a glance.
+//
+// This is a DEV / TESTING convenience. The production catalog match (which app
+// is outdated, what version is latest, which fixlet-equivalent to dispatch) is
+// server-team work.
+func (s *nshSession) verbInventory(rest string) {
+	parts := strings.Fields(strings.TrimSpace(rest))
+	if len(parts) == 0 || !strings.EqualFold(parts[0], "apps") {
+		s.printf("nsh: inventory apps [filter] — reports installed-apps from the latest DeviceStateReport\n")
+		return
+	}
+	filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(rest, parts[0])))
+
+	if len(s.targets) == 0 {
+		// Fleet summary.
+		s.srv.inventoryMu.Lock()
+		defer s.srv.inventoryMu.Unlock()
+		if len(s.srv.lastInventory) == 0 {
+			s.printf("inventory: no DeviceStateReport received yet from any device\n")
+			return
+		}
+		s.printf("%-20s  %-16s  %s\n", "HOST", "INVENTORY_SIZE", "LAST_REPORT_AT")
+		for devID, rep := range s.srv.lastInventory {
+			host := s.srv.hostnameOf(devID)
+			s.printf("%-20s  %-16d  %d\n", host, len(rep.InstalledApps), rep.CollectedAt)
+		}
+		return
+	}
+
+	for _, devID := range s.targets {
+		host := s.srv.hostnameOf(devID)
+		s.srv.inventoryMu.Lock()
+		rep, ok := s.srv.lastInventory[devID]
+		s.srv.inventoryMu.Unlock()
+		if !ok {
+			s.printf("%s: no DeviceStateReport received yet (wait for AEGIS_DEVICE_STATE_INTERVAL or trigger a change)\n", host)
+			continue
+		}
+		apps := rep.InstalledApps
+		if filter != "" {
+			var kept []*pb.InstalledApp
+			for _, a := range apps {
+				if strings.Contains(strings.ToLower(a.DisplayName), filter) ||
+					strings.Contains(strings.ToLower(a.Publisher), filter) {
+					kept = append(kept, a)
+				}
+			}
+			apps = kept
+		}
+		s.printf("---- %s: %d installed app(s)%s ----\n", host, len(apps), filterTag(filter))
+		s.printf("%-45s  %-20s  %-30s  %s\n", "DISPLAY_NAME", "VERSION", "PUBLISHER", "HIVE")
+		for _, a := range apps {
+			s.printf("%-45s  %-20s  %-30s  %s\n",
+				truncate(a.DisplayName, 45),
+				truncate(a.DisplayVersion, 20),
+				truncate(a.Publisher, 30),
+				a.Hive)
+		}
+	}
+}
+
+func filterTag(f string) string {
+	if f == "" {
+		return ""
+	}
+	return " matching '" + f + "'"
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
 }
 
 func (s *nshSession) verbCD(rest string) {
