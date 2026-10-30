@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/throttle"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -127,7 +128,11 @@ func (d *dispatcher) runCollect(ctx context.Context, client pb.AgentControlPlane
 		}
 		usedNames[filepath.Base(path)]++
 
-		n, stored, err := uploadFile(ctx, client, cmdID, name, path, spec.TailBytes, maxEach)
+		// Upload throttle: BigFix "lower wins" between agent-config upload cap
+		// and the signed per-task rate on CollectFileSpec. Admin cap is a
+		// policy ceiling; signed command can only go lower.
+		effectiveRate := throttle.EffectiveRate(d.cfg.UploadBytesPerSecond, spec.MaxUploadBytesPerSecond)
+		n, stored, err := uploadFile(ctx, client, cmdID, name, path, spec.TailBytes, maxEach, effectiveRate)
 		if err != nil {
 			failed++
 			notes = append(notes, fmt.Sprintf("%s: %v", path, err))
@@ -161,7 +166,11 @@ func (d *dispatcher) runCollect(ctx context.Context, client pb.AgentControlPlane
 // uploadFile streams one file (or its tail, per the caps) to the server over the
 // mTLS channel in bounded 1 MiB chunks, with an end-to-end SHA-256 the server
 // verifies. Returns the bytes uploaded and the server's stored path.
-func uploadFile(ctx context.Context, client pb.AgentControlPlaneClient, actionID, name, path string, tailBytes, maxEach int64) (int64, string, error) {
+//
+// bytesPerSecond caps the send-side rate (0 = no cap). The caller resolves
+// min(agent_config_upload_cap, signed_per_task_upload_rate) via
+// throttle.EffectiveRate() before calling in.
+func uploadFile(ctx context.Context, client pb.AgentControlPlaneClient, actionID, name, path string, tailBytes, maxEach, bytesPerSecond int64) (int64, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, "", err
@@ -192,6 +201,10 @@ func uploadFile(ctx context.Context, client pb.AgentControlPlaneClient, actionID
 	if err != nil {
 		return 0, "", err
 	}
+	// Throttle the file READ (not stream.Send) so the sliding-window math is
+	// anchored to disk IO and backpressure propagates naturally into the gRPC
+	// buffer. A zero rate is passthrough — no runtime cost when unthrottled.
+	paced := throttle.NewReader(f, bytesPerSecond)
 	h := sha256.New()
 	buf := make([]byte, collectChunkSize)
 	var sent int64
@@ -201,7 +214,7 @@ func uploadFile(ctx context.Context, client pb.AgentControlPlaneClient, actionID
 		if want > int64(len(buf)) {
 			want = int64(len(buf))
 		}
-		n, rerr := io.ReadFull(f, buf[:want])
+		n, rerr := io.ReadFull(paced, buf[:want])
 		if n > 0 {
 			h.Write(buf[:n])
 			chunk := &pb.UploadChunk{Data: buf[:n]}

@@ -62,7 +62,7 @@ func TestUploadFilePreservesBytesAndHonorsPositiveCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cap := range []int64{0, 23} {
-		n, _, err := uploadFile(context.Background(), client, "test", "file.bin", path, 0, cap)
+		n, _, err := uploadFile(context.Background(), client, "test", "file.bin", path, 0, cap, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

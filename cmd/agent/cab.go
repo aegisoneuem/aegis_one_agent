@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/throttle"
+
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
@@ -22,17 +24,19 @@ type cabManifestHandler struct {
 	versionPath string        // SKVC\cab.version — the version of the cab on disk
 	cabPath     string        // destination path for the cab itself (cfg.WsusScanCab)
 	scanTrigger chan<- struct{} // signalled after a new cab lands, to run a full compliance scan
+	fetchBPS    int64         // agent-config fetch bytes-per-second cap (0 = unlimited)
 
 	mu           sync.Mutex
 	lastNotified string // avoid re-logging the same pending version every check-in
 	fetching     bool   // single-flight: one cab fetch at a time
 }
 
-func newCabManifestHandler(dir, cabPath string, scanTrigger chan<- struct{}) *cabManifestHandler {
+func newCabManifestHandler(dir, cabPath string, scanTrigger chan<- struct{}, fetchBPS int64) *cabManifestHandler {
 	return &cabManifestHandler{
 		versionPath: filepath.Join(dir, "cab.version"),
 		cabPath:     cabPath,
 		scanTrigger: scanTrigger,
+		fetchBPS:    fetchBPS,
 	}
 }
 
@@ -104,7 +108,10 @@ func (h *cabManifestHandler) fetchStale(ctx context.Context, client pb.AgentCont
 
 		slog.Info("fetching wsusscn2.cab from server", "version", version, "dest", h.cabPath)
 		req := &pb.ContentRequest{Kind: "cab", Id: version, Sha256: sha256}
-		if err := fetchContent(ctx, client, req, h.cabPath); err != nil {
+		// Cab fetches do not carry a signed per-task rate (control-plane
+		// catalog delivery, not a software deploy), so only the agent config
+		// cap applies here. 0 = no cap.
+		if err := fetchContent(ctx, client, req, h.cabPath, h.fetchBPS); err != nil {
 			slog.Error("cab fetch failed", "version", version, "error", err.Error())
 			// Allow a retry on the next manifest for this same version.
 			h.mu.Lock()
@@ -130,7 +137,12 @@ func (h *cabManifestHandler) fetchStale(ctx context.Context, client pb.AgentCont
 // It writes to a temp file first, verifies the SHA-256 digest (when the request
 // carries one), then atomically renames into place. The endpoint never touches the
 // internet — content only ever arrives over this mTLS channel.
-func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *pb.ContentRequest, destPath string) error {
+//
+// bytesPerSecond caps the receive-side rate for this transfer (0 = no cap). The
+// caller resolves the effective cap via throttle.EffectiveRate(agent_config,
+// signed_command) so BigFix "lower wins" between admin cap and per-task rate
+// is applied before this function sees a number.
+func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *pb.ContentRequest, destPath string, bytesPerSecond int64) error {
 	stream, err := client.FetchContent(ctx, req)
 	if err != nil {
 		return fmt.Errorf("FetchContent RPC failed: %w", err)
@@ -147,7 +159,14 @@ func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *p
 	defer os.Remove(tmpName) // best-effort cleanup if we return before the rename
 
 	digest := sha256.New()
-	w := io.MultiWriter(tmp, digest)
+	// Throttle the WRITE to the temp file so TCP backpressure propagates up the
+	// gRPC stream to the server (receiver slows down -> stream flow control ->
+	// server stops pushing). Writing through the throttle rather than reading
+	// through it means the digest multiwriter is unaffected and the pacing
+	// math is tied to actual persistent-storage bytes, not transient buffer
+	// churn. A zero rate is a zero-overhead passthrough.
+	paced := throttle.NewWriter(tmp, bytesPerSecond)
+	w := io.MultiWriter(paced, digest)
 	var total int64
 	for {
 		chunk, rerr := stream.Recv()

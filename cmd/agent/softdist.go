@@ -15,6 +15,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
+	"github.com/aegisoneuem/aegis_one_agent/internal/throttle"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -46,11 +47,12 @@ type softdistInstaller struct {
 	maxSecretBytes int
 	verifyInterval time.Duration
 	journal        *jobJournal // durable per-job state for crash/power-loss recovery
+	fetchBPS       int64       // agent-config fetch cap (0 = unlimited); BigFix "lower wins" with signed per-task rate
 	jobs           chan softdistJob
 }
 
-func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration, journal *jobJournal) *softdistInstaller {
-	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, journal: journal, jobs: make(chan softdistJob, 32)}
+func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration, journal *jobJournal, fetchBPS int64) *softdistInstaller {
+	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, journal: journal, fetchBPS: fetchBPS, jobs: make(chan softdistJob, 32)}
 }
 
 // recoverIncompleteJobs scans the journal for in-flight entries left behind
@@ -348,7 +350,12 @@ func (s *softdistInstaller) deliver(ctx context.Context, client pb.AgentControlP
 		tmp := filepath.Join(s.tmpDir, "softdist-fetch-"+sanitize(cmdID)+installerExt(spec))
 		// fetchContent streams over mTLS and verifies SHA-256 after download.
 		req := &pb.ContentRequest{Kind: "package", Id: id, Sha256: spec.ExpectedHash}
-		if err := fetchContent(ctx, client, req, tmp); err != nil {
+		// Bandwidth throttle: lower-wins between the admin-wide endpoint cap
+		// (agent config) and the signed per-task rate. The signed command can
+		// request a LOWER rate for a specific deploy (e.g. huge SQL installer
+		// during maintenance window) but cannot bypass the endpoint cap.
+		effectiveRate := throttle.EffectiveRate(s.fetchBPS, spec.MaxFetchBytesPerSecond)
+		if err := fetchContent(ctx, client, req, tmp, effectiveRate); err != nil {
 			slog.Error("software_deploy: fetch failed", "command_id", cmdID, "content_id", id, "error", err.Error())
 			send(ctx, s.outbox, actionStatusMsg(simpleActionStatus(cmdID, actionSoftwareDeploy, s.deviceID, "",
 				pb.ActionPhase_ACTION_PHASE_FAILED, "fetch failed: "+err.Error())))

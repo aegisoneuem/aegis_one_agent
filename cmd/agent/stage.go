@@ -25,13 +25,14 @@ type stager struct {
 	cache    *patchcache.Cache
 	tmpDir   string
 	deviceID string
+	fetchBPS int64 // agent-config fetch cap (0 = unlimited)
 
 	mu       sync.Mutex
 	inflight map[string]bool // single-flight per cache id
 }
 
-func newStager(outbox chan<- *pb.AgentMessage, cache *patchcache.Cache, tmpDir, deviceID string) *stager {
-	return &stager{outbox: outbox, cache: cache, tmpDir: tmpDir, deviceID: deviceID, inflight: make(map[string]bool)}
+func newStager(outbox chan<- *pb.AgentMessage, cache *patchcache.Cache, tmpDir, deviceID string, fetchBPS int64) *stager {
+	return &stager{outbox: outbox, cache: cache, tmpDir: tmpDir, deviceID: deviceID, fetchBPS: fetchBPS, inflight: make(map[string]bool)}
 }
 
 // stage handles one stage_patch command. The fetch+encrypt runs in a background
@@ -86,7 +87,9 @@ func (s *stager) stage(ctx context.Context, client pb.AgentControlPlaneClient, c
 
 		req := &pb.ContentRequest{Kind: "patch", Id: id, Sha256: spec.ExpectedHash}
 		slog.Info("stage_patch: fetching patch from server", "command_id", cmdID, "id", id, "dest", tmp)
-		if err := fetchContent(ctx, client, req, tmp); err != nil {
+		// stage_patch does not expose a per-task rate yet; only the agent
+		// config cap applies here. 0 = no cap.
+		if err := fetchContent(ctx, client, req, tmp, s.fetchBPS); err != nil {
 			slog.Error("stage_patch: fetch failed", "command_id", cmdID, "id", id, "error", err.Error())
 			send(ctx, s.outbox, st(pb.ActionPhase_ACTION_PHASE_FAILED, "fetch failed: "+err.Error()))
 			return

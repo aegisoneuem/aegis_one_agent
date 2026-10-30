@@ -618,7 +618,7 @@ func runProcess(ctx context.Context) {
 	// (install/uninstall of catalog packages) on its own serial queue. It shares
 	// the encrypted patch cache (server-delivered installers are stored sealed at
 	// rest) and the tmp dir (transient decrypt-to-install, secure-deleted after).
-	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir, cfg.SoftdistVerifyAttempts, cfg.SoftdistVerifyInterval, newJobJournal(cfg.SecureDir))
+	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir, cfg.SoftdistVerifyAttempts, cfg.SoftdistVerifyInterval, newJobJournal(cfg.SecureDir), cfg.FetchBytesPerSecond)
 	sdi.maxSecretBytes = cfg.SoftdistMaxSecretBytes
 	sdi.bundleLimits = softdist.BundleLimits{MaxBytes: cfg.SoftdistBundleMaxBytes, MaxFiles: cfg.SoftdistBundleMaxFiles}
 	// Durable-journal recovery runs BEFORE the worker starts consuming new jobs
@@ -630,7 +630,7 @@ func runProcess(ctx context.Context) {
 
 	// Stager: server-driven pre-caching of patches (stage_patch) ahead of a
 	// scheduled install. Fetches via peer-cache and stores encrypted as staged.
-	stg := newStager(outbox, cache, tmpDir, cfg.DeviceID)
+	stg := newStager(outbox, cache, tmpDir, cfg.DeviceID, cfg.FetchBytesPerSecond)
 
 	// Cache janitor: periodic TTL/cap enforcement (infrequent, to stay light).
 	go cacheJanitor(cache, cfg.CacheJanitorInterval)
@@ -642,7 +642,7 @@ func runProcess(ctx context.Context) {
 	scanTrigger := make(chan struct{}, 1)
 	// Cab version handler (server reports version; agent fetches if stale, then
 	// triggers a scan against the new catalog).
-	cabs := newCabManifestHandler(cfg.SecureDir, cfg.WsusScanCab, scanTrigger)
+	cabs := newCabManifestHandler(cfg.SecureDir, cfg.WsusScanCab, scanTrigger, cfg.FetchBytesPerSecond)
 	// drainSignal lets detection wake the sender to flush the buffer promptly
 	// (otherwise a report buffered after connect waits for the next heartbeat).
 	drainSignal := make(chan struct{}, 1)

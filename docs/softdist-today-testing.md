@@ -19,6 +19,7 @@ vendor cases. Run the real cases in E and F in their stated order.
 | [H. Crash recovery and durable journal](#h-crash-recovery-and-durable-journal-new-block-28-october-2026) | Agent restart, orphan package directory sweep | Native regression PASS, VM acceptance pending |
 | [I. Descendant termination on timeout](#i-descendant-termination-on-timeout-new-block-28-october-2026) | Timeout kills children, reports count hint | Native regression PASS, VM acceptance pending |
 | [J. Reboot-sensitive + MST + config-only](#j-reboot-sensitive--msimst--config-only-primary-focus-28-october-2026) | Deterministic 3010 handling, 7-Zip MSI + MST transform, config-only parameter update via post-step | **PASS 2026-10-29 (Vijay VM run)** |
+| [K. Bandwidth throttling](#k-bandwidth-throttling-bigfix-aligned-30-october-2026) | Per-task fetch rate, per-task upload rate, lower-wins policy enforcement | Native regression PASS, VM acceptance pending |
 
 All commands are manual CMD commands. Open a NEW MOCKSERVER CMD for each block
 with your normal TLS settings; stop the previous server first. Each block states
@@ -1891,3 +1892,172 @@ The additive agent-side durability updates summarized in
 `dist/softdist-handoff.json` (`additive_engine_updates`) carry their own
 native regression coverage. Their VM acceptance is tracked in blocks G, H
 and I of this guide and is not a prerequisite for closing the J block.
+
+
+## K. Bandwidth throttling (BigFix-aligned, 30 October 2026)
+
+Agent now caps `FetchContent` (server-to-agent download) and `UploadContent`
+(agent-to-server upload) at a bytes-per-second budget. Two sources of truth
+feed each cap, and BigFix "lower wins" semantics apply:
+
+1. **Agent config cap** (admin policy, endpoint-wide):
+   - `AEGIS_FETCH_MAX_BYTES_PER_SECOND` — downstream (server to agent)
+   - `AEGIS_UPLOAD_MAX_BYTES_PER_SECOND` — upstream (agent to server)
+   - 0 = unlimited (default; existing deploys unchanged)
+2. **Signed per-task rate** (console operator per-package):
+   - `SoftwareDeploySpec.max_fetch_bytes_per_second`
+   - `CollectFileSpec.max_upload_bytes_per_second`
+   - 0 = no per-task cap; falls back to agent config
+3. **Effective rate** = min(agent_cap, signed_rate), treating 0 as unlimited.
+   Signed command CANNOT bypass the admin cap — admin policy wins.
+
+Server-side cumulative throttle (BigFix `_BESRelay_HTTPServer_ThrottleKBPS`
+equivalent) is server-team work; gRPC backpressure makes agent-side plus
+server-side combine naturally as min() at the network layer.
+
+### Preflight — one-time endpoint setup
+
+**ENDPOINT**, in an admin CMD:
+
+```cmd
+if not exist C:\temp\AegisThrottleOut mkdir C:\temp\AegisThrottleOut
+if exist C:\temp\AegisThrottleOut\big.log del C:\temp\AegisThrottleOut\big.log
+powershell -NoProfile -Command "$path='C:\temp\AegisThrottleOut\big.log'; $size=5MB; $buf=[byte[]]::new($size); (New-Object Random).NextBytes($buf); [IO.File]::WriteAllBytes($path, $buf)"
+dir C:\temp\AegisThrottleOut\big.log
+```
+
+Expected: ~5,242,880 bytes random-content log file for the upload test (K2).
+
+### Case K1 — Throttled FETCH (signed per-task rate)
+
+#### 1. Purpose
+
+Prove the agent honors `SoftwareDeploySpec.max_fetch_bytes_per_second`. We
+cap a 1.9 MB 7-Zip MSI bundle fetch at 500,000 bytes/sec. Expected wall-clock
+~4 seconds (1,900,000 / 500,000).
+
+#### 2. Commands
+
+**MOCKSERVER**, after common preparation (clear PRE/POST/ROLLBACK/dependency
+and K1-specific stale envs):
+
+```cmd
+set "AEGIS_FETCH_MAX_BYTES_PER_SECOND="
+set "AEGIS_UPLOAD_MAX_BYTES_PER_SECOND="
+set "AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=500000"
+set "AEGIS_COLLECT_UPLOAD_MAX_BYTES_PER_SEC="
+
+copy /Y C:\temp\AegisRealTests\7z2605-x64.msi C:\temp\AegisK1-src\7zip.msi >nul 2>&1
+if not exist C:\temp\AegisK1-src mkdir C:\temp\AegisK1-src
+copy /Y C:\temp\AegisRealTests\7z2605-x64.msi C:\temp\AegisK1-src\7zip.msi
+if exist C:\temp\AegisK1Bundle.zip del C:\temp\AegisK1Bundle.zip
+mockserver.exe pack C:\temp\AegisK1-src C:\temp\AegisK1Bundle.zip
+
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisK1Bundle.zip"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisK1Bundle.zip"
+set "AEGIS_DEPLOY_CONTENT_ID=k1-throttled-fetch-v1"
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_NAME=K1 - throttled fetch 500 KB/s"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ARGS=/D /C echo throttled-fetch-run"
+set "AEGIS_DEPLOY_TIMEOUT=60"
+mockserver.exe server
+```
+
+#### 3. Expected results
+
+- Mock command line shows `fetch_rate=500000 B/s` on the deploy send.
+- `ACTION_PHASE_DOWNLOADING` lasts ~4 seconds (not instant). Wall-clock
+  between `fetching installer from server` and `preparing and verifying
+  software bundle` status messages = ~ `bundle_bytes / 500000`.
+- Terminal `ACTION_PHASE_SUCCESS`, `exit_code = 0`, `cleanup: removed`.
+
+### Case K2 — Throttled UPLOAD (signed per-task rate)
+
+#### 1. Purpose
+
+Prove the agent honors `CollectFileSpec.max_upload_bytes_per_second`. We
+upload a 5 MB log at 1,000,000 bytes/sec cap. Expected wall-clock ~5 seconds.
+
+#### 2. Commands
+
+**MOCKSERVER**, after common preparation:
+
+```cmd
+set "AEGIS_FETCH_MAX_BYTES_PER_SECOND="
+set "AEGIS_UPLOAD_MAX_BYTES_PER_SECOND="
+set "AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC="
+set "AEGIS_COLLECT_UPLOAD_MAX_BYTES_PER_SEC=1000000"
+set "AEGIS_COLLECT_PATHS=C:\temp\AegisThrottleOut\big.log"
+mockserver.exe server
+```
+
+#### 3. Expected results
+
+- Mock command line shows `upload_rate=1000000 B/s` on the collect send.
+- Wall-clock between `collecting files` and the terminal action status is
+  ~5 seconds for the 5 MB file (not instant, not 10 s either).
+- Server stores the file under `uploads/<computer_id>/collect-001/big.log`
+  with `integrity: true`. The 5 MB on-disk size matches the endpoint source.
+
+### Case K3 — Lower wins: agent config caps a looser signed rate
+
+#### 1. Purpose
+
+Prove the signed per-task rate cannot override the admin-wide endpoint cap.
+Signed rate = 2 MB/s, agent config cap = 500 KB/s → effective = 500 KB/s.
+Admin policy wins.
+
+#### 2. Commands
+
+**ENDPOINT**, stop and relaunch the agent service with the endpoint cap set:
+
+```cmd
+sc stop AegisOneClient
+setx AEGIS_FETCH_MAX_BYTES_PER_SECOND 500000 /M
+sc start AegisOneClient
+```
+
+> `setx /M` persists the env var at the machine level so the service picks
+> it up on next start. To revert later: `setx AEGIS_FETCH_MAX_BYTES_PER_SECOND "" /M`
+> then stop/start the service.
+
+**MOCKSERVER**:
+
+```cmd
+set "AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=2000000"
+set "AEGIS_DEPLOY_FILE=C:\temp\AegisK1Bundle.zip"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisK1Bundle.zip"
+set "AEGIS_DEPLOY_CONTENT_ID=k3-lower-wins-v1"
+set "AEGIS_DEPLOY_NAME=K3 - lower-wins policy enforcement"
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_ARGS=/D /C echo lower-wins-run"
+mockserver.exe server
+```
+
+#### 3. Expected results
+
+- Mock command line shows `fetch_rate=2000000 B/s` on send (signed value).
+- Actual DOWNLOADING wall-clock is ~4 seconds (not 1 second). The agent
+  applied `min(500000 admin cap, 2000000 signed) = 500000 B/s` — admin cap
+  is non-negotiable.
+- Terminal `ACTION_PHASE_SUCCESS`, `exit_code = 0`.
+
+### Server-team contract note
+
+The server team's cumulative throttle (BigFix's
+`_BESRelay_HTTPServer_ThrottleKBPS` equivalent) is independent. Enforce it
+at the server HTTP/gRPC send layer so N active connections share one
+total-outbound budget — divided across live `FetchContent` and
+`UploadContent` streams. gRPC flow control makes server-side plus
+agent-side combine naturally as the lower of the two bytes/sec rates at the
+network layer. Nothing in the agent needs to change to coexist with the
+server-side cap.
+
+Agent config env vars documented for the admin:
+`AEGIS_FETCH_MAX_BYTES_PER_SECOND`,
+`AEGIS_UPLOAD_MAX_BYTES_PER_SECOND`.
+Signed proto fields: `SoftwareDeploySpec.max_fetch_bytes_per_second`,
+`CollectFileSpec.max_upload_bytes_per_second`.
+All in BYTES/sec. 0 = unlimited.

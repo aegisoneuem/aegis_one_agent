@@ -1,9 +1,9 @@
 ﻿{
-    "handoff_date":  "2026-10-29",
+    "handoff_date":  "2026-10-30",
     "platform":  "windows/amd64",
     "guide":  "docs/softdist-today-testing.md",
-    "manual_cases":  27,
-    "primary_focus":  "J block real-vendor acceptance PASS 2026-10-29 (Vijay VM run). SoftDist agent-track feature set is complete for the current release. Remaining items are server-team Section 4 (production backend/UI) and additional vendor-curated packages beyond the deterministic J1/J2/J3 cases.",
+    "manual_cases":  30,
+    "primary_focus":  "Bandwidth throttling (K block) agent-side implementation shipped alongside the existing A-J blocks. BigFix-aligned: agent config env caps + signed per-task rate, lower-wins across both sources. Server-side cumulative throttle remains server-team work; gRPC backpressure composes naturally.",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -14,14 +14,15 @@
                    "G. rollback-on-failure orchestration (native regression PASS; VM pending)",
                    "H. crash recovery and durable journal (native regression PASS; VM pending)",
                    "I. descendant termination on timeout (native regression PASS; VM pending)",
-                   "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PASS 2026-10-29)"
+                   "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PASS 2026-10-29)",
+                   "K. bandwidth throttling: per-task fetch rate, per-task upload rate, lower-wins policy enforcement (native regression PASS; VM pending)"
                ],
-    "additive_engine_updates":  "Agent-side durability improvements landed alongside the J block: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics. These are additive (older servers keep working) and native-tested. VM acceptance of G/H/I is pending but is NOT a prerequisite for the primary J focus.",
+    "additive_engine_updates":  "Agent-side durability + bandwidth throttling improvements: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics, FetchContent/UploadContent bandwidth throttling with BigFix lower-wins semantics (agent config vs signed per-task rate). These are additive (older servers keep working) and native-tested. VM acceptance of G/H/I/K is pending but is NOT a prerequisite for the primary focus.",
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
                       ],
-    "shared_proto_commit":  "a06654111ff4afd4fd53a39abeff2e3b2d4b0bfd",
+    "shared_proto_commit":  "6236f8b",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
                        "agent_tests":  "PASS: go test ./... (2026-10-28)",
@@ -35,18 +36,18 @@
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21844992,
-                          "sha256":  "62687239b1a8c900a0eababcf9ae0766ea28f9931a0077530f1f0c0d8703f52a"
+                          "bytes":  21851136,
+                          "sha256":  "a60442d0a37d2ec813045bf4bf2654bf97f4b1d60e838ca5f216a6e6973b4c44"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19486720,
-                          "sha256":  "26cdf73134ef0b5d592a1df1f594478b27ab8f9e12858dffae32d3c9c581dd34"
+                          "bytes":  19488256,
+                          "sha256":  "57e3f8000608af42547d50a488ab1448bcd46edbb69ba009236afe69ec2b1065"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11730944,
-                          "sha256":  "202c860d9bb38ac745a646c6aa5ea2d9e6fd0c66145aca72220b64991cb9ddbf"
+                          "bytes":  11735040,
+                          "sha256":  "991e7fbfc1726d8a310f43f9a52f91681c50426cb0e7a9c792a2995e8bea3315"
                       }
                   ]
 }

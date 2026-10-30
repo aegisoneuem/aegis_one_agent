@@ -98,7 +98,8 @@ func (d *dispatcher) runCommandWorker(ctx context.Context, client pb.AgentContro
 	// the inline Stdout stays at maxOut for the ActionStatus.
 	if spec.UploadAs != "" && out.FullStdoutPath != "" {
 		name := spec.UploadAs
-		if n, stored, err := uploadFile(ctx, client, cmdID, name, out.FullStdoutPath, 0, 0); err != nil {
+		// run_command stdout upload honors the admin-wide upload cap.
+		if n, stored, err := uploadFile(ctx, client, cmdID, name, out.FullStdoutPath, 0, 0, d.cfg.UploadBytesPerSecond); err != nil {
 			slog.Warn("run_command: upload failed", "command_id", cmdID, "error", err.Error())
 			out.Reason += " (upload failed: " + err.Error() + ")"
 		} else {

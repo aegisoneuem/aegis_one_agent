@@ -1030,6 +1030,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				Parameters:       parseParams(os.Getenv("AEGIS_DEPLOY_PARAMS")), // ${name} substitution, e.g. "REGION=apac,INSTALLDIR=C:\app"
 				TimeoutSeconds:   options.timeout,
 				SuccessExitCodes: options.successCodes,
+				// Per-task fetch rate cap in bytes/sec (BigFix "lower wins" with
+				// agent config). 0 = no per-task cap. Useful for huge installers
+				// during business hours: AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=500000.
+				MaxFetchBytesPerSecond: int64FromEnv("AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC"),
 			}
 			// AUTO-HASH (BigFix model — the console computes the SHA at package upload,
 			// the admin never types it): when no AEGIS_DEPLOY_HASH is given for a
@@ -1107,7 +1111,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					if deployContentID != "" {
 						src = "content_id=" + deployContentID + " (server-delivered)"
 					}
-					mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s (signed)\n", commandType, spec.Name, src)
+					rate := ""
+					if spec.MaxFetchBytesPerSecond > 0 {
+						rate = fmt.Sprintf(", fetch_rate=%d B/s", spec.MaxFetchBytesPerSecond)
+					}
+					mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s%s (signed)\n", commandType, spec.Name, src, rate)
 				}
 			}
 		}
@@ -1130,6 +1138,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				TailBytes:     int64FromEnv("AEGIS_COLLECT_TAIL"),
 				MaxBytesEach:  int64FromEnv("AEGIS_COLLECT_MAX_EACH"),
 				MaxTotalBytes: int64FromEnv("AEGIS_COLLECT_MAX_TOTAL"),
+				// Per-task upload rate cap in bytes/sec (BigFix "lower wins"
+				// with agent config). 0 = no per-task cap. Useful for large
+				// log hauls: AEGIS_COLLECT_UPLOAD_MAX_BYTES_PER_SEC=500000.
+				MaxUploadBytesPerSecond: int64FromEnv("AEGIS_COLLECT_UPLOAD_MAX_BYTES_PER_SEC"),
 			}
 			if specBytes, err := proto.Marshal(spec); err != nil {
 				log.Printf("failed to marshal collect_file spec: %v", err)
@@ -1141,7 +1153,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					log.Printf("failed to send collect_file command: %v", err)
 					return
 				}
-				mockPrintf("Sent command -> id: collect-001, type: collect_file, paths=%v (signed)\n", paths)
+				rate := ""
+				if spec.MaxUploadBytesPerSecond > 0 {
+					rate = fmt.Sprintf(", upload_rate=%d B/s", spec.MaxUploadBytesPerSecond)
+				}
+				mockPrintf("Sent command -> id: collect-001, type: collect_file, paths=%v%s (signed)\n", paths, rate)
 			}
 		}
 

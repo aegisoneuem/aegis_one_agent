@@ -91,6 +91,15 @@ type Config struct {
 	SoftdistVerifyAttempts int           // post-action checks, including initial detection
 	SoftdistVerifyInterval time.Duration // settle delay for detached uninstallers
 
+	// Bandwidth throttle caps for file transfers (BigFix-aligned). 0 = no cap.
+	// FetchBytesPerSecond caps server-to-agent downloads (FetchContent streams:
+	// software bundles, patch content, cab). UploadBytesPerSecond caps
+	// agent-to-server uploads (UploadContent streams: collect_file, NSH grab
+	// outputs). Signed per-task rate can only go LOWER than this cap, never
+	// higher — admin's endpoint policy is non-negotiable.
+	FetchBytesPerSecond  int64
+	UploadBytesPerSecond int64
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -255,6 +264,8 @@ func Load() Config {
 		SoftdistBundleMaxFiles: int(int64FromEnv("AEGIS_SOFTDIST_BUNDLE_MAX_FILES", 10000)),
 		SoftdistMaxSecretBytes: int(int64FromEnv("AEGIS_SOFTDIST_MAX_SECRET_BYTES", 64*1024)),
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
+		FetchBytesPerSecond:    int64FromEnv("AEGIS_FETCH_MAX_BYTES_PER_SECOND", 0),
+		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
 		LogLevel:               getenv("AEGIS_LOG_LEVEL", "info"),
