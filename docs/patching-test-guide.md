@@ -465,6 +465,40 @@ the agent must not pre-filter.
 4. Agent runs the software_deploy via the existing SoftDist pipeline — no
    new task type needed.
 
+### UC-18 run record
+
+**2026-11-01 VM PASS** on WIN-TUES4V46T7I (Windows Server 2022 Standard
+Evaluation, device_id b3dea9f7-5df8-4765-ad8b-621307ef5f41):
+
+- UC-18A baseline: `inventory apps` showed 14 installed registrations with
+  DisplayName, DisplayVersion, Publisher, Hive — Chrome 156.0, Firefox ESR
+  153.6.0, Microsoft Edge 156.0, 7-Zip 26.04, Notepad++ 8.9.8.1, VMware
+  Tools 13.0.10.0, Visual C++ runtimes (x86 and x64), AegisOne Client,
+  Mozilla Maintenance Service.
+- UC-18B NSH filter: `inventory apps microsoft`, `inventory apps mozilla`,
+  `inventory apps google` all narrowed the table correctly;
+  `inventory apps 7-zip` showed exactly 1 row before uninstall, 0 rows after.
+- UC-18C change detection with real 7-Zip MSI: after `msiexec /x` the agent
+  logged
+  `FAST-LANE patch-state: CHANGED -> sending ... installed_apps=13` within
+  one AEGIS_DEVICE_STATE_INTERVAL cycle; after reinstall the next cycle
+  logged `installed_apps=14`. No agent service restart was required.
+- UC-18D suppression: between the two CHANGED sends above, multiple 30-sec
+  cycles passed with no DeviceStateReport sent (debug-level
+  "no change this cycle (skip send)"), proving the fingerprint hash
+  suppresses redundant sends.
+- UC-18E hive separation: UC-18A output showed Google Chrome and Microsoft
+  Edge as HKLM32 (WOW6432Node); 7-Zip, Firefox, Notepad++, VMware Tools,
+  AegisOne Client as HKLM64 (native).
+- UC-18F multi-device fleet summary: pending (only one agent active during
+  this test run).
+
+**Env var caveat caught during the run:** `AEGIS_DEVICE_STATE_INTERVAL` is
+parsed as integer SECONDS by the agent config, not Go duration format.
+Setting `30s` falls back to the 5-minute default; use `setx
+AEGIS_DEVICE_STATE_INTERVAL 30 /M` (plain integer) and restart the
+AegisOneClient service for the new interval to take effect.
+
 ### UC-18 — Fast-lane installed-apps inventory
 
 **Purpose:** prove the agent reports every HKLM Uninstall hive entry and
