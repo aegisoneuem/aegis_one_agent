@@ -100,6 +100,21 @@ type Config struct {
 	FetchBytesPerSecond  int64
 	UploadBytesPerSecond int64
 
+	// LogScriptContent is the endpoint policy for script-payload audit
+	// transcripts (SoftDist running .ps1/.bat/.cmd/.vbs/.py). Values:
+	//   "enabled" (default) — honor the per-task CaptureScriptContent flag;
+	//                         always write a hash+preview record; write full
+	//                         content ONLY when the flag is set.
+	//   "disabled"         — kill switch: never write full content, even if
+	//                         the signed task flag is set. hash+preview is
+	//                         still written. Regulated endpoints where the
+	//                         raw script bytes must NEVER land on disk.
+	//   "always"           — forensic mode: write full content on every
+	//                         script, regardless of the per-task flag.
+	// Resolved by softdist.ResolveScriptAuditPolicy. SecureParameters are
+	// never captured on either path (they are delivered via child stdin).
+	LogScriptContent string
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -265,6 +280,7 @@ func Load() Config {
 		SoftdistMaxSecretBytes: int(int64FromEnv("AEGIS_SOFTDIST_MAX_SECRET_BYTES", 64*1024)),
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
 		FetchBytesPerSecond:    int64FromEnv("AEGIS_FETCH_MAX_BYTES_PER_SECOND", 0),
+		LogScriptContent:       getenv("AEGIS_LOG_SCRIPT_CONTENT", "enabled"),
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

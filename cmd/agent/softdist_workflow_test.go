@@ -55,7 +55,7 @@ func TestWorkflowWorkerOrderFailuresAndCleanup(t *testing.T) {
 				spec.ExpectedHash = strings.Repeat("0", 64)
 			}
 			out := make(chan *pb.AgentMessage, 32)
-			installer := newSoftdistInstaller(out, "test", nil, base, filepath.Join(base, "download"), 1, time.Millisecond, nil, 0)
+			installer := newSoftdistInstaller(out, "test", nil, base, filepath.Join(base, "download"), 1, time.Millisecond, nil, 0, base, "enabled")
 			installer.run(softdistJob{commandID: "workflow-test", spec: spec, localPath: archive})
 			var terminal *pb.ActionStatus
 			for len(out) > 0 {

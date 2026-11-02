@@ -55,7 +55,7 @@ func TestAdvancedDetectionWorkerLifecycle(t *testing.T) {
 				spec.Detection.Rules = append(spec.Detection.Rules, &pb.SoftwareDetectionRule{Kind: "file_exists", Path: filepath.Join(base, "missing.txt")})
 			}
 			out := make(chan *pb.AgentMessage, 16)
-			installer := newSoftdistInstaller(out, "test", nil, base, base, 1, time.Millisecond, nil, 0)
+			installer := newSoftdistInstaller(out, "test", nil, base, base, 1, time.Millisecond, nil, 0, base, "enabled")
 			installer.run(softdistJob{commandID: "detect-test", spec: spec})
 			var terminal *pb.ActionStatus
 			for len(out) > 0 {
@@ -104,7 +104,7 @@ func TestAdvancedDetectionKeepsBundleAndWorkflowSettings(t *testing.T) {
 	spec := &pb.SoftwareDeploySpec{InstallerType: "command", FilePath: archive, ExpectedHash: sum, Bundle: &pb.SoftwareBundle{Command: "cmd.exe"}, Steps: &pb.SoftwareDeploymentSteps{Before: []*pb.SoftwareCommandStep{{Name: "precheck", Command: "cmd.exe", Arguments: "/D /C exit 0"}}}, Detection: &pb.SoftwareDetection{Rules: []*pb.SoftwareDetectionRule{{Kind: "file_exists", Path: filepath.Join(base, "installed.txt")}}}}
 	raw, _ := proto.Marshal(spec)
 	out := make(chan *pb.AgentMessage, 8)
-	installer := newSoftdistInstaller(out, "test", nil, base, base, 1, time.Millisecond, nil, 0)
+	installer := newSoftdistInstaller(out, "test", nil, base, base, 1, time.Millisecond, nil, 0, base, "enabled")
 	d := &dispatcher{outbox: out, softdist: installer}
 	d.handleSoftwareDeployCmd(context.Background(), nil, &pb.Command{Type: "software_deploy_detect", CommandId: "combined-test", Payload: raw})
 	if len(installer.jobs) != 1 {

@@ -2002,6 +2002,252 @@ After UE-01 through UE-34, run these real-vendor acceptance checks:
 
 ---
 
+## 18A. UC-20 — Script content audit (compliance / forensic)
+
+**Why:** BigFix client logs show WHICH script file ran, not WHAT was inside it.
+Customers in regulated verticals (healthcare, finance, defense) demand
+end-to-end script visibility. Aegis One ab har SoftDist run jo
+`.ps1 / .bat / .cmd / .vbs / .py` payload execute karta hai uske pehle:
+
+- Default: tamper-evident **audit record** likhta hai `<SKVC>\logs\softdist\<action_id>.transcript` mein — SHA-256 digest + script size + first 500 bytes + last 500 bytes.
+- Opt-in: full script content embedded in transcript via signed per-task flag `capture_script_content: true`.
+- Policy override at endpoint: `AEGIS_LOG_SCRIPT_CONTENT` env.
+    - `enabled` (default) — honor the per-task flag.
+    - `disabled` — kill switch. Full content NEVER written, even if the signed flag says true. For regulated endpoints where raw script bytes must not land on disk.
+    - `always` — force full content on every script, regardless of flag. Forensic mode.
+- `SecureParameters` NEVER appear in the transcript — scripts are read verbatim from disk BEFORE `${name}` substitution; secrets flow via child stdin.
+
+### 18A.1 Pre-reqs
+
+- Agent built from this handoff.
+- A tiny PowerShell script on the endpoint for the tests, e.g. `C:\tmp\audit-test.ps1`:
+  ```powershell
+  # audit-test.ps1 — benign script for script-audit testing
+  Write-Host "hello from audit test"
+  exit 0
+  ```
+- Agent mock server env ready (same as other UCs).
+
+### 18A.2 UC-20A — Default (hash + preview only)
+
+**Goal:** Confirm the agent writes the audit record EVERY time a script
+runs, even when the admin asks for nothing special.
+
+Mockserver side (dev CMD):
+```cmd
+set AEGIS_DEPLOY_NAME=audit-default
+set AEGIS_DEPLOY_FILE=C:\tmp\audit-test.ps1
+set AEGIS_DEPLOY_INSTALLER_TYPE=ps1
+set AEGIS_DEPLOY_SILENT_ARGS=-NoProfile -ExecutionPolicy Bypass -File ${file_path}
+set AEGIS_DEPLOY_HASH=<SHA256 of audit-test.ps1>
+set AEGIS_DEPLOY_CAPTURE_SCRIPT_CONTENT=false
+rem (or just do not set it — defaults to false)
+mockserver.exe
+```
+
+Dispatch via NSH or let mock auto-send; agent runs the install.
+
+**Expected on endpoint:**
+```
+C:\...\SKVC\logs\softdist\deploy-001.transcript
+```
+Open and verify:
+```
+# Aegis One SoftDist script audit transcript
+# Written: 2026-11-02T...
+# Action ID: deploy-001
+# Script path: C:\<download or staged>\audit-test.ps1
+# Script size (bytes): 93
+# SHA-256: <64 hex>
+# Endpoint policy: enabled
+# Per-task CaptureScriptContent flag: false
+# Full content captured: false
+
+# ------ HEAD (first 500 bytes, verbatim) ------
+# audit-test.ps1 — benign script for script-audit testing
+Write-Host "hello from audit test"
+exit 0
+
+# ------ TAIL (last 500 bytes, verbatim) ------
+...same content...
+```
+
+**Pass:** No `# ------ FULL CONTENT` section. Policy line reads `enabled`.
+Hash matches `certutil -hashfile audit-test.ps1 SHA256` output.
+
+### 18A.3 UC-20B — Per-task opt-in (full content capture)
+
+**Goal:** Admin asks for full content on this one deploy.
+
+```cmd
+set AEGIS_DEPLOY_NAME=audit-full
+set AEGIS_DEPLOY_FILE=C:\tmp\audit-test.ps1
+set AEGIS_DEPLOY_INSTALLER_TYPE=ps1
+set AEGIS_DEPLOY_SILENT_ARGS=-NoProfile -ExecutionPolicy Bypass -File ${file_path}
+set AEGIS_DEPLOY_HASH=<SHA256>
+set AEGIS_DEPLOY_CAPTURE_SCRIPT_CONTENT=true
+mockserver.exe
+```
+
+Mock log line expected:
+```
+Sent command -> id: deploy-001, type: software_deploy, name=audit-full, file=C:\tmp\audit-test.ps1, capture_script_content=true (signed)
+```
+
+**Expected transcript header:**
+```
+# Per-task CaptureScriptContent flag: true
+# Full content captured: true
+...
+# ------ FULL CONTENT (verbatim, policy-opt-in) ------
+# audit-test.ps1 — benign script for script-audit testing
+Write-Host "hello from audit test"
+exit 0
+```
+
+**Pass:** `FULL CONTENT` block present and equal to the script on disk.
+
+### 18A.4 UC-20C — Endpoint kill switch (`disabled`) wins
+
+**Goal:** Regulated endpoint. Even if signed deploy asks for full
+content, it MUST NOT be written to disk.
+
+On the VM (admin cmd), set the policy:
+```cmd
+setx AEGIS_LOG_SCRIPT_CONTENT disabled /M
+sc stop AegisOneClient && sc start AegisOneClient
+```
+
+Repeat UC-20B exactly (with `AEGIS_DEPLOY_CAPTURE_SCRIPT_CONTENT=true`).
+
+**Expected transcript header:**
+```
+# Endpoint policy: disabled
+# Per-task CaptureScriptContent flag: true
+# Full content captured: false
+```
+
+**Pass:** No `FULL CONTENT` section even though the signed task flag was
+true. Hash + preview are still written (audit is NEVER fully disabled).
+
+### 18A.5 UC-20D — Endpoint force-on (`always`) wins
+
+**Goal:** Forensic endpoint. Every script is fully captured regardless
+of signed flag.
+
+```cmd
+setx AEGIS_LOG_SCRIPT_CONTENT always /M
+sc stop AegisOneClient && sc start AegisOneClient
+```
+
+Run UC-20A (which does NOT set the flag). Transcript header:
+```
+# Endpoint policy: always
+# Per-task CaptureScriptContent flag: false
+# Full content captured: true
+```
+
+**Pass:** `FULL CONTENT` section present even though the signed task
+flag was false.
+
+### 18A.6 UC-20E — MSI / EXE skip (not audited)
+
+**Goal:** Confirm non-script payloads are NOT audited (no transcript
+file for MSI/EXE/ZIP).
+
+Run any plain MSI deploy from Block E (e.g. 7-Zip MSI install). After the
+install completes, check:
+```cmd
+dir C:\...\SKVC\logs\softdist\
+```
+
+**Pass:** No new `.transcript` file for the MSI's action_id. (The audit
+is specifically for scripts; binaries have their hash captured in
+`AEGIS_DEPLOY_HASH` already and content is not meaningful text.)
+
+### 18A.7 UC-20F — Bundle entry_point script
+
+**Goal:** When a bundle's `entry_point` is a `.ps1`/`.bat`/etc., the
+staged entry file is audited.
+
+Repeat Block A with a bundle whose `entry_point: install.ps1`. After
+dispatch, transcript path:
+```
+C:\...\SKVC\logs\softdist\deploy-001.transcript
+```
+should name the resolved `install.ps1` path under the bundle extraction
+directory (`<SecureDir>/download/packages/...`).
+
+**Pass:** Transcript exists, `Script path:` header line names the
+staged entry file, not the ZIP.
+
+### 18A.8 UC-20G — Unreadable payload → fail-loud
+
+**Goal:** If the agent CAN'T read what it's about to run, deploy FAILS;
+blindly running an unaudited script defeats the whole feature.
+
+Simulate: set `AEGIS_DEPLOY_FILE=C:\no-such-file.ps1` and dispatch.
+
+**Expected:**
+- Agent log:
+  ```
+  software_deploy: script audit read failed path=C:\no-such-file.ps1 error=open ...no such file or directory
+  ```
+- `ActionStatus.Reason` streamed to mock:
+  `script audit read failed: ...`
+- Phase: `ACTION_PHASE_FAILED`.
+
+**Pass:** Deploy fails BEFORE the script could run. No partial side effects.
+
+### 18A.9 UC-20H — SecureParameters leak check (critical)
+
+**Goal:** Prove that `secure_parameters` values NEVER end up in the
+transcript (would be a critical compliance failure).
+
+Dispatch a `software_deploy_v2` with:
+```
+parameters: {} 
+secure_parameters: { DB_PASS: "s3cret-NEVER-LOG-ME" }
+file_path: C:\tmp\audit-test.ps1
+capture_script_content: true
+```
+
+Agent runs the install, writes the transcript (full content captured).
+
+**Verify:**
+```powershell
+Select-String -Path C:\...\SKVC\logs\softdist\deploy-001.transcript -Pattern "s3cret-NEVER-LOG-ME"
+```
+
+**Pass:** NO match. The secret appears nowhere in the transcript — not
+in head, not in tail, not in full content. The script bytes on disk are
+captured BEFORE any `${...}` substitution; the secret is delivered via
+child stdin JSON (never substituted into the file).
+
+### 18A.10 File permissions (defense in depth)
+
+Transcript file mode is `0600` (SYSTEM read/write only; non-admin users
+denied). Verify with:
+```powershell
+icacls C:\...\SKVC\logs\softdist\deploy-001.transcript
+```
+should show SYSTEM full control and no inherited user access.
+
+### 18A.11 UC-20 record sheet
+
+| Case | Date | Tester | PASS/FAIL | Notes |
+|---|---|---|---|---|
+| 20A default hash+preview | | | | |
+| 20B per-task opt-in full | | | | |
+| 20C kill switch wins | | | | |
+| 20D force-on wins | | | | |
+| 20E MSI/EXE skip | | | | |
+| 20F bundle entry_point | | | | |
+| 20G unreadable fail-loud | | | | |
+| 20H secret leak check | | | | |
+
+---
+
 ## 19. Common troubleshooting
 
 ### 19.1 "installer bundle needs entry_point and no bundle.command"

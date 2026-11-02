@@ -618,7 +618,7 @@ func runProcess(ctx context.Context) {
 	// (install/uninstall of catalog packages) on its own serial queue. It shares
 	// the encrypted patch cache (server-delivered installers are stored sealed at
 	// rest) and the tmp dir (transient decrypt-to-install, secure-deleted after).
-	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir, cfg.SoftdistVerifyAttempts, cfg.SoftdistVerifyInterval, newJobJournal(cfg.SecureDir), cfg.FetchBytesPerSecond)
+	sdi := newSoftdistInstaller(outbox, cfg.DeviceID, cache, tmpDir, cfg.DownloadDir, cfg.SoftdistVerifyAttempts, cfg.SoftdistVerifyInterval, newJobJournal(cfg.SecureDir), cfg.FetchBytesPerSecond, filepath.Join(cfg.SecureDir, "logs"), cfg.LogScriptContent)
 	sdi.maxSecretBytes = cfg.SoftdistMaxSecretBytes
 	sdi.bundleLimits = softdist.BundleLimits{MaxBytes: cfg.SoftdistBundleMaxBytes, MaxFiles: cfg.SoftdistBundleMaxFiles}
 	// Durable-journal recovery runs BEFORE the worker starts consuming new jobs

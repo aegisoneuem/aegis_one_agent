@@ -1042,6 +1042,12 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				// agent config). 0 = no per-task cap. Useful for huge installers
 				// during business hours: AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=500000.
 				MaxFetchBytesPerSecond: int64FromEnv("AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC"),
+				// Per-task script content audit opt-in. When true, the agent
+				// writes FULL script bytes to <SKVC>/logs/softdist/<id>.transcript
+				// (default is hash+preview only). Compliance / forensic deploys.
+				// Endpoint policy AEGIS_LOG_SCRIPT_CONTENT can override:
+				// "disabled" force-off, "always" force-on.
+				CaptureScriptContent: strings.EqualFold(os.Getenv("AEGIS_DEPLOY_CAPTURE_SCRIPT_CONTENT"), "true"),
 			}
 			// AUTO-HASH (BigFix model — the console computes the SHA at package upload,
 			// the admin never types it): when no AEGIS_DEPLOY_HASH is given for a
@@ -1123,7 +1129,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					if spec.MaxFetchBytesPerSecond > 0 {
 						rate = fmt.Sprintf(", fetch_rate=%d B/s", spec.MaxFetchBytesPerSecond)
 					}
-					mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s%s (signed)\n", commandType, spec.Name, src, rate)
+					audit := ""
+					if spec.CaptureScriptContent {
+						audit = ", capture_script_content=true"
+					}
+					mockPrintf("Sent command -> id: deploy-001, type: %s, name=%s, %s%s%s (signed)\n", commandType, spec.Name, src, rate, audit)
 				}
 			}
 		}

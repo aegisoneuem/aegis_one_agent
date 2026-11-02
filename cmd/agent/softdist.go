@@ -48,11 +48,13 @@ type softdistInstaller struct {
 	verifyInterval time.Duration
 	journal        *jobJournal // durable per-job state for crash/power-loss recovery
 	fetchBPS       int64       // agent-config fetch cap (0 = unlimited); BigFix "lower wins" with signed per-task rate
+	logsDir        string      // <SKVC>/logs — root for script audit transcripts
+	logScriptCfg   string      // AEGIS_LOG_SCRIPT_CONTENT: "enabled"|"disabled"|"always"
 	jobs           chan softdistJob
 }
 
-func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration, journal *jobJournal, fetchBPS int64) *softdistInstaller {
-	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, journal: journal, fetchBPS: fetchBPS, jobs: make(chan softdistJob, 32)}
+func newSoftdistInstaller(outbox chan<- *pb.AgentMessage, deviceID string, cache *patchcache.Cache, tmpDir, downloadDir string, verifyAttempts int, verifyInterval time.Duration, journal *jobJournal, fetchBPS int64, logsDir, logScriptCfg string) *softdistInstaller {
+	return &softdistInstaller{outbox: outbox, deviceID: deviceID, cache: cache, tmpDir: tmpDir, downloadDir: downloadDir, verifyAttempts: verifyAttempts, verifyInterval: verifyInterval, journal: journal, fetchBPS: fetchBPS, logsDir: logsDir, logScriptCfg: logScriptCfg, jobs: make(chan softdistJob, 32)}
 }
 
 // recoverIncompleteJobs scans the journal for in-flight entries left behind
@@ -582,6 +584,41 @@ func (s *softdistInstaller) run(job softdistJob) {
 	if err := s.journal.write(entry); err != nil {
 		slog.Warn("software_deploy: journal running-state write failed", "command_id", cmdID, "error", err.Error())
 	}
+
+	// Script content audit (fail-loud): if the resolved payload is a script
+	// (.ps1/.bat/.cmd/.vbs/.py — not the generic "command" type and not an
+	// MSI/EXE/ZIP), write a tamper-evident audit transcript BEFORE running.
+	// Default record: SHA-256 + size + first/last 500 B. Opt-in full content
+	// via spec.CaptureScriptContent, subject to AEGIS_LOG_SCRIPT_CONTENT:
+	//   enabled (default) — honor per-task flag
+	//   disabled          — never capture full content (regulated endpoints)
+	//   always            — force full content on every script (forensic)
+	// SecureParameters are NEVER substituted into the captured bytes — the
+	// audit reads the raw file BEFORE any ${...} resolution. If we cannot
+	// read the script we are about to run, we FAIL the deploy; blindly
+	// running an unaudited script would defeat the whole feature.
+	if softdist.IsAuditedScript(params.FilePath) && !strings.EqualFold(strings.TrimSpace(spec.InstallerType), "command") {
+		policy, captureFull := softdist.ResolveScriptAuditPolicy(s.logScriptCfg, spec.CaptureScriptContent)
+		rec, auditErr := softdist.AuditScript(cmdID, params.FilePath, captureFull)
+		if auditErr != nil {
+			slog.Error("software_deploy: script audit read failed", "command_id", cmdID, "path", params.FilePath, "error", auditErr.Error())
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "script audit read failed: " + auditErr.Error()})
+			return
+		}
+		rec.Policy = policy
+		rec.TaskFlag = spec.CaptureScriptContent
+		tpath, writeErr := softdist.WriteScriptAuditTranscript(s.logsDir, cmdID, rec)
+		if writeErr != nil {
+			slog.Error("software_deploy: script audit transcript write failed", "command_id", cmdID, "error", writeErr.Error())
+			s.finish(cmdID, spec.Name, started, pb.ActionPhase_ACTION_PHASE_FAILED, &softdist.Result{Reason: "script audit transcript write failed: " + writeErr.Error()})
+			return
+		}
+		slog.Info("software_deploy: script audit transcript written",
+			"command_id", cmdID, "path", tpath, "script", params.FilePath,
+			"sha256", rec.SHA256, "size", rec.Size, "policy", policy,
+			"task_flag", spec.CaptureScriptContent, "full_captured", rec.FullCapture)
+	}
+
 	var res softdist.Result
 	slog.Info("software_deploy: starting installer/workflow", "command_id", cmdID)
 	if spec.Steps != nil {

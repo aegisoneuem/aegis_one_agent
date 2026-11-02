@@ -50,7 +50,7 @@ func TestBundleWorkerRelativeFilesAndCleanup(t *testing.T) {
 			}
 			spec := &pb.SoftwareDeploySpec{Name: "Bundle worker test", Action: "install", InstallerType: tc.typ, FilePath: archive, ExpectedHash: sum, SilentArgs: args, Bundle: bundle, TimeoutSeconds: 10}
 			out := make(chan *pb.AgentMessage, 16)
-			installer := newSoftdistInstaller(out, "test-device", nil, base, filepath.Join(base, "download"), 1, time.Millisecond, nil, 0)
+			installer := newSoftdistInstaller(out, "test-device", nil, base, filepath.Join(base, "download"), 1, time.Millisecond, nil, 0, filepath.Join(base, "logs"), "enabled")
 			// Direct worker test uses the current test identity. Service/WTS token
 			// acquisition is separate VM acceptance; public dispatch normalizes SYSTEM.
 			installer.run(softdistJob{commandID: "bundle-test", spec: spec, localPath: archive})
@@ -107,7 +107,7 @@ func TestBundleRequiresDistinctSignedTask(t *testing.T) {
 }
 func TestCommandBundleCannotBypassZIPIntegrity(t *testing.T) {
 	out := make(chan *pb.AgentMessage, 2)
-	installer := newSoftdistInstaller(out, "test", nil, t.TempDir(), t.TempDir(), 1, time.Millisecond, nil, 0)
+	installer := newSoftdistInstaller(out, "test", nil, t.TempDir(), t.TempDir(), 1, time.Millisecond, nil, 0, t.TempDir(), "enabled")
 	spec := &pb.SoftwareDeploySpec{InstallerType: "command", FilePath: "package.zip", Bundle: &pb.SoftwareBundle{Command: "cmd.exe"}}
 	installer.deliver(context.Background(), nil, "bundle-unpinned", spec)
 	if len(installer.jobs) != 0 {

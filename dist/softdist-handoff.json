@@ -1,10 +1,10 @@
 ﻿{
     "handoff_date":  "2026-11-02",
     "platform":  "windows/amd64",
-    "guide":  "docs/softdist-today-testing.md",
-    "secondary_guide":  "docs/patching-test-guide.md (UC-18 third-party inventory PASS 2026-11-01; UC-19 HKU per-user parity + on-demand inventory refresh PASS 2026-11-02)",
-    "manual_cases":  32,
-    "primary_focus":  "Third-party inventory parity + on-demand refresh. Agent now enumerates per-user Uninstall hives (HKU\\<SID> native + WOW6432Node) in addition to HKLM, matching what appwiz.cpl and Settings > Apps show — per-user installs like Chrome / Teams / Zoom are now visible to the server catalog. Agent also handles a new signed command 'report_device_state' that resets the Layer-1 fingerprint and triggers an immediate DeviceStateReport, so the console / NSH can pull a fresh inventory snapshot on demand (not only after an install/uninstall change). Mockserver NSH gains 'inventory refresh [--timeout N]' with parallel dispatch, shared deadline, and a 100-target cap (NSH is a dev / admin tool; fleet-wide refresh belongs in a server-side scheduled operation).",
+    "guide":  "docs/tester-guide-softdist.md (tester-ready) + docs/softdist-today-testing.md (dev reference)",
+    "secondary_guide":  "docs/tester-guide-patching.md (UC-18 + UC-19 PASS); docs/tester-guide-nsh.md; docs/tester-guide-setup.md (first read for new testers)",
+    "manual_cases":  33,
+    "primary_focus":  "Script content audit (UC-20): every SoftDist run of a .ps1/.bat/.cmd/.vbs/.py payload (and bundle entry_point scripts) writes a tamper-evident transcript to <SKVC>\\logs\\softdist\\<action_id>.transcript BEFORE execution. Default record is SHA-256 + size + first/last 500 bytes. Signed per-task flag SoftwareDeploySpec.capture_script_content opts into FULL content capture; endpoint policy AEGIS_LOG_SCRIPT_CONTENT (enabled|disabled|always) overrides the signed flag (kill switch for regulated endpoints, force-on for forensic endpoints). SecureParameters NEVER appear in the transcript — scripts are read verbatim from disk before any ${name} substitution. Audit read / transcript write failures fail the deploy loud (phase FAILED) — never run unaudited. BigFix parity goal met: BigFix client logs show the script filename but not content; Aegis One now surfaces content with policy control.",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -18,39 +18,40 @@
                    "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PASS 2026-10-29)",
                    "K. bandwidth throttling: per-task fetch rate, per-task upload rate, lower-wins policy enforcement (native regression PASS; VM pending)",
                    "UC-18. third-party installed-apps inventory via DeviceStateReport (PASS 2026-11-01)",
-                   "UC-19. HKU per-user Uninstall parity + 'inventory refresh' on-demand pull (PASS 2026-11-02)"
+                   "UC-19. HKU per-user Uninstall parity + 'inventory refresh' on-demand pull (PASS 2026-11-02)",
+                   "UC-20. script content audit: hash+preview default + opt-in full content + endpoint kill switch / force-on (native regression PASS; VM pending)"
                ],
-    "additive_engine_updates":  "Agent-side durability + bandwidth throttling improvements: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics, FetchContent/UploadContent bandwidth throttling with BigFix lower-wins semantics (agent config vs signed per-task rate), per-user HKU Uninstall hive enumeration for appwiz.cpl parity, and a new signed 'report_device_state' command that triggers an immediate Layer-1 DeviceStateReport. These are additive (older servers keep working) and native-tested.",
+    "additive_engine_updates":  "Agent-side durability + bandwidth throttling + per-user HKU inventory + on-demand DeviceStateReport trigger + script content audit (new): script_audit module (SHA-256 + head/tail/full), AEGIS_LOG_SCRIPT_CONTENT endpoint policy, SoftwareDeploySpec.capture_script_content signed per-task flag, fail-loud read-before-exec. These are additive (older servers keep working) and native-tested.",
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
                       ],
-    "shared_proto_commit":  "1529c27",
+    "shared_proto_commit":  "8bb9650",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
-                       "agent_tests":  "PASS: go test ./... (2026-11-02)",
+                       "agent_tests":  "PASS: go test ./... (2026-11-02 — includes new script_audit_test.go: 5 cases)",
                        "agent_vet":  "PASS: go vet ./... (2026-11-02)",
-                       "proto_tests":  "PASS: go test ./... on shared proto a066541",
+                       "proto_tests":  "regenerated locally; proto push pending",
                        "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
-                       "vm_acceptance":  "A-F, J, UC-18, UC-19 blocks PASS. G/H/I blocks native regression PASS; VM acceptance pending but not blocking.",
-                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 third-party inventory PASS 2026-11-01. UC-19 HKU per-user parity + on-demand inventory refresh PASS 2026-11-02.",
+                       "vm_acceptance":  "A-F, J, UC-18, UC-19 blocks PASS. G/H/I/K/UC-20 native regression PASS; VM acceptance pending.",
+                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 PASS 2026-11-01. UC-19 PASS 2026-11-02. UC-20 unit tests PASS 2026-11-02; VM pending.",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21877248,
-                          "sha256":  "61aec02449a9725633c19523918b97d0d56bed266a93852be923b5f28b1dfa29"
+                          "bytes":  21900288,
+                          "sha256":  "9dea7f801836e1cb0df379eff2aa6f42ae6dbff37e18524457f291c8e8d7a580"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19637760,
-                          "sha256":  "e554ebbb48b9d09e3460be12e7e8b4222d8b410fb358eab260b2ae1777669934"
+                          "bytes":  19639808,
+                          "sha256":  "4508e3fd9a0d538390b9732efae2be63e43374230c9c9dcf133d278b845eeae4"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11825152,
-                          "sha256":  "dfec49b290461dece91c617057bfaf6bf9c44827fbf27a99d4a4877ff71a5df0"
+                          "bytes":  11829248,
+                          "sha256":  "ad19d5e965e89846752de014d2e852702233456f008699801392244a178ec1ea"
                       }
                   ]
 }
