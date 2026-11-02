@@ -1,10 +1,10 @@
 ﻿{
-    "handoff_date":  "2026-10-30",
+    "handoff_date":  "2026-11-02",
     "platform":  "windows/amd64",
     "guide":  "docs/softdist-today-testing.md",
-    "secondary_guide":  "docs/patching-test-guide.md (UC-18 adds third-party installed-apps inventory)",
-    "manual_cases":  31,
-    "primary_focus":  "Third-party patch inventory shipped (DeviceStateReport.installed_apps + InstalledApp message, HKLM Uninstall hive enumeration, send-on-change on inventory diff, NSH inventory apps verb). Server-team's catalog matcher consumes the inventory and dispatches signed software_deploy tasks for outdated apps - reuses the existing A-F / J pipeline, no new task type on the agent side. Follows BigFix 11.0 Patch for Windows third-party model: agent reports facts, server owns catalog. No cap on reported app count.",
+    "secondary_guide":  "docs/patching-test-guide.md (UC-18 third-party inventory PASS 2026-11-01; UC-19 HKU per-user parity + on-demand inventory refresh PASS 2026-11-02)",
+    "manual_cases":  32,
+    "primary_focus":  "Third-party inventory parity + on-demand refresh. Agent now enumerates per-user Uninstall hives (HKU\\<SID> native + WOW6432Node) in addition to HKLM, matching what appwiz.cpl and Settings > Apps show — per-user installs like Chrome / Teams / Zoom are now visible to the server catalog. Agent also handles a new signed command 'report_device_state' that resets the Layer-1 fingerprint and triggers an immediate DeviceStateReport, so the console / NSH can pull a fresh inventory snapshot on demand (not only after an install/uninstall change). Mockserver NSH gains 'inventory refresh [--timeout N]' with parallel dispatch, shared deadline, and a 100-target cap (NSH is a dev / admin tool; fleet-wide refresh belongs in a server-side scheduled operation).",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -16,9 +16,11 @@
                    "H. crash recovery and durable journal (native regression PASS; VM pending)",
                    "I. descendant termination on timeout (native regression PASS; VM pending)",
                    "J. reboot-sensitive post-verification + MSI/MST + config-only parameter update (PASS 2026-10-29)",
-                   "K. bandwidth throttling: per-task fetch rate, per-task upload rate, lower-wins policy enforcement (native regression PASS; VM pending)"
+                   "K. bandwidth throttling: per-task fetch rate, per-task upload rate, lower-wins policy enforcement (native regression PASS; VM pending)",
+                   "UC-18. third-party installed-apps inventory via DeviceStateReport (PASS 2026-11-01)",
+                   "UC-19. HKU per-user Uninstall parity + 'inventory refresh' on-demand pull (PASS 2026-11-02)"
                ],
-    "additive_engine_updates":  "Agent-side durability + bandwidth throttling improvements: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics, FetchContent/UploadContent bandwidth throttling with BigFix lower-wins semantics (agent config vs signed per-task rate). These are additive (older servers keep working) and native-tested. VM acceptance of G/H/I/K is pending but is NOT a prerequisite for the primary focus.",
+    "additive_engine_updates":  "Agent-side durability + bandwidth throttling improvements: durable per-job state journal, Windows Job Object descendant kill, signed rollback step list, structured timeout diagnostics, FetchContent/UploadContent bandwidth throttling with BigFix lower-wins semantics (agent config vs signed per-task rate), per-user HKU Uninstall hive enumeration for appwiz.cpl parity, and a new signed 'report_device_state' command that triggers an immediate Layer-1 DeviceStateReport. These are additive (older servers keep working) and native-tested.",
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
@@ -26,29 +28,29 @@
     "shared_proto_commit":  "1529c27",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
-                       "agent_tests":  "PASS: go test ./... (2026-10-28)",
-                       "agent_vet":  "PASS: go vet ./... (2026-10-28)",
+                       "agent_tests":  "PASS: go test ./... (2026-11-02)",
+                       "agent_vet":  "PASS: go vet ./... (2026-11-02)",
                        "proto_tests":  "PASS: go test ./... on shared proto a066541",
                        "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
-                       "vm_acceptance":  "A-F and J blocks PASS. G/H/I blocks native regression PASS; VM acceptance pending but not blocking.",
-                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29: deterministic 3010 handling, 7-Zip MSI + MST INSTALLDIR transform (install verified at C:\\7ZipMST), config-only parameter update via POST step (settings.ini contents verified). Vendor-curated matrix beyond J1/J2/J3 remains server-team selection.",
+                       "vm_acceptance":  "A-F, J, UC-18, UC-19 blocks PASS. G/H/I blocks native regression PASS; VM acceptance pending but not blocking.",
+                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 third-party inventory PASS 2026-11-01. UC-19 HKU per-user parity + on-demand inventory refresh PASS 2026-11-02.",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21869056,
-                          "sha256":  "c34bd47da7ea2884ca0810d2375639be4171c4a50d3185ee63a695c05bb249d6"
+                          "bytes":  21877248,
+                          "sha256":  "61aec02449a9725633c19523918b97d0d56bed266a93852be923b5f28b1dfa29"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19629056,
-                          "sha256":  "267a3d0d134172a317216a0ad4eced5822c7ce3c202b4029e60701ed74418e7d"
+                          "bytes":  19637760,
+                          "sha256":  "e554ebbb48b9d09e3460be12e7e8b4222d8b410fb358eab260b2ae1777669934"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11739136,
-                          "sha256":  "c152c3ce2956c9b5724faa74acc49f58359bdfade4ebbfc4d229426d267993fa"
+                          "bytes":  11825152,
+                          "sha256":  "dfec49b290461dece91c617057bfaf6bf9c44827fbf27a99d4a4877ff71a5df0"
                       }
                   ]
 }

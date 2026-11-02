@@ -22,17 +22,18 @@ type taskHandler func(ctx context.Context, client pb.AgentControlPlaneClient, cm
 // dependencies the handlers need (created once in main); the per-connection client
 // + ctx are passed in on each dispatch.
 type dispatcher struct {
-	cfg         config.Config
-	outbox      chan *pb.AgentMessage
-	installJobs chan installJob
-	softdist    *softdistInstaller
-	stg         *stager
-	scanTrigger chan<- struct{}
-	handlers    map[string]taskHandler
+	cfg                config.Config
+	outbox             chan *pb.AgentMessage
+	installJobs        chan installJob
+	softdist           *softdistInstaller
+	stg                *stager
+	scanTrigger        chan<- struct{}
+	deviceStateTrigger chan<- struct{}
+	handlers           map[string]taskHandler
 }
 
-func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, scanTrigger chan<- struct{}) *dispatcher {
-	d := &dispatcher{cfg: cfg, outbox: outbox, installJobs: installJobs, softdist: softdist, stg: stg, scanTrigger: scanTrigger}
+func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, scanTrigger chan<- struct{}, deviceStateTrigger chan<- struct{}) *dispatcher {
+	d := &dispatcher{cfg: cfg, outbox: outbox, installJobs: installJobs, softdist: softdist, stg: stg, scanTrigger: scanTrigger, deviceStateTrigger: deviceStateTrigger}
 	d.handlers = map[string]taskHandler{
 		"software_deploy_detect":   d.handleSoftwareDeployCmd,
 		"install_patch":            d.handleInstallPatchCmd,
@@ -50,6 +51,7 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 		"open_shell":               d.handleOpenShellCmd,
 		"run_command":              d.handleRunCommandCmd,
 		"file_operation":           d.handleFileOperationCmd,
+		"report_device_state":      d.handleReportDeviceStateCmd,
 	}
 	return d
 }
@@ -224,6 +226,18 @@ func (d *dispatcher) handleScanNowCmd(ctx context.Context, _ pb.AgentControlPlan
 	slog.Info("scan_now: on-demand compliance scan requested", "command_id", cmd.CommandId)
 	signalDrain(d.scanTrigger)
 	send(ctx, d.outbox, buildCommandResultMessage(cmd.CommandId, "accepted", "compliance scan triggered"))
+}
+
+// report_device_state: on-demand DeviceStateReport refresh. The Layer-1 fast
+// lane normally sends only on change (fingerprint diff) so the server has no
+// cached state for devices that have not changed recently. This command resets
+// the agent's fingerprint cache and triggers an immediate run — the server
+// sees a fresh DeviceStateReport within one cycle regardless of change state.
+// Used by the console / NSH "inventory refresh" to pull a snapshot on demand.
+func (d *dispatcher) handleReportDeviceStateCmd(ctx context.Context, _ pb.AgentControlPlaneClient, cmd *pb.Command) {
+	slog.Info("report_device_state: on-demand inventory refresh requested", "command_id", cmd.CommandId)
+	signalDrain(d.deviceStateTrigger)
+	send(ctx, d.outbox, buildCommandResultMessage(cmd.CommandId, "accepted", "device state refresh triggered"))
 }
 
 // handleGenericCmd runs any non-registered command type through executeCommand and

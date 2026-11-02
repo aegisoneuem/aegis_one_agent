@@ -336,6 +336,10 @@ TARGETING
   search <text>             search hostname/device_id/computer_id
   hosts --status offline --page 2 --limit 20   filter/paginate (max 100 rows)
   inventory apps [filter]   third-party installed-apps from latest DeviceStateReport
+  inventory refresh [--timeout N]
+                            dev/admin tool: force the current target(s) to send a fresh
+                            DeviceStateReport now (parallel dispatch, shared deadline;
+                            default 5s; capped at 100 targets — use server-side batch for fleets)
   cd \\<host>               set single target (hostname / device_id / computer_id)
   cd \\<h1>,<h2>            set multiple targets
   cd *                      target all online
@@ -417,8 +421,16 @@ func (s *nshSession) verbHosts(filter string) {
 // server-team work.
 func (s *nshSession) verbInventory(rest string) {
 	parts := strings.Fields(strings.TrimSpace(rest))
-	if len(parts) == 0 || !strings.EqualFold(parts[0], "apps") {
-		s.printf("nsh: inventory apps [filter] — reports installed-apps from the latest DeviceStateReport\n")
+	if len(parts) == 0 {
+		s.printf("nsh: inventory apps [filter] | inventory refresh — see help for details\n")
+		return
+	}
+	if strings.EqualFold(parts[0], "refresh") {
+		s.refreshInventory(parts[1:])
+		return
+	}
+	if !strings.EqualFold(parts[0], "apps") {
+		s.printf("nsh: inventory apps [filter] | inventory refresh — unknown sub-verb %q\n", parts[0])
 		return
 	}
 	filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(rest, parts[0])))
@@ -469,6 +481,121 @@ func (s *nshSession) verbInventory(rest string) {
 				a.Hive)
 		}
 	}
+}
+
+// refreshInventory sends a signed "report_device_state" command in PARALLEL
+// to every current target and waits for a FRESH DeviceStateReport
+// (CollectedAt newer than the one the mock already has, if any) to land in the
+// per-device cache. This closes the "inventory apps shows no data when nothing
+// has changed" UX gap: the agent sends on-change by default; this verb forces
+// a one-shot send regardless of fingerprint state.
+//
+// Timeout is SHARED across the whole fleet, not per-target — so a cd with 50
+// targets completes in <timeout> seconds total, not 50 × <timeout>. Default
+// timeout is 5s; override with "inventory refresh --timeout <seconds>" for
+// cross-WAN fleets or slow agents.
+func (s *nshSession) refreshInventory(args []string) {
+	timeout := 5 * time.Second
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if (a == "--timeout" || a == "-t") && i+1 < len(args) {
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				s.printf("nsh: inventory refresh: --timeout expects a positive integer (seconds)\n")
+				return
+			}
+			timeout = time.Duration(n) * time.Second
+			i++
+			continue
+		}
+		s.printf("nsh: inventory refresh: unknown argument %q (use --timeout <seconds>)\n", a)
+		return
+	}
+	if len(s.targets) == 0 {
+		s.printf("nsh: inventory refresh requires a cd target (or -t <host>)\n")
+		return
+	}
+	// Hard cap: NSH is a dev / admin tool, not a fleet operations surface.
+	// Fleet-wide refresh (hundreds-to-thousands of endpoints) belongs in a
+	// server-side scheduled operation that batches waves and rate-limits
+	// — the agent handler is the same, only the dispatcher differs.
+	const maxTargets = 100
+	if len(s.targets) > maxTargets {
+		s.printf("nsh: inventory refresh refuses more than %d targets (you have %d). "+
+			"NSH is a dev/admin tool. Use the server-side scheduled fleet refresh instead "+
+			"— the agent handler is identical; only the dispatcher batches waves.\n",
+			maxTargets, len(s.targets))
+		return
+	}
+
+	// Fire signed commands to every live target first (parallel dispatch).
+	// Each pending entry remembers the pre-refresh CollectedAt so we can tell
+	// a FRESH report from the cached one.
+	type pending struct {
+		devID    string
+		host     string
+		beforeAt int64
+	}
+	var fleet []pending
+	for _, devID := range s.targets {
+		host := s.srv.hostnameOf(devID)
+		s.srv.liveMu.Lock()
+		la, live := s.srv.liveAgents[devID]
+		s.srv.liveMu.Unlock()
+		if !live {
+			s.printf("%s: OFFLINE (no live stream) — refresh skipped\n", host)
+			continue
+		}
+		var beforeAt int64
+		s.srv.inventoryMu.Lock()
+		if rep, cached := s.srv.lastInventory[devID]; cached {
+			beforeAt = rep.CollectedAt
+		}
+		s.srv.inventoryMu.Unlock()
+		cmdID := "nsh-refresh-" + nshRandomID()
+		msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+			CommandId: cmdID, Type: "report_device_state",
+		})}}
+		if err := la.send(msg); err != nil {
+			s.printf("%s: send failed: %v\n", host, err)
+			continue
+		}
+		fleet = append(fleet, pending{devID: devID, host: host, beforeAt: beforeAt})
+	}
+	if len(fleet) == 0 {
+		return
+	}
+	s.printf("nsh: refresh dispatched to %d target(s), waiting up to %s (shared deadline)...\n", len(fleet), timeout)
+
+	// Shared deadline across the whole fleet. Poll every 100ms for fresh
+	// reports until every target lands or the deadline passes.
+	deadline := time.Now().Add(timeout)
+	done := make(map[string]bool, len(fleet))
+	for len(done) < len(fleet) && time.Now().Before(deadline) {
+		s.srv.inventoryMu.Lock()
+		for _, p := range fleet {
+			if done[p.devID] {
+				continue
+			}
+			if rep, cached := s.srv.lastInventory[p.devID]; cached && rep.CollectedAt > p.beforeAt {
+				s.printf("%s: fresh inventory (%d apps, collected_at=%d)\n", p.host, len(rep.InstalledApps), rep.CollectedAt)
+				done[p.devID] = true
+			}
+		}
+		s.srv.inventoryMu.Unlock()
+		if len(done) < len(fleet) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	timedOut := 0
+	for _, p := range fleet {
+		if !done[p.devID] {
+			s.printf("%s: no fresh DeviceStateReport within %s\n", p.host, timeout)
+			timedOut++
+		}
+	}
+	s.printf("nsh: refresh complete — %d/%d received, %d timed out — run `inventory apps` to view\n",
+		len(done), len(fleet), timedOut)
 }
 
 func filterTag(f string) string {

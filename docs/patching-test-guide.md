@@ -570,8 +570,65 @@ message InstalledApp {
   string publisher = 3;
   string install_date = 4;       // yyyymmdd; empty when the vendor didn't set it
   string uninstall_key = 5;      // registry subkey name — stable id for later actions
-  string hive = 6;               // "HKLM" | "HKLM\WOW6432Node"
+  string hive = 6;               // "HKLM" | "HKLM\WOW6432Node" | "HKU\<SID>" | "HKU\<SID>\WOW6432Node"
   int64 estimated_size_kb = 7;
   string uninstall_string = 8;   // vendor-registered uninstall command
 }
 ```
+
+## UC-19 — HKU per-user Uninstall parity + on-demand `inventory refresh`
+
+**Why:** UC-18 shipped machine-wide (HKLM) inventory, matching the common
+vendor install path. appwiz.cpl and Settings > Apps also show per-user
+installs — Chrome, Teams, Zoom and similar often register under the LOADED
+user profile hive, not HKLM. UC-19 closes that parity gap and adds a
+dev / admin pull to force a fresh DeviceStateReport without waiting for the
+next on-change send.
+
+### UC-19A — HKU per-user inventory present
+
+1. Note the current app count from `inventory apps` after an `inventory refresh`.
+2. Install an app that registers per-user (Chrome / Teams / Spotify, or
+   `MSIEXEC /i file.msi ALLUSERS=""`).
+3. Wait one `AEGIS_DEVICE_STATE_INTERVAL` cycle. Then from NSH:
+   `inventory refresh` followed by `inventory apps <name>`.
+4. **Expected:** the new entry appears with `HIVE = HKU\S-1-5-21-...`
+   (or `HKU\S-1-5-21-...\WOW6432Node` for a 32-bit per-user installer).
+
+### UC-19B — On-demand refresh without any change
+
+1. Make no change on the device.
+2. From NSH: `cd <hostname>` → `inventory refresh`
+3. **Expected (within 5s):** `fresh inventory (N apps, collected_at=...)` and
+   `refresh complete — 1/1 received, 0 timed out`. Agent log shows
+   `on-demand refresh requested — resetting fingerprint` and
+   `FAST-LANE patch-state: CHANGED -> sending`.
+
+### UC-19C — Offline target handled
+
+1. Stop the agent service on the target: `sc stop AegisOneClient`.
+2. From NSH: `inventory refresh`
+3. **Expected (immediate, no wait):** `OFFLINE (no live stream) — refresh skipped`.
+
+### UC-19D — `--timeout` flag
+
+1. `inventory refresh --timeout 15` succeeds against a slow / cross-WAN target.
+2. `inventory refresh --timeout abc` prints
+   `--timeout expects a positive integer (seconds)` and exits cleanly.
+3. `inventory refresh --fast` prints `unknown argument "--fast"` and exits.
+
+### UC-19E — 100-target cap (NSH is a dev / admin tool)
+
+1. If the mock supports simulating >100 fleet targets, `cd` into them and run
+   `inventory refresh`.
+2. **Expected:** `refuses more than 100 targets ... use the server-side
+   scheduled fleet refresh instead`. For single-VM test setups this case is
+   verified by code review rather than execution.
+
+### VM run record
+
+- 2026-11-02 PASS on Vijay's VM. UC-19A, UC-19B, UC-19C, UC-19D all green:
+  per-user app visible with `HKU\S-1-5-21-...` hive; refresh landed in 1-3 s;
+  offline refusal immediate; both bad-flag cases returned clean errors
+  without crashing the REPL.
+

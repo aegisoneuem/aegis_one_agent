@@ -184,12 +184,12 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, deviceStateTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
 	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	tlsLogged := false
 	// Extensible command dispatch: one registry of per-type handlers (no hardcoded
 	// switch), so new task types bolt on without touching the receive loop.
-	disp := newDispatcher(cfg, outbox, installJobs, softdist, stg, scanTrigger)
+	disp := newDispatcher(cfg, outbox, installJobs, softdist, stg, scanTrigger, deviceStateTrigger)
 	for {
 		if rootCtx.Err() != nil {
 			return nil // graceful shutdown requested
@@ -640,6 +640,11 @@ func runProcess(ctx context.Context) {
 	// scanTrigger fires a full compliance scan on demand — when a new catalog (cab)
 	// lands (set below) — instead of waiting for the weekly tick. Coalescing.
 	scanTrigger := make(chan struct{}, 1)
+	// deviceStateTrigger fires a Layer-1 DeviceStateReport on demand (resetting
+	// the change-detection fingerprint so the next report is sent even when
+	// nothing changed). Used by the signed "report_device_state" command (NSH
+	// "inventory refresh"). Coalescing.
+	deviceStateTrigger := make(chan struct{}, 1)
 	// Cab version handler (server reports version; agent fetches if stale, then
 	// triggers a scan against the new catalog).
 	cabs := newCabManifestHandler(cfg.SecureDir, cfg.WsusScanCab, scanTrigger, cfg.FetchBytesPerSecond)
@@ -649,14 +654,14 @@ func runProcess(ctx context.Context) {
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
-	go runPatchDetection(cfg, buf, baseline, rebootStore, installedSet, scanTrigger, drainSignal)
+	go runPatchDetection(cfg, buf, baseline, rebootStore, installedSet, scanTrigger, deviceStateTrigger, drainSignal)
 
 	// Watch the servicing store (CBS) and debounce-trigger a re-scan on any local
 	// install/uninstall — instant auto-detect without running the heavy scan on a
 	// timer (event-driven; no-op on non-Windows).
 	go watchServicingForRescan(ctx, scanTrigger)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, sdi, stg, baseline, cabs, keys, scanTrigger, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, sdi, stg, baseline, cabs, keys, scanTrigger, deviceStateTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")

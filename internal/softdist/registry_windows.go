@@ -165,21 +165,22 @@ func readInstalledApp(root uninstallRoot, subkey string, selector AppSelector) (
 	return app, nil
 }
 
-// EnumerateInstalledApps returns every registration in the HKLM Uninstall hive
-// (native + WOW6432Node). It is intended for inventory reporting to the server
-// (DeviceStateReport.installed_apps) so a third-party patch catalog can match
-// installed apps against known-outdated versions.
+// EnumerateInstalledApps returns every registration in the Windows Uninstall
+// hives on the device: HKLM native + WOW6432Node, PLUS every LOADED user hive
+// under HKEY_USERS (per-user installs — Chrome, Teams, Zoom and similar often
+// register under the user profile instead of HKLM). This matches what
+// appwiz.cpl and Settings → Apps list for the device.
 //
 // No limit is imposed on the returned list: however many apps are installed,
 // the full inventory is returned. The server catalog (BigFix lists ~350
 // apps; the Aegis server team targets 1000+) is the only policy point for
 // which apps are patched; the agent only reports facts.
 //
-// Per-user (HKCU) enumeration is not included here — reporting all logged-off
-// user hives from a LocalSystem service would require loading each profile
-// hive, which has reliability + privacy implications. HKLM covers the common
-// vendor install path (both 32-bit and 64-bit) which is what the catalog
-// usually targets.
+// Only LOADED user hives are enumerated. A logged-off user's hive is not
+// loaded by the LocalSystem service — profile-load from a service has
+// reliability + privacy implications. The common cases (interactive user,
+// shared-machine multi-user sessions) are covered as long as the user has
+// signed in at least once since boot. BigFix and Tanium behave the same way.
 //
 // Entries with no DisplayName are skipped — they are typically Windows
 // Installer rollback artifacts that are not useful for catalog matching.
@@ -188,6 +189,11 @@ func EnumerateInstalledApps() ([]InstalledApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	userRoots, err := userUninstallRoots()
+	if err != nil {
+		return nil, err
+	}
+	roots = append(roots, userRoots...)
 	var out []InstalledApp
 	for _, root := range roots {
 		k, err := registry.OpenKey(root.key, root.path, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE|root.flags)
@@ -217,4 +223,50 @@ func EnumerateInstalledApps() ([]InstalledApp, error) {
 		}
 	}
 	return out, nil
+}
+
+// userUninstallRoots returns the per-user Uninstall roots for every LOADED
+// user hive under HKEY_USERS (native + WOW6432Node mirror). Service accounts
+// (S-1-5-18/19/20), the .DEFAULT hive, and the _Classes shadow hives that
+// mirror each loaded user hive are skipped. A user whose SOFTWARE path is
+// missing is handled silently by the caller's existing ErrNotExist branch.
+func userUninstallRoots() ([]uninstallRoot, error) {
+	k, err := registry.OpenKey(registry.USERS, "", registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return nil, fmt.Errorf("open HKEY_USERS: %w", err)
+	}
+	names, err := k.ReadSubKeyNames(-1)
+	k.Close()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate HKEY_USERS: %w", err)
+	}
+	var roots []uninstallRoot
+	for _, sid := range names {
+		if !isLoadedUserSID(sid) {
+			continue
+		}
+		roots = append(roots,
+			uninstallRoot{
+				key:  registry.USERS,
+				path: sid + `\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`,
+				view: `HKU\` + sid,
+			},
+			uninstallRoot{
+				key:  registry.USERS,
+				path: sid + `\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`,
+				view: `HKU\` + sid + `\WOW6432Node`,
+			},
+		)
+	}
+	return roots, nil
+}
+
+// isLoadedUserSID returns true for a real interactive user SID (S-1-5-21-...)
+// and false for service accounts (S-1-5-18/19/20), the .DEFAULT hive, and the
+// _Classes shadow hives that mirror each loaded user hive at HKU root.
+func isLoadedUserSID(name string) bool {
+	if strings.HasSuffix(name, "_Classes") {
+		return false
+	}
+	return strings.HasPrefix(name, "S-1-5-21-")
 }

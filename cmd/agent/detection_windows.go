@@ -23,8 +23,8 @@ import (
 // the buffer (the sender goroutine drains it), never the network.
 //   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
 //   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
-func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, installedSet *installedStore, scanTrigger <-chan struct{}, drainSignal chan<- struct{}) {
-	go runDeviceStateReport(cfg, buf, baseline, rebootStore, drainSignal)
+func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, installedSet *installedStore, scanTrigger <-chan struct{}, deviceStateTrigger <-chan struct{}, drainSignal chan<- struct{}) {
+	go runDeviceStateReport(cfg, buf, baseline, rebootStore, deviceStateTrigger, drainSignal)
 	if cfg.WsusScanCab == "" {
 		slog.Info("patch compliance scan disabled (no AEGIS_WSUS_SCAN_CAB configured)")
 		return
@@ -37,7 +37,7 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineS
 // when it CHANGED since the last send (the installed set rarely changes, so
 // sending every cycle would be wasteful at fleet scale). The agent reports
 // installed facts only; the server computes "missing".
-func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, drainSignal chan<- struct{}) {
+func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, deviceStateTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	var lastFingerprint string
 	var lastSelfDiffKey string
 	report := func() {
@@ -131,8 +131,18 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 	safeRun("layer1-device-state", report) // once at startup, then on the interval
 	ticker := time.NewTicker(cfg.DeviceStateInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		safeRun("layer1-device-state", report)
+	for {
+		select {
+		case <-ticker.C:
+			safeRun("layer1-device-state", report)
+		case <-deviceStateTrigger:
+			// On-demand refresh (signed report_device_state command). Reset the
+			// change-detection fingerprint so the next report is sent even when
+			// nothing on the device has changed since the last send.
+			slog.Info("FAST-LANE patch-state: on-demand refresh requested — resetting fingerprint")
+			lastFingerprint = ""
+			safeRun("layer1-device-state", report)
+		}
 	}
 }
 
