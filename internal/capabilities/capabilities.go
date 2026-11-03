@@ -50,6 +50,8 @@ var supported = []string{
 	"hku_per_user_inventory",
 	// UC-21.1 — closes BigFix detailed-scan gaps
 	"hw_detailed_scan",
+	// Phase 1b — native remote file write (no PowerShell dependency)
+	"file_operation_write_bytes",
 }
 
 // SchemaVersion returns the stable contract version the server uses to

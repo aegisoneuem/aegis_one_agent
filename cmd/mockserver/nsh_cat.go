@@ -1,11 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/fileops"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
@@ -32,11 +33,14 @@ import (
 //	              (overwrite OR append)
 //	dst local  -> write / append to the mock-local file
 //
-// Phase 1 limit: single-shot embedded base64 keeps the PowerShell command
-// under the Windows command-length ceiling. Files larger than ~500 KB are
-// refused with a clear "use a dedicated file_operation.write_bytes op (Phase
-// 1b)" message — no silent truncation.
-const nshCatMaxBytes = 500 * 1024
+// nshCatMaxBytes is the mock-side soft cap for a single `cat` operation.
+// Phase-1b uses a native `file_operation.write_bytes` dispatch — no
+// PowerShell, no cmd-line limit — so this ceiling is now dictated by the
+// agent's endpoint cap (AEGIS_FILE_WRITE_MAX_BYTES, default 100 MB) rather
+// than Windows CreateProcess bounds. Keep the mock-side value at 100 MB
+// so the operator sees a clean error before the dispatch when they ask for
+// something larger; the agent is the authoritative enforcer.
+const nshCatMaxBytes = 100 * 1024 * 1024
 
 // catEndpoint represents one parsed side of a redirection.
 type catEndpoint struct {
@@ -68,7 +72,7 @@ func (s *nshSession) verbCat(rest string) {
 		return
 	}
 	if len(bytes) > nshCatMaxBytes {
-		s.printf("nsh: cat refuses %d bytes (max %d for the embedded-base64 writer; file_operation.write_bytes op is the Phase-1b path for bigger files)\n", len(bytes), nshCatMaxBytes)
+		s.printf("nsh: cat refuses %d bytes (soft cap %d; endpoint AEGIS_FILE_WRITE_MAX_BYTES is authoritative). Raise the cap or use a smaller transfer.\n", len(bytes), nshCatMaxBytes)
 		return
 	}
 	if err := s.catWriteDest(dst, bytes, appendMode); err != nil {
@@ -199,6 +203,9 @@ func (s *nshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
 }
 
 // catWriteDest writes bytes to the dst endpoint (overwrite or append).
+// Phase 1b: remote writes use the native file_operation write_bytes op —
+// no PowerShell, no cmd-line limit, works even when the endpoint has
+// PowerShell execution policy locked down.
 func (s *nshSession) catWriteDest(dst catEndpoint, data []byte, appendMode bool) error {
 	if dst.host == "" {
 		if appendMode {
@@ -216,28 +223,21 @@ func (s *nshSession) catWriteDest(dst catEndpoint, data []byte, appendMode bool)
 	if devID == "" {
 		return fmt.Errorf("unknown host %q (no connected agent with that hostname)", dst.host)
 	}
-	b64 := base64.StdEncoding.EncodeToString(data)
-	escapedPath := strings.ReplaceAll(dst.path, `'`, `''`)
-	var psScript string
-	if appendMode {
-		psScript = `$bytes=[Convert]::FromBase64String('` + b64 + `'); $f=[IO.File]::Open('` + escapedPath + `',[IO.FileMode]::Append); try { $f.Write($bytes,0,$bytes.Length) } finally { $f.Close() }`
-	} else {
-		psScript = `$bytes=[Convert]::FromBase64String('` + b64 + `'); [IO.File]::WriteAllBytes('` + escapedPath + `',$bytes)`
-	}
-	utf16bytes := make([]byte, 0, len(psScript)*2)
-	for _, r := range psScript {
-		utf16bytes = append(utf16bytes, byte(r), byte(r>>8))
-	}
-	encCmd := base64.StdEncoding.EncodeToString(utf16bytes)
-	cmdText := "powershell -NoProfile -NonInteractive -EncodedCommand " + encCmd
-	st, _ := s.sendTask(devID, "run_command", &pb.RunCommandSpec{
-		Command:        cmdText,
-		Shell:          "cmd",
+	spec := fileops.Spec{
+		Version:        1,
+		Operation:      "write_bytes",
+		Destination:    dst.path,
+		Content:        data,
+		Append:         appendMode,
 		TimeoutSeconds: 120,
-		MaxOutputBytes: 4096,
-	}, "")
+	}
+	payload, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("marshal write_bytes spec: %w", err)
+	}
+	st, _ := s.sendTaskPayload(devID, "file_operation", payload, "")
 	if st == nil || st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
-		reason := "run_command did not complete"
+		reason := "file_operation write_bytes did not complete"
 		if st != nil {
 			reason = fmt.Sprintf("phase=%s exit=%d reason=%s", phaseWord(st.Phase), st.ExitCode, st.Reason)
 		}

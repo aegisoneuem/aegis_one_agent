@@ -17,8 +17,27 @@ import (
 // operations are native Go; no SMB credentials or PowerShell dependency.
 func (d *dispatcher) handleFileOperationCmd(ctx context.Context, client pb.AgentControlPlaneClient, cmd *pb.Command) {
 	var spec fileops.Spec
-	if err := json.Unmarshal(cmd.Payload, &spec); err != nil || spec.Version != 1 || len(cmd.Payload) > fileops.MaxManifestBytes {
+	// write_bytes carries inline payload up to AEGIS_FILE_WRITE_MAX_BYTES
+	// (default 100 MB) + ~33% JSON base64 overhead. All other operations
+	// use the existing 2 MB manifest cap.
+	payloadCap := int64(fileops.MaxManifestBytes)
+	// Peek operation first (cheap, we unmarshal only to extract the op).
+	var peek struct {
+		Operation string `json:"operation"`
+	}
+	_ = json.Unmarshal(cmd.Payload, &peek)
+	if peek.Operation == "write_bytes" && d.cfg.FileWriteMaxBytes > 0 {
+		payloadCap = int64(float64(d.cfg.FileWriteMaxBytes) * 1.5) // base64 + JSON wrapper overhead headroom
+	}
+	if err := json.Unmarshal(cmd.Payload, &spec); err != nil || spec.Version != 1 || int64(len(cmd.Payload)) > payloadCap {
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, "file_operation", d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "invalid file_operation/v1 payload"))
+		return
+	}
+	// Enforce the admin-set payload cap for write_bytes BEFORE the goroutine
+	// so a bad command fails fast with a clear reason.
+	if spec.Operation == "write_bytes" && d.cfg.FileWriteMaxBytes > 0 && int64(len(spec.Content)) > d.cfg.FileWriteMaxBytes {
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, "file_operation", d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED,
+			fmt.Sprintf("write_bytes: payload %d bytes exceeds endpoint cap %d (AEGIS_FILE_WRITE_MAX_BYTES)", len(spec.Content), d.cfg.FileWriteMaxBytes)))
 		return
 	}
 	go func() {

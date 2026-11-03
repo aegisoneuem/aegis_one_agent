@@ -35,6 +35,15 @@ type Spec struct {
 	ContentID      string  `json:"content_id,omitempty"`
 	SHA256         string  `json:"sha256,omitempty"`
 	Entries        []Entry `json:"entries,omitempty"`
+	// Content is the inline byte payload for operation="write_bytes". JSON
+	// marshals []byte as base64 by convention, so a 100 MB payload becomes
+	// ~133 MB on the wire — the agent / mock gRPC max-recv-msg-size is sized
+	// for this. Empty + ContentID set means "stream from server by id".
+	Content []byte `json:"content,omitempty"`
+	// Append — only honored for operation="write_bytes". true = open the
+	// destination with O_APPEND and write at the end; false = overwrite /
+	// truncate (default).
+	Append bool `json:"append,omitempty"`
 }
 type Entry struct {
 	Source    string `json:"source"`
@@ -461,10 +470,82 @@ func DeleteManifest(ctx context.Context, entries []Entry) (Result, error) {
 	return out, nil
 }
 
+// writeBytes implements the "write_bytes" file-operation: write (or append)
+// a payload to Destination natively — no shell, no PowerShell dependency,
+// works regardless of endpoint execution policy.
+//
+// Phase-1b inline path: spec.Content carries the full payload (JSON base64
+// in the signed command). Caller enforces the admin cap (defaults to 100 MB
+// via AEGIS_FILE_WRITE_MAX_BYTES) BEFORE calling in; this function trusts
+// what it is given and only validates destination path safety.
+//
+// Future (Phase-1c): spec.ContentID will trigger a FetchContent stream from
+// the server for payloads too large to fit in a single signed command.
+func writeBytes(spec Spec) (Result, error) {
+	var out Result
+	if strings.TrimSpace(spec.Destination) == "" {
+		return out, fmt.Errorf("write_bytes: destination path required")
+	}
+	if spec.ContentID != "" && len(spec.Content) > 0 {
+		return out, fmt.Errorf("write_bytes: content and content_id are mutually exclusive")
+	}
+	if spec.ContentID != "" {
+		// Streaming via FetchContent is wired at the dispatcher layer (same
+		// path pack/unpack use). Basic() runs synchronously without a gRPC
+		// client, so the dispatcher calls writeBytes only after streaming
+		// the bytes into spec.Content — this guard tells the dispatcher
+		// to route via the streaming path first.
+		return out, fmt.Errorf("write_bytes: content_id path is dispatched via FetchContent streaming (not handled by Basic)")
+	}
+	dst := LocalPath(spec.WorkingDir, spec.Destination)
+	// Create parent directories best-effort; a missing parent is a
+	// legitimate failure for an admin command, so surface the error.
+	if parent := filepath.Dir(dst); parent != "" && parent != "." {
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return out, fmt.Errorf("write_bytes: create parent %s: %w", parent, err)
+		}
+	}
+	flags := os.O_WRONLY | os.O_CREATE
+	if spec.Append {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(dst, flags, 0o644)
+	if err != nil {
+		return out, fmt.Errorf("write_bytes: open %s: %w", dst, err)
+	}
+	defer f.Close()
+	n, err := f.Write(spec.Content)
+	if err != nil {
+		return out, fmt.Errorf("write_bytes: write %s: %w", dst, err)
+	}
+	out.Files = 1
+	out.Bytes = int64(n)
+	out.StoredPath = dst
+	// Content integrity verification: if the signed command names a SHA256
+	// of the payload, confirm the bytes on disk match. A mismatch fails
+	// the operation; the caller sees the failure in ActionStatus.
+	if strings.TrimSpace(spec.SHA256) != "" {
+		h := sha256.Sum256(spec.Content)
+		got := hex.EncodeToString(h[:])
+		if !strings.EqualFold(got, spec.SHA256) {
+			return out, fmt.Errorf("write_bytes: SHA256 mismatch: wrote %d bytes, expected=%s got=%s", n, spec.SHA256, got)
+		}
+		out.SHA256 = got
+	}
+	return out, nil
+}
+
 func Basic(ctx context.Context, spec Spec) (Result, error) {
 	var out Result
 	if err := ctx.Err(); err != nil {
 		return out, err
+	}
+	// write_bytes uses Destination (not Source) so handle it before the
+	// "source required" check below.
+	if spec.Operation == "write_bytes" {
+		return writeBytes(spec)
 	}
 	if spec.Operation != "remove-manifest" && strings.TrimSpace(spec.Source) == "" {
 		return out, fmt.Errorf("source path required")

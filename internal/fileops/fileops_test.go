@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -141,5 +143,97 @@ func TestSamePathAndCancelledTasks(t *testing.T) {
 	cancel()
 	if _, err := Pack(ctx, Spec{Source: source}, filepath.Join(root, "cancelled.zip")); err == nil {
 		t.Fatal("ignored cancellation")
+	}
+}
+
+func TestWriteBytes_Overwrite(t *testing.T) {
+	tmp := t.TempDir()
+	dst := filepath.Join(tmp, "sub", "out.bin")
+	spec := Spec{
+		Version:     1,
+		Operation:   "write_bytes",
+		Destination: dst,
+		Content:     []byte("hello world"),
+	}
+	res, err := Basic(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("write_bytes failed: %v", err)
+	}
+	if res.Bytes != 11 || res.Files != 1 {
+		t.Errorf("result = %+v, want Files=1 Bytes=11", res)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("file content = %q, want %q", got, "hello world")
+	}
+	// Overwrite with shorter content.
+	spec.Content = []byte("hi")
+	if _, err := Basic(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(dst)
+	if string(got) != "hi" {
+		t.Errorf("overwrite content = %q, want %q", got, "hi")
+	}
+}
+
+func TestWriteBytes_Append(t *testing.T) {
+	tmp := t.TempDir()
+	dst := filepath.Join(tmp, "log.txt")
+	spec := Spec{Version: 1, Operation: "write_bytes", Destination: dst, Content: []byte("line1\n")}
+	if _, err := Basic(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	spec.Content = []byte("line2\n")
+	spec.Append = true
+	if _, err := Basic(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dst)
+	if string(got) != "line1\nline2\n" {
+		t.Errorf("append result = %q, want %q", got, "line1\nline2\n")
+	}
+}
+
+func TestWriteBytes_MissingDestination(t *testing.T) {
+	spec := Spec{Version: 1, Operation: "write_bytes", Content: []byte("x")}
+	if _, err := Basic(context.Background(), spec); err == nil {
+		t.Error("empty destination accepted")
+	}
+}
+
+func TestWriteBytes_ContentAndContentIDMutuallyExclusive(t *testing.T) {
+	spec := Spec{
+		Version: 1, Operation: "write_bytes",
+		Destination: "ignored",
+		Content:     []byte("x"),
+		ContentID:   "some-id",
+	}
+	if _, err := Basic(context.Background(), spec); err == nil {
+		t.Error("content + content_id combination accepted")
+	}
+}
+
+func TestWriteBytes_SHA256Verification(t *testing.T) {
+	tmp := t.TempDir()
+	dst := filepath.Join(tmp, "sum.bin")
+	payload := []byte("checksum me")
+	// Correct SHA.
+	h := sha256.Sum256(payload)
+	spec := Spec{
+		Version: 1, Operation: "write_bytes",
+		Destination: dst, Content: payload,
+		SHA256: hex.EncodeToString(h[:]),
+	}
+	if _, err := Basic(context.Background(), spec); err != nil {
+		t.Fatalf("correct SHA rejected: %v", err)
+	}
+	// Wrong SHA.
+	spec.SHA256 = "deadbeef"
+	if _, err := Basic(context.Background(), spec); err == nil {
+		t.Error("wrong SHA accepted")
 	}
 }

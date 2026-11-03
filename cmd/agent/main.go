@@ -210,6 +210,11 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 			slog.Info("mTLS enabled", "server_name", cfg.TLSServerName, "ca", cfg.TLSCAFile, "client_cert", cfg.TLSCertFile)
 			tlsLogged = true
 		}
+		// 150 MB max message size matches the mock server. Needed because
+		// a signed file_operation write_bytes command carries inline bytes
+		// (JSON base64; up to AEGIS_FILE_WRITE_MAX_BYTES, default 100 MB).
+		// Default gRPC 4 MB is too small for that payload.
+		const maxMsgBytes = 150 * 1024 * 1024
 		conn, err := grpc.NewClient(cfg.ServerAddress,
 			grpc.WithTransportCredentials(creds),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -217,6 +222,10 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 				Timeout:             cfg.KeepaliveTimeout,
 				PermitWithoutStream: true, // keep the link alive across reconnect gaps
 			}),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(maxMsgBytes),
+				grpc.MaxCallSendMsgSize(maxMsgBytes),
+			),
 		)
 		if err != nil {
 			logReconnect(&connFail, cfg.ServerAddress, err)

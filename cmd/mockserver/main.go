@@ -1539,12 +1539,21 @@ func main() {
 		mockPrintf("Pre-seeded %d dummy device(s) for license testing\n", n)
 	}
 
+	// 150 MB max message size: default 4 MB is too small for file_operation
+	// write_bytes with inline Content up to AEGIS_FILE_WRITE_MAX_BYTES
+	// (100 MB default) + JSON base64 overhead (~33%). Streaming RPCs
+	// (ShellSession, FetchContent, UploadContent) are not affected because
+	// they chunk, but the signed Command Payload is a single message so
+	// its ceiling matters.
+	const maxMsgBytes = 150 * 1024 * 1024
 	s := grpc.NewServer(
 		grpc.Creds(creds),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             20 * time.Second,
 			PermitWithoutStream: true,
 		}),
+		grpc.MaxRecvMsgSize(maxMsgBytes),
+		grpc.MaxSendMsgSize(maxMsgBytes),
 	)
 	pb.RegisterAgentControlPlaneServer(s, srv)
 	mockPrintf("Mock server listening on :50051 (single port: mTLS ops + enrollment; token=%s)\n", maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))

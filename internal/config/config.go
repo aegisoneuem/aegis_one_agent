@@ -100,6 +100,14 @@ type Config struct {
 	FetchBytesPerSecond  int64
 	UploadBytesPerSecond int64
 
+	// FileWriteMaxBytes caps the inline payload size of a signed
+	// file_operation command with operation="write_bytes" (and future
+	// operations that carry inline bytes). Default 100 MB. The agent
+	// REFUSES any signed command with inline bytes exceeding this cap,
+	// so admin policy here is non-negotiable even from the signed server.
+	// Larger payloads must use the content_id streaming path.
+	FileWriteMaxBytes int64
+
 	// LogScriptContent is the endpoint policy for script-payload audit
 	// transcripts (SoftDist running .ps1/.bat/.cmd/.vbs/.py). Values:
 	//   "enabled" (default) — honor the per-task CaptureScriptContent flag;
@@ -302,6 +310,7 @@ func Load() Config {
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
 		FetchBytesPerSecond:    int64FromEnv("AEGIS_FETCH_MAX_BYTES_PER_SECOND", 0),
 		LogScriptContent:       getenv("AEGIS_LOG_SCRIPT_CONTENT", "enabled"),
+		FileWriteMaxBytes:      int64FromEnv("AEGIS_FILE_WRITE_MAX_BYTES", 100*1024*1024),
 		FullInventoryInterval:          durationFromEnv("AEGIS_FULL_INVENTORY_INTERVAL", 6*time.Hour),
 		FullInventorySafetyNetInterval: durationFromEnv("AEGIS_FULL_INVENTORY_SAFETY_NET_INTERVAL", 24*time.Hour),
 		ReconnectSnapshotMinInterval:   durationFromEnv("AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL", time.Hour),
