@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -12,6 +14,24 @@ import (
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
 )
+
+// fullInventoryFingerprint hashes the content-relevant fields of a
+// FullInventoryReport (everything EXCEPT collected_at and trigger, which
+// vary every snapshot by construction). A stable hash means no drift —
+// safe to skip the send until the safety-net interval forces one anyway.
+func fullInventoryFingerprint(rep *pb.FullInventoryReport) string {
+	snap := proto.Clone(rep).(*pb.FullInventoryReport)
+	snap.CollectedAt = 0
+	snap.Trigger = ""
+	bytes, err := proto.Marshal(snap)
+	if err != nil {
+		// Marshal of a proto we just built should never fail. Return a
+		// unique value so the "unchanged" path cannot accidentally match.
+		return "marshal-error-" + time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	sum := sha256.Sum256(bytes)
+	return hex.EncodeToString(sum[:])
+}
 
 // runFullInventoryReport is the Tier-3 (6-12 h) safety-net report: on a
 // slow timer AND on reconnect-after-offline, it collects the full HW + SW
@@ -32,10 +52,19 @@ import (
 func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	var mu sync.Mutex
 	var lastReconnectSend time.Time
+	// Send-on-change state: skip identical reports until the safety-net
+	// interval elapses. Startup and reconnect ALWAYS send (bypass the
+	// change check) because the server needs the authoritative snapshot
+	// for a fresh/returning device.
+	var lastFingerprint string
+	var lastSentAt time.Time
 
-	// snapshot assembles one full inventory report. trigger is "scheduled"
-	// or "reconnect" so the server can see WHY the snapshot ran.
-	snapshot := func(trigger string) {
+	// snapshot assembles one full inventory report. trigger is "startup",
+	// "scheduled", or "reconnect" so the server can see WHY the snapshot
+	// ran. forceSend bypasses the send-on-change check (used by startup
+	// and reconnect so the server gets the authoritative state after a
+	// device appears or reappears).
+	snapshot := func(trigger string, forceSend bool) {
 		started := time.Now()
 		hw, err := hwinventory.Collect()
 		if err != nil {
@@ -66,6 +95,22 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 				UninstallString: a.UninstallString,
 			})
 		}
+		// Send-on-change gate (BigFix-style drift detection):
+		//   - startup / reconnect   -> ALWAYS send (server needs fresh state)
+		//   - scheduled & unchanged -> skip until SafetyNetInterval elapsed
+		//   - scheduled & changed   -> send immediately (drift)
+		fp := fullInventoryFingerprint(rep)
+		mu.Lock()
+		sameFP := fp == lastFingerprint
+		age := time.Since(lastSentAt)
+		mu.Unlock()
+		if !forceSend && sameFP && age < cfg.FullInventorySafetyNetInterval {
+			slog.Info("TIER-3 full-inventory: unchanged -> skipping send (safety-net not yet due)",
+				"trigger", trigger,
+				"age", age.Round(time.Second).String(),
+				"safety_net", cfg.FullInventorySafetyNetInterval.String())
+			return
+		}
 		payload, err := proto.Marshal(rep)
 		if err != nil {
 			slog.Error("TIER-3 full-inventory: marshal failed", "error", err.Error())
@@ -75,27 +120,42 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 			slog.Error("TIER-3 full-inventory: buffer enqueue failed", "error", err.Error())
 			return
 		}
+		reason := "forced"
+		switch {
+		case !sameFP && lastFingerprint == "":
+			reason = "first-send"
+		case !sameFP:
+			reason = "drift"
+		case age >= cfg.FullInventorySafetyNetInterval:
+			reason = "safety-net"
+		}
 		slog.Info("TIER-3 full-inventory: snapshot buffered",
 			"trigger", trigger,
+			"reason", reason,
 			"apps", len(rep.InstalledApps),
 			"disks", len(rep.GetHardware().GetDisks()),
 			"nics", len(rep.GetHardware().GetNics()),
 			"cpu_model", rep.GetHardware().GetCpuModel(),
 			"ram_bytes", rep.GetHardware().GetMemoryTotalBytes(),
 			"took_ms", time.Since(started).Milliseconds())
+		mu.Lock()
+		lastFingerprint = fp
+		lastSentAt = time.Now()
+		mu.Unlock()
 		signalDrain(drainSignal)
 	}
 
 	// First snapshot at startup — covers the case where the agent is
-	// freshly installed or has been down for a long time.
-	safeRun("tier3-full-inventory-startup", func() { snapshot("startup") })
+	// freshly installed or has been down for a long time. forceSend=true
+	// bypasses the send-on-change gate.
+	safeRun("tier3-full-inventory-startup", func() { snapshot("startup", true) })
 
 	ticker := time.NewTicker(cfg.FullInventoryInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			safeRun("tier3-full-inventory-scheduled", func() { snapshot("scheduled") })
+			safeRun("tier3-full-inventory-scheduled", func() { snapshot("scheduled", false) })
 
 		case <-reconnectTrigger:
 			// Flap floor: suppress a reconnect snapshot if the last one
@@ -110,7 +170,7 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 					"age", age.String(), "floor", cfg.ReconnectSnapshotMinInterval.String())
 				continue
 			}
-			safeRun("tier3-full-inventory-reconnect", func() { snapshot("reconnect") })
+			safeRun("tier3-full-inventory-reconnect", func() { snapshot("reconnect", true) })
 			mu.Lock()
 			lastReconnectSend = time.Now()
 			mu.Unlock()

@@ -115,11 +115,20 @@ type Config struct {
 	// never captured on either path (they are delivered via child stdin).
 	LogScriptContent string
 
-	// FullInventoryInterval is the Tier-3 cycle: how often the agent sends
-	// a full HW + SW inventory snapshot. BigFix equivalent is 6-24 h. Default
-	// 6 h. This is the SAFETY NET report that self-corrects the server's
-	// view even if a Tier-2 change event was missed.
+	// FullInventoryInterval is how often the Tier-3 loop WAKES to decide
+	// whether a full HW + SW snapshot needs sending. BigFix behavior: send
+	// on change (drift) with a periodic safety-net cadence. Default 6 h.
+	// On each tick the agent computes a fingerprint of the complete report
+	// and only sends if (a) it differs from the last-sent fingerprint OR
+	// (b) FullInventorySafetyNetInterval has elapsed since the last send.
 	FullInventoryInterval time.Duration
+
+	// FullInventorySafetyNetInterval is the MAX cadence Tier-3 will skip a
+	// send even when nothing has changed. Keeps the server honest about
+	// device liveness and current state without flooding bandwidth. BigFix
+	// equivalent cadence is 24 h; default 24 h. Set LOWER (e.g. 6 h) for
+	// stricter freshness; HIGHER (e.g. 72 h) for ultra-low-bandwidth fleets.
+	FullInventorySafetyNetInterval time.Duration
 
 	// ReconnectSnapshotMinInterval is the flap floor on reconnect-triggered
 	// Tier-3 snapshots: the agent will send AT MOST one reconnect snapshot
@@ -293,8 +302,9 @@ func Load() Config {
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
 		FetchBytesPerSecond:    int64FromEnv("AEGIS_FETCH_MAX_BYTES_PER_SECOND", 0),
 		LogScriptContent:       getenv("AEGIS_LOG_SCRIPT_CONTENT", "enabled"),
-		FullInventoryInterval:        durationFromEnv("AEGIS_FULL_INVENTORY_INTERVAL", 6*time.Hour),
-		ReconnectSnapshotMinInterval: durationFromEnv("AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL", time.Hour),
+		FullInventoryInterval:          durationFromEnv("AEGIS_FULL_INVENTORY_INTERVAL", 6*time.Hour),
+		FullInventorySafetyNetInterval: durationFromEnv("AEGIS_FULL_INVENTORY_SAFETY_NET_INTERVAL", 24*time.Hour),
+		ReconnectSnapshotMinInterval:   durationFromEnv("AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL", time.Hour),
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

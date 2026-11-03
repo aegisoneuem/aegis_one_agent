@@ -96,6 +96,41 @@ func TestCatPathDescr(t *testing.T) {
 	}
 }
 
+func TestCatIsAbsPath(t *testing.T) {
+	cases := map[string]bool{
+		`C:\tmp\x.txt`: true,
+		`c:/foo`:       true,
+		`\\server\c\x`: true,
+		`\foo`:         true,
+		`/foo`:         true,
+		`big.bin`:      false,
+		`sub\dir\x`:    false,
+		``:             false,
+	}
+	for in, want := range cases {
+		if got := catIsAbsPath(in); got != want {
+			t.Errorf("catIsAbsPath(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestCatJoinWindowsPath(t *testing.T) {
+	cases := []struct {
+		cwd, rel, want string
+	}{
+		{`C:\temp`, `big.bin`, `C:\temp\big.bin`},
+		{`C:\temp\`, `big.bin`, `C:\temp\big.bin`},
+		{`C:\temp\`, `\big.bin`, `C:\temp\big.bin`},
+		{`C:\temp\sub\`, `child\x.txt`, `C:\temp\sub\child\x.txt`},
+	}
+	for _, c := range cases {
+		got := catJoinWindowsPath(c.cwd, c.rel)
+		if got != c.want {
+			t.Errorf("catJoinWindowsPath(%q,%q) = %q, want %q", c.cwd, c.rel, got, c.want)
+		}
+	}
+}
+
 func TestCatIndexToken_WhitespaceBounded(t *testing.T) {
 	// `>>` should not match when adjacent to non-whitespace (e.g. inside a path).
 	cases := []struct {

@@ -15,6 +15,22 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// truncateForLog shortens s to at most max bytes with a visible truncation
+// marker, so a long NSH command still shows the shape in the log without
+// flooding the file. Used by the run_command "accepted" line so an operator
+// can tell what actually ran — not just the command_id.
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	suffix := fmt.Sprintf("… (truncated, %d bytes total)", len(s))
+	cut := max - len(suffix)
+	if cut < 0 {
+		cut = 0
+	}
+	return s[:cut] + suffix
+}
+
 // Defaults for run_command (overridable per spec).
 const (
 	rcDefaultTimeout   = 300        // seconds
@@ -41,7 +57,8 @@ func (d *dispatcher) handleRunCommandCmd(ctx context.Context, client pb.AgentCon
 		return
 	}
 	slog.Info("run_command: accepted", "command_id", cmd.CommandId, "shell", spec.Shell,
-		"timeout_s", spec.TimeoutSeconds, "upload_as", spec.UploadAs)
+		"timeout_s", spec.TimeoutSeconds, "upload_as", spec.UploadAs,
+		"command", truncateForLog(spec.Command, 500))
 	send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionRunCommand, d.cfg.DeviceID, "",
 		pb.ActionPhase_ACTION_PHASE_RUNNING, "running")))
 

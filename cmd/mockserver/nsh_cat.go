@@ -53,8 +53,17 @@ func (s *nshSession) verbCat(rest string) {
 		s.printf("nsh: %v\n", err)
 		s.println(`nsh: usage: cat <src> > <dst>  OR  cat <src> >> <dst>`)
 		s.println(`nsh:   <src>/<dst> may be local path or UNC form \\<host>\<drive>\<path>`)
+		s.println(`nsh:   with a cd \\host target set, paths without \\<host>\ prefix resolve on that target`)
 		return
 	}
+	// Implicit-target rule: when `cd \\host` set a single target, bare
+	// paths (no UNC prefix) mean that target — matches BigFix / BladeLogic
+	// nexec intuition "cd puts me on the host, paths are local to it".
+	// Relative paths are joined with the current working directory on that
+	// target (what `cd <path>` set). Mock-local is used only when no
+	// target is set.
+	src = s.resolveImplicitCatTarget(src)
+	dst = s.resolveImplicitCatTarget(dst)
 	bytes, srcDescr, err := s.catReadSource(src)
 	if err != nil {
 		s.printf("nsh: cat read src failed: %v\n", err)
@@ -231,6 +240,56 @@ func (s *nshSession) catWriteDest(dst catEndpoint, data []byte, appendMode bool)
 		return fmt.Errorf("%s", reason)
 	}
 	return nil
+}
+
+// resolveImplicitCatTarget turns a bare-path endpoint into a UNC endpoint
+// against the current cd target, so operators do not need to repeat
+// \\<host>\<drive>\ for every file after a `cd \\host`. Rules:
+//   - endpoint already has host  -> leave as-is (explicit wins)
+//   - no cd target               -> leave as-is (mock-local; no implicit host)
+//   - multiple cd targets        -> leave as-is (ambiguous; let caller fail)
+//   - single cd target + absolute path  -> use target host, keep absolute path
+//   - single cd target + relative path  -> use target host + its workingDir
+func (s *nshSession) resolveImplicitCatTarget(e catEndpoint) catEndpoint {
+	if e.host != "" {
+		return e
+	}
+	if len(s.targets) != 1 {
+		return e
+	}
+	devID := s.targets[0]
+	host := s.srv.hostnameOf(devID)
+	if host == "" {
+		return e
+	}
+	path := e.path
+	if !catIsAbsPath(path) {
+		cwd := s.workingDirs[devID]
+		if cwd != "" {
+			path = catJoinWindowsPath(cwd, path)
+		}
+	}
+	return catEndpoint{host: host, path: path}
+}
+
+// catIsAbsPath reports whether p looks like an absolute Windows path
+// (drive-letter form "C:\\...") or an rooted path ("\\..." / "/...").
+func catIsAbsPath(p string) bool {
+	if len(p) >= 2 && p[1] == ':' {
+		return true
+	}
+	if len(p) >= 1 && (p[0] == '\\' || p[0] == '/') {
+		return true
+	}
+	return false
+}
+
+// catJoinWindowsPath joins a Windows cwd with a relative name, using
+// backslash as the separator the agent-side shells expect.
+func catJoinWindowsPath(cwd, rel string) string {
+	cwd = strings.TrimRight(cwd, `\/`)
+	rel = strings.TrimLeft(rel, `\/`)
+	return cwd + `\` + rel
 }
 
 // resolveUploadedFile locates the on-disk path for an auto-captured upload.
