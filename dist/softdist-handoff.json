@@ -20,9 +20,9 @@
                    "UC-18. third-party installed-apps inventory via DeviceStateReport (PASS 2026-11-01)",
                    "UC-19. HKU per-user Uninstall parity + 'inventory refresh' on-demand pull (PASS 2026-11-02)",
                    "UC-20. script content audit: hash+preview default + opt-in full content + endpoint kill switch / force-on (PASS 2026-11-02)",
-                   "UC-21. foundation fields (schema_version + agent_capabilities + device_type on Heartbeat/EnrollRequest) + Tier-3 FullInventoryReport (6h scheduled + reconnect with flap floor) + HW inventory collector (pure Go, no WMI, binary 20.97 MB) (native regression PASS; VM pending)",
-                   "UC-21.1. extended HW fields (CPU MHz/threads/arch; OS product/version/build/service_pack; system_uuid; virtualization; disk drive_type SSD/HDD/NVMe) — closes BigFix detailed-scan gaps without SMBIOS raw parsing (native regression PASS; VM pending)",
-                   "UC-22. NSH cross-host 'cat <src> > <dst>' and 'cat <src> >> <dst>' with BigFix-style UNC path syntax; mock orchestration via collect_file + run_command; 500 KB cap (native regression PASS; VM pending)"
+                   "UC-21. foundation fields (schema_version + agent_capabilities + device_type on Heartbeat/EnrollRequest) + Tier-3 FullInventoryReport (6h scheduled + reconnect with flap floor; send-on-change via content fingerprint + 24h safety-net) + HW inventory collector (pure Go, no WMI, binary 20.99 MB) (PASS 2026-11-03)",
+                   "UC-21.1. extended HW fields (CPU MHz/threads/arch; OS product/version/build/service_pack; system_uuid; virtualization; disk drive_type SSD/HDD/NVMe) — closes BigFix detailed-scan gaps without SMBIOS raw parsing (PASS 2026-11-03)",
+                   "UC-22. NSH cross-host 'cat <src> > <dst>' and 'cat <src> >> <dst>' with BigFix-style UNC path syntax + bare-path target resolution; Phase-1b native file_operation.write_bytes (no PowerShell dep, 100 MB default, configurable via AEGIS_FILE_WRITE_MAX_BYTES); mock orchestration via collect_file + file_operation (PASS 2026-11-03)"
                ],
     "additive_engine_updates":  "Agent-side durability + bandwidth throttling + per-user HKU inventory + on-demand DeviceStateReport trigger + script content audit + Tier-3 full-inventory snapshot (new): internal/capabilities (schemaVersion + agent capability list + DeviceType), internal/hwinventory (Windows HW collector; registry + x/sys/windows syscalls; no WMI/COM/cgo), AEGIS_FULL_INVENTORY_INTERVAL (default 6h) + AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL (default 1h, flap floor), runFullInventoryReport goroutine, reconnect-after-offline trigger wired into the main connect loop. All additive (older servers keep working) and native-tested.",
     "related_fixes":  [
@@ -36,25 +36,25 @@
                        "agent_vet":  "PASS: go vet ./... (2026-11-03)",
                        "proto_tests":  "regenerated locally; proto push pending",
                        "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
-                       "vm_acceptance":  "A-F, J, UC-18, UC-19, UC-20 blocks PASS. G/H/I/K/UC-21 native regression PASS; VM acceptance pending.",
-                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 PASS 2026-11-01. UC-19 PASS 2026-11-02. UC-20 PASS 2026-11-02. UC-21 pending VM acceptance (foundation fields + Tier-3 FullInventoryReport + HW collector).",
+                       "vm_acceptance":  "A-F, J, UC-18, UC-19, UC-20, UC-21, UC-21.1, UC-22 blocks PASS. G/H/I/K native regression PASS; VM acceptance pending.",
+                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 PASS 2026-11-01. UC-19 PASS 2026-11-02. UC-20 PASS 2026-11-02. UC-21 all 7 sub-cases + UC-21.1 all 5 sub-cases + UC-22 all 8 sub-cases PASS 2026-11-03 (foundation fields, Tier-3 send-on-change + fingerprint-noise-fix, extended HW fields, NSH cat redirection with Phase-1b native write_bytes).",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  22008832,
-                          "sha256":  "caee4b3634373b8ff65c0e82bfd70d408f65fb9acc19d3927997fad817b794f5"
+                          "bytes":  22024704,
+                          "sha256":  "e4d01d63b64136c4108e9fe674c1e240e91b688003bc74ce063f43d1823ada51"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19712000,
-                          "sha256":  "5e36ec7956ffb9141821acb1bf857d93667812b49aa7cce1af4de932188f389a"
+                          "bytes":  19712512,
+                          "sha256":  "5106db029912b022eed3897c0100ed22e8c07d5b95eb2ac9733cdc56f05fb46e"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11878400,
-                          "sha256":  "b6ed24d63340c0be8ebb156fedad02e7207e54c463e078931875d1b7a4bd6d67"
+                          "bytes":  11886592,
+                          "sha256":  "4f0dc2d2e757621e01599872715c3c0b0f4239316d96e9d3c1792decc51de38f"
                       }
                   ]
 }
