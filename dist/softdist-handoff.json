@@ -43,18 +43,18 @@
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  22024704,
-                          "sha256":  "e4d01d63b64136c4108e9fe674c1e240e91b688003bc74ce063f43d1823ada51"
+                          "bytes":  22032384,
+                          "sha256":  "fd55408aecd07eddcad29cca083ee5618d9b3000591d0ab5479994e046d6192d"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19712512,
-                          "sha256":  "5106db029912b022eed3897c0100ed22e8c07d5b95eb2ac9733cdc56f05fb46e"
+                          "bytes":  19727360,
+                          "sha256":  "67ca5cfcfe54e9cefbd64a83e4bb922d656cf505c89d5533624c8f22b813b60d"
                       },
                       {
                           "file":  "AegisOneClient.msi",
                           "bytes":  11886592,
-                          "sha256":  "4f0dc2d2e757621e01599872715c3c0b0f4239316d96e9d3c1792decc51de38f"
+                          "sha256":  "729a7bcec6923af3f11094e7cf4da07f52b7e77e0d8d23e1ec8f0da4de5ffca7"
                       }
                   ]
 }

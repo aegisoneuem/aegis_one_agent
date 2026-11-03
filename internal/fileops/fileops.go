@@ -470,6 +470,70 @@ func DeleteManifest(ctx context.Context, entries []Entry) (Result, error) {
 	return out, nil
 }
 
+// listDirectory implements the "list_directory" file-operation: return
+// up to MaxFiles entries for a target directory as the Result.Entries
+// field. Used by NSH path tab-completion to enumerate the current cd
+// target's filesystem without SMB / WinRM. Pure Go: no shell, no COM.
+//
+// Spec contract:
+//   - spec.Source names the directory to list.
+//   - spec.MaxFiles optional cap on entries returned (default 1024, hard
+//     ceiling DefaultMaxFiles so a buggy caller cannot DoS the agent).
+//   - Non-recursive by design: Tab completion only wants one level.
+func listDirectory(spec Spec) (Result, error) {
+	var out Result
+	src := strings.TrimSpace(spec.Source)
+	if src == "" {
+		return out, fmt.Errorf("list_directory: source directory required")
+	}
+	dir := LocalPath(spec.WorkingDir, src)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return out, fmt.Errorf("list_directory: stat %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return out, fmt.Errorf("list_directory: %s is not a directory", dir)
+	}
+	cap := spec.MaxFiles
+	if cap <= 0 {
+		cap = 1024
+	}
+	if cap > DefaultMaxFiles {
+		cap = DefaultMaxFiles
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return out, fmt.Errorf("list_directory: open %s: %w", dir, err)
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(cap)
+	if err != nil && err.Error() != "EOF" {
+		return out, fmt.Errorf("list_directory: read %s: %w", dir, err)
+	}
+	for _, name := range names {
+		full := filepath.Join(dir, name)
+		sub, serr := os.Lstat(full)
+		if serr != nil {
+			continue
+		}
+		entry := Entry{
+			Source:    full,
+			Name:      name,
+			Directory: sub.IsDir(),
+			Size:      sub.Size(),
+		}
+		out.Entries = append(out.Entries, entry)
+	}
+	sort.Slice(out.Entries, func(i, j int) bool {
+		if out.Entries[i].Directory != out.Entries[j].Directory {
+			return out.Entries[i].Directory
+		}
+		return strings.ToLower(out.Entries[i].Name) < strings.ToLower(out.Entries[j].Name)
+	})
+	out.Files = len(out.Entries)
+	return out, nil
+}
+
 // writeBytes implements the "write_bytes" file-operation: write (or append)
 // a payload to Destination natively — no shell, no PowerShell dependency,
 // works regardless of endpoint execution policy.
@@ -546,6 +610,9 @@ func Basic(ctx context.Context, spec Spec) (Result, error) {
 	// "source required" check below.
 	if spec.Operation == "write_bytes" {
 		return writeBytes(spec)
+	}
+	if spec.Operation == "list_directory" {
+		return listDirectory(spec)
 	}
 	if spec.Operation != "remove-manifest" && strings.TrimSpace(spec.Source) == "" {
 		return out, fmt.Errorf("source path required")

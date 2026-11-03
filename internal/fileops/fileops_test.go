@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -235,5 +236,55 @@ func TestWriteBytes_SHA256Verification(t *testing.T) {
 	spec.SHA256 = "deadbeef"
 	if _, err := Basic(context.Background(), spec); err == nil {
 		t.Error("wrong SHA accepted")
+	}
+}
+
+func TestListDirectory_Basic(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a few files and a subdir.
+	writeTestFile(t, filepath.Join(tmp, "a.txt"), []byte("a"))
+	writeTestFile(t, filepath.Join(tmp, "b.txt"), []byte("bb"))
+	if err := os.Mkdir(filepath.Join(tmp, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{Version: 1, Operation: "list_directory", Source: tmp}
+	res, err := Basic(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 3 {
+		t.Errorf("files = %d, want 3", res.Files)
+	}
+	// Directories should sort first.
+	if !res.Entries[0].Directory {
+		t.Errorf("first entry should be the directory, got %+v", res.Entries[0])
+	}
+	if res.Entries[0].Name != "sub" {
+		t.Errorf("first entry name = %q, want %q", res.Entries[0].Name, "sub")
+	}
+}
+
+func TestListDirectory_NotADirectory(t *testing.T) {
+	tmp := t.TempDir()
+	fpath := filepath.Join(tmp, "file.txt")
+	writeTestFile(t, fpath, []byte("x"))
+	spec := Spec{Version: 1, Operation: "list_directory", Source: fpath}
+	if _, err := Basic(context.Background(), spec); err == nil {
+		t.Error("accepted a regular file as directory source")
+	}
+}
+
+func TestListDirectory_MaxFilesCap(t *testing.T) {
+	tmp := t.TempDir()
+	for i := 0; i < 20; i++ {
+		writeTestFile(t, filepath.Join(tmp, fmt.Sprintf("f%02d.txt", i)), []byte("x"))
+	}
+	spec := Spec{Version: 1, Operation: "list_directory", Source: tmp, MaxFiles: 5}
+	res, err := Basic(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 5 {
+		t.Errorf("files = %d, want 5 (cap)", res.Files)
 	}
 }

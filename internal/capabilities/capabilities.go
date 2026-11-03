@@ -52,6 +52,8 @@ var supported = []string{
 	"hw_detailed_scan",
 	// Phase 1b — native remote file write (no PowerShell dependency)
 	"file_operation_write_bytes",
+	// Phase 1b — directory listing for NSH path tab-completion
+	"file_operation_list_directory",
 }
 
 // SchemaVersion returns the stable contract version the server uses to

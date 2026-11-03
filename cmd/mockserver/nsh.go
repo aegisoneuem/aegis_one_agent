@@ -229,23 +229,35 @@ func (s *nshSession) interactiveLoop() {
 	line.SetCtrlCAborts(true)
 	line.SetTabCompletionStyle(liner.TabPrints)
 	line.SetCompleter(func(prefix string) []string {
-		// Match on the FIRST token of the prefix (verb name). If the user
-		// has already typed a verb + space, there is no suggestion to make.
+		// Decide what the user is completing: a verb (first token) or a
+		// path argument to a verb that takes paths. For path args we
+		// dispatch a list_directory to the current cd target (if any) and
+		// return matching entries; the result is cached briefly so rapid
+		// Tabs do not spam the agent. Verb completion stays as-is.
 		head := prefix
+		rest := ""
 		if i := strings.IndexAny(prefix, " \t"); i >= 0 {
 			head = prefix[:i]
+			rest = prefix[i+1:]
 		}
-		if head == "" {
-			return nshVerbNames
-		}
-		lower := strings.ToLower(head)
-		var out []string
-		for _, v := range nshVerbNames {
-			if strings.HasPrefix(v, lower) {
-				out = append(out, v+prefix[len(head):])
+		if head == "" || rest == "" {
+			// Verb completion branch.
+			if head == "" {
+				return nshVerbNames
 			}
+			lower := strings.ToLower(head)
+			var out []string
+			for _, v := range nshVerbNames {
+				if strings.HasPrefix(v, lower) {
+					out = append(out, v+prefix[len(head):])
+				}
+			}
+			return out
 		}
-		return out
+		if !verbTakesPath(head) {
+			return nil
+		}
+		return s.completePathArg(prefix, head, rest)
 	})
 	for _, h := range s.history {
 		line.AppendHistory(h)
