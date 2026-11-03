@@ -464,11 +464,13 @@ func (s *server) Enroll(_ context.Context, req *pb.EnrollRequest) (*pb.EnrollRes
 	}
 	computerID := s.computerIDFor(assigned)
 	if deduped {
-		mockPrintf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s computer_id=%s tpm_ek=%s system_uuid=%s hostname=%s (same hardware → existing device)%s\n",
-			req.DeviceId, assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.Hostname, lic)
+		mockPrintf("Enroll OK (RECONCILED/dedup) -> requested=%s assigned=%s computer_id=%s tpm_ek=%s system_uuid=%s hostname=%s schema_version=%s device_type=%s capabilities=%d (same hardware → existing device)%s\n",
+			req.DeviceId, assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.Hostname,
+			req.SchemaVersion, req.DeviceType, len(req.AgentCapabilities), lic)
 	} else {
-		mockPrintf("Enroll OK -> device_id=%s computer_id=%s tpm_ek=%s system_uuid=%s machine_guid=%s hostname=%s os=%s (cert signed)%s\n",
-			assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.MachineGuid, req.Hostname, req.Os, lic)
+		mockPrintf("Enroll OK -> device_id=%s computer_id=%s tpm_ek=%s system_uuid=%s machine_guid=%s hostname=%s os=%s schema_version=%s device_type=%s capabilities=%d (cert signed)%s\n",
+			assigned, computerID, shortID(req.TpmEk), req.SystemUuid, req.MachineGuid, req.Hostname, req.Os,
+			req.SchemaVersion, req.DeviceType, len(req.AgentCapabilities), lic)
 	}
 	return &pb.EnrollResponse{
 		ClientCertPem:    string(certPEM),
