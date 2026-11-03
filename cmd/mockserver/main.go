@@ -65,8 +65,40 @@ func loadSignKey() ed25519.PrivateKey {
 // never drift from what is actually sent. The agent verifies with the same
 // commandsign package.
 func sign(cmd *pb.Command) *pb.Command {
+	// Backfill attribution so the agent always sees a value. Dispatchers
+	// that know who the operator is (NSH REPL, console UI) populate Actor
+	// / Source BEFORE calling sign; this fallback covers env-var-driven
+	// mock dispatches, scheduled auto-tasks, and tests.
+	if strings.TrimSpace(cmd.Actor) == "" {
+		cmd.Actor = defaultDispatchActor()
+	}
+	if strings.TrimSpace(cmd.Source) == "" {
+		cmd.Source = "mockserver.server"
+	}
+	if cmd.IssuedAt == 0 {
+		cmd.IssuedAt = time.Now().Unix()
+	}
 	cmd.Signature = commandsign.Sign(loadSignKey(), cmd.Type, cmd.CommandId, cmd.Payload)
 	return cmd
+}
+
+// defaultDispatchActor returns the attribution string used when no caller
+// has set Command.Actor. Format: "server:auto[<os-user>@<host>]" so an
+// auditor sees which mock process ran the command even for an auto-
+// triggered dispatch (env-vars, test harness).
+func defaultDispatchActor() string {
+	user := os.Getenv("USERNAME")
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	if user == "" {
+		user = "unknown"
+	}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "mockserver"
+	}
+	return "server:auto[" + user + "@" + host + "]"
 }
 
 type server struct {

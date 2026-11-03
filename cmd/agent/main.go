@@ -341,7 +341,10 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 				if cmd == nil {
 					continue
 				}
-				slog.Info("command received", "command_id", cmd.CommandId, "type", cmd.Type)
+				slog.Info("command received", "command_id", cmd.CommandId, "type", cmd.Type,
+					"actor", attributionOrUnknown(cmd.Actor),
+					"source", attributionOrUnknown(cmd.Source),
+					"issued_at", cmd.IssuedAt)
 				if !verifyCommand(cmd) {
 					slog.Warn("command signature invalid — rejecting", "command_id", cmd.CommandId)
 					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "rejected", "signature verification failed"))

@@ -54,6 +54,8 @@ var supported = []string{
 	"file_operation_write_bytes",
 	// Phase 1b — directory listing for NSH path tab-completion
 	"file_operation_list_directory",
+	// Phase 1b — command attribution (actor + source + issued_at)
+	"command_attribution",
 }
 
 // SchemaVersion returns the stable contract version the server uses to

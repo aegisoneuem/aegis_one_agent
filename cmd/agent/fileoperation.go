@@ -42,7 +42,12 @@ func (d *dispatcher) handleFileOperationCmd(ctx context.Context, client pb.Agent
 	}
 	go func() {
 		defer recoverLog("file-operation")
-		slog.Info("file_operation accepted", "command_id", cmd.CommandId, "operation", spec.Operation, "source", spec.Source, "destination", spec.Destination, "recursive", spec.Recursive, "overwrite", spec.Overwrite)
+		slog.Info("file_operation accepted", "command_id", cmd.CommandId,
+			"operation", spec.Operation, "source", spec.Source, "destination", spec.Destination,
+			"recursive", spec.Recursive, "overwrite", spec.Overwrite,
+			"actor", attributionOrUnknown(cmd.Actor),
+			"request_source", attributionOrUnknown(cmd.Source),
+			"issued_at", cmd.IssuedAt)
 		started := time.Now()
 		timeout := time.Duration(spec.TimeoutSeconds) * time.Second
 		if timeout <= 0 {

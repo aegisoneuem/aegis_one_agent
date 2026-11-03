@@ -31,6 +31,17 @@ func truncateForLog(s string, max int) string {
 	return s[:cut] + suffix
 }
 
+// attributionOrUnknown returns s when non-empty, else "<unknown>". Keeps
+// audit log lines readable when an older dispatcher that doesn't set
+// Command.Actor / Source populates these fields as empty — the log should
+// still have a value present at each attribute key.
+func attributionOrUnknown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "<unknown>"
+	}
+	return s
+}
+
 // Defaults for run_command (overridable per spec).
 const (
 	rcDefaultTimeout   = 300        // seconds
@@ -58,7 +69,10 @@ func (d *dispatcher) handleRunCommandCmd(ctx context.Context, client pb.AgentCon
 	}
 	slog.Info("run_command: accepted", "command_id", cmd.CommandId, "shell", spec.Shell,
 		"timeout_s", spec.TimeoutSeconds, "upload_as", spec.UploadAs,
-		"command", truncateForLog(spec.Command, 500))
+		"command", truncateForLog(spec.Command, 500),
+		"actor", attributionOrUnknown(cmd.Actor),
+		"source", attributionOrUnknown(cmd.Source),
+		"issued_at", cmd.IssuedAt)
 	send(ctx, d.outbox, actionStatusMsg(simpleActionStatus(cmd.CommandId, actionRunCommand, d.cfg.DeviceID, "",
 		pb.ActionPhase_ACTION_PHASE_RUNNING, "running")))
 

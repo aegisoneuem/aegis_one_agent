@@ -102,8 +102,35 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 
 // nshSession is the REPL state (per-process). The console (future web UI) will
 // keep this per logged-in operator; the mock has one.
+// nshActor returns the attribution string identifying who is dispatching
+// a command from THIS NSH session. Format: "nsh:<os-user>@<host>" so an
+// agent log line pinpoints exactly which operator (and which workstation
+// the mock REPL was running on) initiated a command.
+func (s *nshSession) nshActor() string {
+	if s.cachedActor != "" {
+		return s.cachedActor
+	}
+	user := os.Getenv("USERNAME")
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	if user == "" {
+		user = "unknown"
+	}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "mockserver"
+	}
+	s.cachedActor = "nsh:" + user + "@" + host
+	return s.cachedActor
+}
+
 type nshSession struct {
 	srv                 *server
+	// cachedActor stores the computed "nsh:<user>@<host>" attribution so
+	// every signed dispatch does not re-stat the OS env. Set lazily on
+	// first nshActor() call.
+	cachedActor         string
 	targets             []string          // device_ids resolved from `cd \\host`
 	workingDirs         map[string]string // endpoint CWD per device (unset = SKVC\tmp)
 	fileWorkers         int
@@ -572,6 +599,7 @@ func (s *nshSession) refreshInventory(args []string) {
 		cmdID := "nsh-refresh-" + nshRandomID()
 		msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 			CommandId: cmdID, Type: "report_device_state",
+			Actor: s.nshActor(), Source: "mockserver.nsh",
 		})}}
 		if err := la.send(msg); err != nil {
 			s.printf("%s: send failed: %v\n", host, err)
@@ -1089,6 +1117,7 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 	}
 	msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 		CommandId: cmdID, Type: taskType, Payload: payload,
+		Actor: s.nshActor(), Source: "mockserver.nsh",
 	})}}
 	err := la.send(msg)
 	if err != nil {
