@@ -138,6 +138,15 @@ func toProtoHardware(inv *hwinventory.Inventory) *pb.HardwareInventory {
 		SystemProduct:      inv.SystemProduct,
 		SystemSerialNumber: inv.SystemSerialNumber,
 		ChassisType:        inv.ChassisType,
+		CpuMhz:             inv.CPUMHz,
+		CpuThreadsPerCore:  inv.CPUThreadsPerCore,
+		CpuArchitecture:    inv.CPUArchitecture,
+		OsProductName:      inv.OSProductName,
+		OsDisplayVersion:   inv.OSDisplayVersion,
+		OsBuild:            inv.OSBuild,
+		OsServicePack:      inv.OSServicePack,
+		SystemUuid:         inv.SystemUUID,
+		Virtualization:     inv.Virtualization,
 	}
 	hw.Disks = make([]*pb.DiskInventory, 0, len(inv.Disks))
 	for _, d := range inv.Disks {
@@ -147,6 +156,7 @@ func toProtoHardware(inv *hwinventory.Inventory) *pb.HardwareInventory {
 			FileSystem:  d.FileSystem,
 			TotalBytes:  d.TotalBytes,
 			FreeBytes:   d.FreeBytes,
+			DriveType:   d.DriveType,
 		})
 	}
 	hw.Nics = make([]*pb.NetworkInterface, 0, len(inv.NICs))

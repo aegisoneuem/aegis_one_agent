@@ -48,6 +48,8 @@ var supported = []string{
 	"inventory_refresh_on_demand",
 	"bandwidth_throttle",
 	"hku_per_user_inventory",
+	// UC-21.1 — closes BigFix detailed-scan gaps
+	"hw_detailed_scan",
 }
 
 // SchemaVersion returns the stable contract version the server uses to

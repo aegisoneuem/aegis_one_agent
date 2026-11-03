@@ -1034,6 +1034,80 @@ services.)
 
 ---
 
+## UC-21.1 — Extended HW fields (BigFix detailed-scan parity)
+
+**Why:** UC-21 covered the basics; UC-21.1 closes the easy gaps vs BigFix's
+"Collect Detailed Hardware Information" fixlet without dragging in full
+SMBIOS raw-table parsing. These extra fields matter for lifecycle /
+replace-cycle reporting and server-side catalog matching.
+
+### UC-21.1A — CPU extended fields
+
+**On the next FullInventoryReport the mock receives, the new log line shows:**
+```
+cpu: GenuineIntel <model> 3072MHz (6/12 cores, 2 thr/core, amd64)
+```
+
+**PASS CRITERIA:**
+- Clock speed `<N>MHz` is non-zero (within 10% of expected rated speed).
+- `threads/core` = logical / physical (should be 2 for hyperthreaded Intel,
+  1 for AMD without SMT, 1 for a VM with 1 vCPU per core).
+- `arch` is one of `amd64 | arm64 | x86`.
+
+### UC-21.1B — OS extended fields
+
+**Mock line:**
+```
+OS: "Windows 10 Pro" "23H2" build="22631.4890", virt: none
+```
+
+**PASS CRITERIA:**
+- `ProductName` is the user-visible edition. **Note the legacy quirk:**
+  Windows 11 may report `ProductName = "Windows 10 Pro"` — the server team
+  should trust `OS build` (build ≥ 22000 = Windows 11) over ProductName.
+- `DisplayVersion` is the current release train (`23H2`, `24H2`, etc.).
+- `OS build` includes the UBR (format `<build>.<revision>` like `22631.4890`).
+
+### UC-21.1C — Virtualization detection
+
+**Expected on a VMware VM:** `virt: vmware`.
+**On VirtualBox:** `virt: virtualbox`.
+**On a physical laptop:** `virt: none`.
+**On an unknown setup:** `virt: unknown` (both vendor fields empty).
+
+### UC-21.1D — Disk drive type
+
+**Each disk line shows the detected drive type:**
+```
+disk C:\ | NVMe | NTFS | 931.5 GB (240.1 GB free)
+disk D:\ | HDD  | NTFS | 1861.9 GB (1200.0 GB free)
+disk G:\ | Unknown | FAT32 | 7.4 GB (7.1 GB free)   (USB)
+```
+
+**PASS CRITERIA:**
+- Primary system drive (`C:\`) usually `SSD` or `NVMe` on modern hardware.
+- Rotational media = `HDD`.
+- Removable (USB stick) = `Unknown` (expected — IOCTL fails cleanly).
+
+### UC-21.1E — SystemUUID presence (best-effort)
+
+- On OEM physical machines: `system_uuid` is a 36-char dash-separated string.
+- On many VMs / stripped registry setups: `system_uuid` is empty.
+- Empty is NOT a FAIL — it means the registry mirror is not populated;
+  the dedup path still uses the SMBIOS raw read at enroll.
+
+### UC-21.1 — Record sheet
+
+| Case | Sub | VM | PASS/FAIL | Notes |
+|---|---|---|---|---|
+| 21.1 | A CPU MHz / threads / arch |  |  |  |
+| 21.1 | B OS product / version / build |  |  |  |
+| 21.1 | C virt detection |  |  |  |
+| 21.1 | D disk drive type |  |  |  |
+| 21.1 | E system_uuid presence |  |  |  |
+
+---
+
 ## 10. End
 
 If a case FAILs with no clear classification in the agent log, capture:

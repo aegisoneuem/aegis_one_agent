@@ -56,6 +56,50 @@ func TestCollect_DiskSanity(t *testing.T) {
 	}
 }
 
+func TestCollect_ExtendedFields(t *testing.T) {
+	inv, _ := Collect()
+	// CPU extended
+	if inv.CPUMHz <= 0 {
+		t.Logf("warning: CPUMHz = 0 (registry may be locked or VM-only CPU)")
+	}
+	if inv.CPUThreadsPerCore <= 0 {
+		t.Logf("warning: CPUThreadsPerCore = 0 (physical core count unknown)")
+	}
+	if inv.CPUArchitecture == "" {
+		t.Error("CPUArchitecture should never be empty (runtime.GOARCH fallback)")
+	}
+	allowedArches := map[string]bool{"amd64": true, "arm64": true, "x86": true}
+	if !allowedArches[inv.CPUArchitecture] {
+		t.Logf("info: CPUArchitecture = %q (not one of amd64/arm64/x86 — may be rare build target)", inv.CPUArchitecture)
+	}
+	// OS
+	if inv.OSProductName == "" {
+		t.Error("OSProductName empty — registry read failed")
+	}
+	if inv.OSBuild == "" {
+		t.Error("OSBuild empty — registry read failed")
+	}
+	// Virtualization: always populated (never empty) by detectVirtualization fallbacks.
+	if inv.Virtualization == "" {
+		t.Error("Virtualization should never be empty — detectVirtualization returns 'none' or 'unknown' fallback")
+	}
+	t.Logf("extended fields: CPUMHz=%d, threads/core=%d, arch=%q, OS=%q %q build=%q, virt=%q, uuid-len=%d",
+		inv.CPUMHz, inv.CPUThreadsPerCore, inv.CPUArchitecture,
+		inv.OSProductName, inv.OSDisplayVersion, inv.OSBuild,
+		inv.Virtualization, len(inv.SystemUUID))
+}
+
+func TestCollect_DiskDriveType(t *testing.T) {
+	inv, _ := Collect()
+	allowed := map[string]bool{"SSD": true, "HDD": true, "NVMe": true, "Unknown": true}
+	for _, d := range inv.Disks {
+		if !allowed[d.DriveType] {
+			t.Errorf("%s: DriveType = %q, want one of SSD/HDD/NVMe/Unknown", d.MountPoint, d.DriveType)
+		}
+		t.Logf("disk %s: DriveType=%q, FS=%q, size=%d MB", d.MountPoint, d.DriveType, d.FileSystem, d.TotalBytes/(1024*1024))
+	}
+}
+
 func TestCollect_NICSanity(t *testing.T) {
 	inv, _ := Collect()
 	for _, n := range inv.NICs {

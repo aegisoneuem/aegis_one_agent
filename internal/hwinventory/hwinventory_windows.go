@@ -24,11 +24,148 @@ func Collect() (*Inventory, error) {
 	inv.CPUVendor, inv.CPUModel = cpuFromRegistry()
 	inv.CPULogicalCores = int32(runtime.NumCPU())
 	inv.CPUPhysicalCores = physicalCoreCount(inv.CPULogicalCores)
+	inv.CPUMHz = cpuMHzFromRegistry()
+	if inv.CPUPhysicalCores > 0 {
+		inv.CPUThreadsPerCore = inv.CPULogicalCores / inv.CPUPhysicalCores
+	}
+	inv.CPUArchitecture = cpuArchitecture()
 	inv.MemoryTotalBytes = memoryTotal()
 	inv.Disks = disks()
 	inv.NICs = nics()
 	collectBIOSAndChassis(inv)
+	collectOSDetails(inv)
+	inv.SystemUUID = systemUUIDFromRegistry()
+	inv.Virtualization = detectVirtualization(inv)
 	return inv, nil
+}
+
+// cpuMHzFromRegistry returns the rated CPU clock speed (~MHz value Windows
+// writes at boot). 0 when the registry is locked. This is the rated speed,
+// not current frequency.
+func cpuMHzFromRegistry() int32 {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DESCRIPTION\System\CentralProcessor\0`, registry.QUERY_VALUE)
+	if err != nil {
+		return 0
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue("~MHz")
+	if err != nil {
+		return 0
+	}
+	return int32(v)
+}
+
+// cpuArchitecture returns the OS build target architecture. amd64 covers
+// most Windows endpoints today; arm64 is for Windows-on-ARM; x86 is 32-bit.
+// On the agent build this is runtime.GOARCH — reliable, no syscall needed.
+func cpuArchitecture() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "amd64"
+	case "arm64":
+		return "arm64"
+	case "386":
+		return "x86"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+// collectOSDetails reads the richer OS identity (edition, display version,
+// authoritative build, service pack) from the standard CurrentVersion
+// registry path. These are what Settings → System → About shows the user
+// and what a server-side catalog match keys off.
+func collectOSDetails(inv *Inventory) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows NT\CurrentVersion`, registry.QUERY_VALUE)
+	if err != nil {
+		return
+	}
+	defer k.Close()
+	readStr := func(name string) string {
+		if v, _, err := k.GetStringValue(name); err == nil {
+			return strings.TrimSpace(v)
+		}
+		return ""
+	}
+	readInt := func(name string) uint32 {
+		if v, _, err := k.GetIntegerValue(name); err == nil {
+			return uint32(v)
+		}
+		return 0
+	}
+	inv.OSProductName = readStr("ProductName")
+	inv.OSDisplayVersion = readStr("DisplayVersion")
+	if inv.OSDisplayVersion == "" {
+		inv.OSDisplayVersion = readStr("ReleaseId")
+	}
+	// Authoritative cumulative build = CurrentBuild.UBR (UBR = Update Build Revision).
+	build := readStr("CurrentBuild")
+	ubr := readInt("UBR")
+	if build != "" {
+		if ubr > 0 {
+			inv.OSBuild = fmt.Sprintf("%s.%d", build, ubr)
+		} else {
+			inv.OSBuild = build
+		}
+	}
+	// Service pack: modern Windows (10+) has no SP; this stays empty.
+	// Older Windows uses "CSDVersion" (e.g. "Service Pack 1").
+	inv.OSServicePack = readStr("CSDVersion")
+}
+
+// systemUUIDFromRegistry reads the SMBIOS System UUID that Windows exposes
+// in the BIOS registry subkey (same value SMBIOS type 1 publishes; the
+// enroll dedup path reads the SMBIOS table directly, but the registry
+// mirror is cheaper for the inventory snapshot).
+func systemUUIDFromRegistry() string {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DESCRIPTION\System\BIOS`, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	// The BIOS key exposes "SystemSKU" and often "BaseBoardManufacturer" but
+	// NOT a plain system UUID. On some systems "ComputerSystemProductUUID"
+	// appears; we try common names and fall back to empty.
+	for _, name := range []string{"SystemUUID", "ComputerSystemProductUUID", "SystemFamilyUUID"} {
+		if v, _, err := k.GetStringValue(name); err == nil && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// detectVirtualization identifies common hypervisors from the BIOS /
+// system vendor strings. Not a full VMM detection (would need CPUID leaf
+// 0x40000000 reads or raw SMBIOS parsing), but catches the overwhelming
+// majority of VM endpoints. Values match a short closed vocabulary so a
+// server-side filter can key off exact strings.
+func detectVirtualization(inv *Inventory) string {
+	hay := strings.ToLower(inv.SystemVendor + " " + inv.SystemProduct + " " + inv.BIOSVendor + " " + inv.BIOSVersion)
+	switch {
+	case strings.Contains(hay, "vmware"):
+		return "vmware"
+	case strings.Contains(hay, "virtualbox") || strings.Contains(hay, "innotek"):
+		return "virtualbox"
+	case strings.Contains(hay, "microsoft") && (strings.Contains(hay, "virtual") || strings.Contains(hay, "hyper-v")):
+		return "hyperv"
+	case strings.Contains(hay, "xen"):
+		return "xen"
+	case strings.Contains(hay, "kvm"):
+		return "kvm"
+	case strings.Contains(hay, "qemu") || strings.Contains(hay, "bochs"):
+		return "qemu"
+	case strings.Contains(hay, "parallels"):
+		return "parallels"
+	case strings.Contains(hay, "amazon ec2") || strings.Contains(hay, "amazon web services"):
+		return "aws"
+	case strings.Contains(hay, "google compute engine") || strings.Contains(hay, "google ce"):
+		return "gcp"
+	default:
+		if inv.SystemVendor == "" && inv.BIOSVendor == "" {
+			return "unknown"
+		}
+		return "none"
+	}
 }
 
 // cpuFromRegistry reads the brand/vendor from the standard registry path
@@ -149,7 +286,7 @@ func disks() []Disk {
 		if driveType != 3 { // DRIVE_FIXED
 			continue
 		}
-		d := Disk{MountPoint: drive}
+		d := Disk{MountPoint: drive, DriveType: detectDriveMedia(drive)}
 		var freeAvail, totalBytes, totalFree uint64
 		if r, _, _ := getFree.Call(uintptr(unsafe.Pointer(pDrive)),
 			uintptr(unsafe.Pointer(&freeAvail)),
@@ -250,6 +387,109 @@ func collectBIOSAndChassis(inv *Inventory) {
 	if inv.ChassisType == "" {
 		inv.ChassisType = fmt.Sprintf("Unknown (%s/%s)", runtime.GOOS, runtime.GOARCH)
 	}
+}
+
+// detectDriveMedia asks the storage stack whether a drive has rotational
+// media (HDD) or not (SSD / NVMe). Uses IOCTL_STORAGE_QUERY_PROPERTY with
+// StorageDeviceSeekPenaltyProperty (NoSeekPenalty = true → SSD-class),
+// plus StorageAdapterProperty bus-type probe to tell NVMe apart. On any
+// failure returns "Unknown" (never fails the whole snapshot).
+//
+// drive is the root ("C:\\"); we open \\.\C: as the volume handle.
+func detectDriveMedia(drive string) string {
+	if len(drive) < 2 || drive[1] != ':' {
+		return "Unknown"
+	}
+	devicePath := `\\.\` + strings.TrimRight(drive, `\`)
+	pDev, err := syscall.UTF16PtrFromString(devicePath)
+	if err != nil {
+		return "Unknown"
+	}
+	// Open with 0 access (metadata only — no admin privileges required).
+	h, err := windows.CreateFile(pDev,
+		0,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.OPEN_EXISTING,
+		0,
+		0)
+	if err != nil {
+		return "Unknown"
+	}
+	defer windows.CloseHandle(h)
+
+	// IOCTL_STORAGE_QUERY_PROPERTY + StorageDeviceSeekPenaltyProperty.
+	const (
+		ioctlStorageQueryProperty           = 0x002D1400
+		storageDeviceSeekPenaltyProperty    = 7
+		storageAdapterProperty              = 1
+		propertyStandardQuery               = 0
+		busTypeNvme                         = 0x11
+	)
+	type storagePropertyQuery struct {
+		PropertyID uint32
+		QueryType  uint32
+		Additional [1]byte
+	}
+	type deviceSeekPenaltyDescriptor struct {
+		Version           uint32
+		Size              uint32
+		IncursSeekPenalty uint32 // actually a BOOLEAN; 4-byte aligned
+	}
+	type storageAdapterDescriptor struct {
+		Version              uint32
+		Size                 uint32
+		MaximumTransferLen   uint32
+		MaximumPhysicalPages uint32
+		AlignmentMask        uint32
+		AdapterUsesPIO       byte
+		AdapterScansDown     byte
+		CommandQueueing      byte
+		AcceleratedTransfer  byte
+		BusType              byte
+		_pad1                [3]byte
+		BusMajorVersion      uint16
+		BusMinorVersion      uint16
+		SrbType              byte
+		AddressType          byte
+	}
+	// Seek-penalty query.
+	q := storagePropertyQuery{PropertyID: storageDeviceSeekPenaltyProperty, QueryType: propertyStandardQuery}
+	var sp deviceSeekPenaltyDescriptor
+	var bytesReturned uint32
+	err = windows.DeviceIoControl(h,
+		ioctlStorageQueryProperty,
+		(*byte)(unsafe.Pointer(&q)), uint32(unsafe.Sizeof(q)),
+		(*byte)(unsafe.Pointer(&sp)), uint32(unsafe.Sizeof(sp)),
+		&bytesReturned, nil)
+	// Adapter query (optional — only to distinguish NVMe from SATA SSD).
+	qa := storagePropertyQuery{PropertyID: storageAdapterProperty, QueryType: propertyStandardQuery}
+	var ad storageAdapterDescriptor
+	var bytesReturnedA uint32
+	errA := windows.DeviceIoControl(h,
+		ioctlStorageQueryProperty,
+		(*byte)(unsafe.Pointer(&qa)), uint32(unsafe.Sizeof(qa)),
+		(*byte)(unsafe.Pointer(&ad)), uint32(unsafe.Sizeof(ad)),
+		&bytesReturnedA, nil)
+	// Classify:
+	//  - IncursSeekPenalty = 0 (SSD-class) + BusType NVMe → "NVMe"
+	//  - IncursSeekPenalty = 0 → "SSD"
+	//  - IncursSeekPenalty = 1 → "HDD"
+	//  - Neither → "Unknown"
+	if err == nil {
+		if sp.IncursSeekPenalty == 0 {
+			if errA == nil && ad.BusType == busTypeNvme {
+				return "NVMe"
+			}
+			return "SSD"
+		}
+		return "HDD"
+	}
+	// If seek-penalty query failed but adapter says NVMe, call it NVMe anyway.
+	if errA == nil && ad.BusType == busTypeNvme {
+		return "NVMe"
+	}
+	return "Unknown"
 }
 
 // chassisFromRegistry reads SystemFamily or chassis info from a secondary

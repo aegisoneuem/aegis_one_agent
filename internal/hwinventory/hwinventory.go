@@ -30,6 +30,16 @@ type Inventory struct {
 	SystemProduct     string
 	SystemSerialNumber string
 	ChassisType       string
+	// UC-21.1 — closes BigFix detailed-scan gaps without SMBIOS raw parsing.
+	CPUMHz             int32
+	CPUThreadsPerCore  int32
+	CPUArchitecture    string
+	OSProductName      string
+	OSDisplayVersion   string
+	OSBuild            string
+	OSServicePack      string
+	SystemUUID         string
+	Virtualization     string
 }
 
 type Disk struct {
@@ -38,6 +48,7 @@ type Disk struct {
 	FileSystem string
 	TotalBytes int64
 	FreeBytes  int64
+	DriveType  string // "SSD" | "HDD" | "NVMe" | "Unknown"
 }
 
 type NIC struct {

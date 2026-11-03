@@ -4,7 +4,7 @@
     "guide":  "docs/tester-guide-softdist.md (tester-ready) + docs/softdist-today-testing.md (dev reference)",
     "secondary_guide":  "docs/tester-guide-patching.md (UC-18 + UC-19 PASS); docs/tester-guide-nsh.md; docs/tester-guide-setup.md (first read for new testers)",
     "manual_cases":  33,
-    "primary_focus":  "UC-21 foundation + Tier-3 full inventory: (1) Heartbeat + EnrollRequest now carry schema_version=\"1\", agent_capabilities[] (auto-derived from dispatch handlers + feature flags), device_type=\"endpoint\" — the server can gate feature rollouts without parsing agent_version strings and Phase-2 NMS \"probe\" fits non-breakingly. (2) New Tier-3 FullInventoryReport message carries a full HW + SW snapshot (CPU/RAM/disks/NICs/BIOS/chassis + installed_apps). Sent at startup, every AEGIS_FULL_INVENTORY_INTERVAL (default 6h), and ONCE on reconnect-after-offline with a flap floor (AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL, default 1h) so a flapping NIC does not DoS the server. HW collector is PURE Go + registry + x/sys/windows — no WMI, no COM, no cgo — snapshot cost single-ms, binary growth <100 KB. Agent binary stays at 20.97 MB (budget 25 MB). Previous UC-20 Script content audit remains green.",
+    "primary_focus":  "UC-21.1 extended HW fields (BigFix detailed-scan parity) + UC-22 NSH cross-host cat redirection. (1) HardwareInventory gains CPU MHz, threads/core, architecture; OS product_name/display_version/build/service_pack; system_uuid; virtualization (vmware/virtualbox/hyperv/xen/kvm/qemu/parallels/aws/gcp/none/unknown). DiskInventory gains drive_type (SSD/HDD/NVMe/Unknown) via IOCTL_STORAGE_QUERY_PROPERTY. Pure Go + registry + x/sys/windows — no WMI, no COM, no cgo. (2) NSH new verb 'cat <src> > <dst>' and 'cat <src> >> <dst>' with BigFix-style UNC path syntax \\\\<host>\\<drive>\\<path>. Mock orchestrates via existing collect_file + run_command primitives — no new agent code. Phase-1 size cap 500 KB; larger files point to a future file_operation.write_bytes op. Agent binary 20.98 MB (budget 25 MB).",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -20,14 +20,16 @@
                    "UC-18. third-party installed-apps inventory via DeviceStateReport (PASS 2026-11-01)",
                    "UC-19. HKU per-user Uninstall parity + 'inventory refresh' on-demand pull (PASS 2026-11-02)",
                    "UC-20. script content audit: hash+preview default + opt-in full content + endpoint kill switch / force-on (PASS 2026-11-02)",
-                   "UC-21. foundation fields (schema_version + agent_capabilities + device_type on Heartbeat/EnrollRequest) + Tier-3 FullInventoryReport (6h scheduled + reconnect with flap floor) + HW inventory collector (pure Go, no WMI, binary 20.97 MB) (native regression PASS; VM pending)"
+                   "UC-21. foundation fields (schema_version + agent_capabilities + device_type on Heartbeat/EnrollRequest) + Tier-3 FullInventoryReport (6h scheduled + reconnect with flap floor) + HW inventory collector (pure Go, no WMI, binary 20.97 MB) (native regression PASS; VM pending)",
+                   "UC-21.1. extended HW fields (CPU MHz/threads/arch; OS product/version/build/service_pack; system_uuid; virtualization; disk drive_type SSD/HDD/NVMe) — closes BigFix detailed-scan gaps without SMBIOS raw parsing (native regression PASS; VM pending)",
+                   "UC-22. NSH cross-host 'cat <src> > <dst>' and 'cat <src> >> <dst>' with BigFix-style UNC path syntax; mock orchestration via collect_file + run_command; 500 KB cap (native regression PASS; VM pending)"
                ],
     "additive_engine_updates":  "Agent-side durability + bandwidth throttling + per-user HKU inventory + on-demand DeviceStateReport trigger + script content audit + Tier-3 full-inventory snapshot (new): internal/capabilities (schemaVersion + agent capability list + DeviceType), internal/hwinventory (Windows HW collector; registry + x/sys/windows syscalls; no WMI/COM/cgo), AEGIS_FULL_INVENTORY_INTERVAL (default 6h) + AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL (default 1h, flap floor), runFullInventoryReport goroutine, reconnect-after-offline trigger wired into the main connect loop. All additive (older servers keep working) and native-tested.",
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
                       ],
-    "shared_proto_commit":  "83b3338",
+    "shared_proto_commit":  "9b837a3",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
                        "agent_tests":  "PASS: go test ./... (2026-11-03 — includes new internal/capabilities 5 tests + internal/hwinventory 3 tests)",
@@ -41,18 +43,18 @@
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21983232,
-                          "sha256":  "f4e0084d66acc2fbfdd50464e874d29e99da0f10f7152ec3e460da99be2f06d4"
+                          "bytes":  22001152,
+                          "sha256":  "b6fb21f825469b6c670dc6d318becb6cc17d33a8f05af1474c04e90991838e56"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19678720,
-                          "sha256":  "9be2767dbf3971d4a10eb5ab6673ae50660cc7f66b2a24800a74e39ed98b39e0"
+                          "bytes":  19709952,
+                          "sha256":  "65dd51bd413dc96875dfbbfd5073ca8594cb1e1ca6c0874678930334efa46e67"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11866112,
-                          "sha256":  "06f6e5f17412d3f92376a3f08cddc905110003c0532c03a449d12351d7bdf802"
+                          "bytes":  11870208,
+                          "sha256":  "09e362b7690bb4ec58dfba29cc98f0cd6c99e625964f5e821596c80e65693c6d"
                       }
                   ]
 }

@@ -1645,6 +1645,145 @@ nsh> history
 
 ---
 
+## 5.14 UC-22 — `cat` with `>` / `>>` cross-host redirection
+
+**Why:** BigFix-style UNC path syntax to copy / append file bytes across
+hosts without a dedicated "file transfer" tool. Mock orchestrates via
+existing `collect_file` + `run_command`; no new agent primitives.
+
+**Syntax:**
+```
+cat <src> > <dst>     overwrite dst with src bytes
+cat <src> >> <dst>    append src bytes to dst
+```
+
+Either side may be:
+- a mockserver-local path (e.g. `C:\tmp\x.txt`)
+- a UNC-style endpoint path `\\<hostname>\<drive>\<path>` which the mock
+  translates to `<drive>:\<path>` on the endpoint named `<hostname>`.
+
+**Phase-1 limit:** files up to 500 KB. Bigger files are REFUSED with a
+clear message pointing to a future `file_operation.write_bytes` op.
+
+### Pre-reqs
+
+- At least 2 agents online for cross-host cases (one as src, one as dst).
+  For 1-agent tests, use the same host as both src and dst (`cat
+  \\myvm\C\a > \\myvm\C\b`).
+- `C:\tmp\` writable on each VM.
+
+### UC-22A — Local → local
+
+Create `C:\tmp\src.txt` on the mockserver host (your dev laptop).
+```
+nsh> cat C:\tmp\src.txt > C:\tmp\dst.txt
+```
+**Expected:**
+```
+---- cat C:\tmp\src.txt -> C:\tmp\dst.txt (N bytes, overwrite)
+```
+
+**PASS:** `C:\tmp\dst.txt` identical to src.
+
+### UC-22B — Remote → local
+
+Put a small file on an agent's VM: `C:\tmp\vj.txt`.
+```
+nsh> cat \\<hostname>\C\tmp\vj.txt > C:\tmp\pulled.txt
+```
+**Expected:** mock dispatches `collect_file`, bytes land in mock temp,
+then are written to `C:\tmp\pulled.txt` on the dev laptop. One-line
+summary printed.
+
+**PASS:** `C:\tmp\pulled.txt` exists on dev laptop; contents match the
+VM's file.
+
+### UC-22C — Local → remote (overwrite)
+
+```
+nsh> cat C:\tmp\hello.txt > \\<hostname>\C\tmp\hello.txt
+```
+**Expected:** mock dispatches `run_command` with a PowerShell writer
+(base64-encoded content embedded). Writer reconstructs bytes and calls
+`[IO.File]::WriteAllBytes`.
+
+**PASS:** File lands on VM at `C:\tmp\hello.txt`.
+
+### UC-22D — Local → remote (append)
+
+```
+nsh> cat C:\tmp\line2.txt >> \\<hostname>\C\tmp\log.txt
+```
+**Expected:** writer uses `[IO.File]::Open(..., FileMode::Append)` and
+writes bytes after existing content.
+
+**PASS:** VM-side file grows by exactly the number of bytes in `line2.txt`.
+
+### UC-22E — Remote → remote
+
+Needs 2 agents online.
+```
+nsh> cat \\<host1>\C\tmp\x.txt > \\<host2>\C\tmp\y.txt
+```
+**Expected:** mock does collect_file to host1, then run_command to host2.
+
+**PASS:** File copied across hosts. Confirm on host2.
+
+### UC-22F — Size cap
+
+Generate a 600 KB file (> 500 KB cap):
+```powershell
+fsutil file createnew C:\tmp\big.bin 614400
+```
+```
+nsh> cat C:\tmp\big.bin > \\<hostname>\C\tmp\big.bin
+```
+**Expected:**
+```
+nsh: cat refuses 614400 bytes (max 512000 for the embedded-base64 writer; file_operation.write_bytes op is the Phase-1b path for bigger files)
+```
+
+**PASS:** Deploy refused BEFORE any dispatch. No partial write on target.
+
+### UC-22G — Unknown host
+
+```
+nsh> cat C:\tmp\x.txt > \\no-such-host\C\tmp\x.txt
+```
+**Expected:**
+```
+nsh: cat write dst failed: unknown host "no-such-host" (no connected agent with that hostname)
+```
+
+**PASS:** Clear error, no retry loop.
+
+### UC-22H — Bad syntax
+
+```
+nsh> cat
+nsh> cat C:\x
+nsh> cat > C:\y
+nsh> cat C:\x >
+```
+**Expected:** each prints a usage line without crashing.
+
+**PASS:** REPL stable, usage printed.
+
+### UC-22 — Record sheet
+
+| Case | VM | PASS/FAIL | Notes |
+|---|---|---|---|
+| 22A local → local |  |  |  |
+| 22B remote → local |  |  |  |
+| 22C local → remote (overwrite) |  |  |  |
+| 22D local → remote (append) |  |  |  |
+| 22E remote → remote |  |  |  |
+| 22F size cap |  |  |  |
+| 22G unknown host |  |  |  |
+| 22H bad syntax |  |  |  |
+
+---
+
 ## 6. Record Sheet
 
 Use one row per sub-case. Flag any FAIL with full output + agent-side

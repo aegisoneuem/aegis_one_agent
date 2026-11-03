@@ -211,10 +211,10 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 // for Tab completion. Keep it alphabetical so the candidate list a user sees
 // after `inv<Tab>` is predictable.
 var nshVerbNames = []string{
-	"cd", "copy", "cp", "delete", "del", "exec", "exit", "fanout", "grab",
-	"help", "history", "hosts", "inventory", "mkdir", "md", "move", "mv",
-	"pull", "pwd", "quit", "rm", "run", "script", "search", "set", "shell",
-	"source", "touch", "use",
+	"cat", "cd", "copy", "cp", "delete", "del", "exec", "exit", "fanout",
+	"grab", "help", "history", "hosts", "inventory", "mkdir", "md", "move",
+	"mv", "pull", "pwd", "quit", "rm", "run", "script", "search", "set",
+	"shell", "source", "touch", "use",
 }
 
 // interactiveLoop drives the Tab-completing readline on the mockserver's stdin.
@@ -304,6 +304,8 @@ func (s *nshSession) exec(line string) bool {
 		s.verbGrab(rest)
 	case "pull":
 		s.verbPull(rest)
+	case "cat":
+		s.verbCat(rest)
 	case "fanout":
 		s.verbRun(rest, true)
 	case "shell":
@@ -340,6 +342,9 @@ TARGETING
                             dev/admin tool: force the current target(s) to send a fresh
                             DeviceStateReport now (parallel dispatch, shared deadline;
                             default 5s; capped at 100 targets — use server-side batch for fleets)
+  cat <src> > <dst>         copy src bytes to dst (overwrite); either path can be
+  cat <src> >> <dst>        local or UNC-style \\<host>\<drive>\<path>; ≤ 500 KB
+                            (append mode for >>). Phase-1 single-shot writer.
   cd \\<host>               set single target (hostname / device_id / computer_id)
   cd \\<h1>,<h2>            set multiple targets
   cd *                      target all online

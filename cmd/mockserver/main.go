@@ -1372,14 +1372,23 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		}
 		if fi := msg.GetFullInventory(); fi != nil {
 			hw := fi.GetHardware()
-			mockPrintf("Received FULL inventory -> %s | trigger: %s, cpu: %s %s (%d/%d cores), ram: %d MB, disks: %d, nics: %d, apps: %d, system: %s %s\n",
+			mockPrintf("Received FULL inventory -> %s | trigger: %s, cpu: %s %s %dMHz (%d/%d cores, %d thr/core, %s), ram: %d MB, disks: %d, nics: %d, apps: %d, OS: %q %q build=%q, virt: %s, system: %s %s\n",
 				s.identify(fi.DeviceId), fi.Trigger,
-				hw.GetCpuVendor(), hw.GetCpuModel(),
+				hw.GetCpuVendor(), hw.GetCpuModel(), hw.GetCpuMhz(),
 				hw.GetCpuPhysicalCores(), hw.GetCpuLogicalCores(),
+				hw.GetCpuThreadsPerCore(), hw.GetCpuArchitecture(),
 				hw.GetMemoryTotalBytes()/(1024*1024),
 				len(hw.GetDisks()), len(hw.GetNics()),
 				len(fi.InstalledApps),
+				hw.GetOsProductName(), hw.GetOsDisplayVersion(), hw.GetOsBuild(),
+				hw.GetVirtualization(),
 				hw.GetSystemVendor(), hw.GetSystemProduct())
+			for _, d := range hw.GetDisks() {
+				mockPrintf("  disk %s | %s | %s | %.1f GB (%.1f GB free)\n",
+					d.MountPoint, d.DriveType, d.FileSystem,
+					float64(d.TotalBytes)/(1024*1024*1024),
+					float64(d.FreeBytes)/(1024*1024*1024))
+			}
 			s.inventoryMu.Lock()
 			if s.lastFullInventory == nil {
 				s.lastFullInventory = make(map[string]*pb.FullInventoryReport)
