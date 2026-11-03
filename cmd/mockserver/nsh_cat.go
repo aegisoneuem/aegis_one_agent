@@ -4,9 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
@@ -173,8 +171,11 @@ func (s *nshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
 	if devID == "" {
 		return nil, catPathDescr(src), fmt.Errorf("unknown host %q (no connected agent with that hostname)", src.host)
 	}
-	up := s.autoCapturePath("cat-src-"+time.Now().Format("150405.000000000"), src.host)
-	st, _ := s.sendTask(devID, "collect_file", &pb.CollectFileSpec{
+	// Use the standard "_nsh-transfer/" prefix so the UploadContent handler
+	// stores a fileReceipt we can look up by action_id — avoids guessing
+	// the on-disk path.
+	up := "_nsh-transfer/" + nshRandomID() + "/cat-src.bin"
+	st, cmdID := s.sendTask(devID, "collect_file", &pb.CollectFileSpec{
 		Paths:         []string{src.path},
 		MaxBytesEach:  int64(nshCatMaxBytes + 1),
 		MaxTotalBytes: int64(nshCatMaxBytes + 1),
@@ -186,10 +187,13 @@ func (s *nshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
 		}
 		return nil, catPathDescr(src), fmt.Errorf("%s", reason)
 	}
-	localPath := s.resolveUploadedFile(devID, up)
-	data, err := os.ReadFile(localPath)
+	receipt, ok := s.takeReceipt(cmdID)
+	if !ok {
+		return nil, catPathDescr(src), fmt.Errorf("collect_file succeeded but no upload receipt was recorded for cmd=%s", cmdID)
+	}
+	data, err := os.ReadFile(receipt.path)
 	if err != nil {
-		return nil, catPathDescr(src), fmt.Errorf("read uploaded blob at %s: %w", localPath, err)
+		return nil, catPathDescr(src), fmt.Errorf("read uploaded blob at %s: %w", receipt.path, err)
 	}
 	return data, catPathDescr(src), nil
 }
@@ -290,22 +294,6 @@ func catJoinWindowsPath(cwd, rel string) string {
 	cwd = strings.TrimRight(cwd, `\/`)
 	rel = strings.TrimLeft(rel, `\/`)
 	return cwd + `\` + rel
-}
-
-// resolveUploadedFile locates the on-disk path for an auto-captured upload.
-func (s *nshSession) resolveUploadedFile(devID, up string) string {
-	candidates := []string{
-		filepath.Join("uploads", devID, up),
-		filepath.Join("uploads", s.srv.hostnameOf(devID), up),
-		filepath.Join("mock-uploads", devID, up),
-		up,
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c
-		}
-	}
-	return candidates[0]
 }
 
 // deviceIDByHostname returns the device_id for a given hostname (case-
