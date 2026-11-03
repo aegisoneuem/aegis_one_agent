@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
+	"github.com/aegisoneuem/aegis_one_agent/internal/capabilities"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
 	"github.com/aegisoneuem/aegis_one_agent/internal/patchcache"
@@ -32,11 +33,14 @@ func buildHeartbeatMessage(deviceID, version, osName, hostname string, now time.
 	return &pb.AgentMessage{
 		Payload: &pb.AgentMessage_Heartbeat{
 			Heartbeat: &pb.Heartbeat{
-				DeviceId:     deviceID,
-				AgentVersion: version,
-				Os:           osName,
-				Hostname:     hostname,
-				Timestamp:    now.Unix(),
+				DeviceId:          deviceID,
+				AgentVersion:      version,
+				Os:                osName,
+				Hostname:          hostname,
+				Timestamp:         now.Unix(),
+				SchemaVersion:     capabilities.SchemaVersion(),
+				AgentCapabilities: capabilities.List(),
+				DeviceType:        capabilities.DeviceType(),
 			},
 		},
 	}
@@ -184,7 +188,7 @@ func sendHeartbeat(stream pb.AgentControlPlane_ConnectClient, cfg config.Config)
 	return nil
 }
 
-func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, deviceStateTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
+func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, outbox chan *pb.AgentMessage, installJobs chan installJob, softdist *softdistInstaller, stg *stager, baseline *baselineStore, cabs *cabManifestHandler, keys secure.KeyProvider, scanTrigger chan<- struct{}, deviceStateTrigger chan<- struct{}, fullInventoryReconnectTrigger chan<- struct{}, drainSignal <-chan struct{}) error {
 	connFail := 0 // consecutive connection failures, to throttle reconnect logging
 	tlsLogged := false
 	// Extensible command dispatch: one registry of per-type handlers (no hardcoded
@@ -234,6 +238,10 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 			connFail = 0
 		}
 		agentHealth.update(func(h *healthState) { h.connected = true })
+		// Tier-3 reconnect snapshot: on connect-after-disconnect, fire a
+		// full-inventory trigger. runFullInventoryReport enforces the flap
+		// floor (ReconnectSnapshotMinInterval) so a flapping NIC is safe.
+		signalDrain(fullInventoryReconnectTrigger)
 
 		// Cert renewal: periodically check if the client cert is nearing expiry;
 		// if so, renew it over THIS mTLS channel (no token) and reconnect to use it.
@@ -652,16 +660,27 @@ func runProcess(ctx context.Context) {
 	// (otherwise a report buffered after connect waits for the next heartbeat).
 	drainSignal := make(chan struct{}, 1)
 
+	// fullInventoryReconnectTrigger fires one Tier-3 full snapshot on connect-
+	// after-disconnect. The flap floor (cfg.ReconnectSnapshotMinInterval) is
+	// enforced INSIDE runFullInventoryReport so a flapping NIC does not DoS
+	// the server. The 6-12 h scheduled timer is never suppressed by the floor.
+	fullInventoryReconnectTrigger := make(chan struct{}, 1)
+
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
 	go runPatchDetection(cfg, buf, baseline, rebootStore, installedSet, scanTrigger, deviceStateTrigger, drainSignal)
+
+	// Tier-3 safety-net: full HW + SW inventory snapshot every
+	// FullInventoryInterval (default 6 h) AND on reconnect-after-offline
+	// (flap-floored). Collector cost is a few ms; no WMI, no COM, no cgo.
+	go runFullInventoryReport(cfg, buf, fullInventoryReconnectTrigger, drainSignal)
 
 	// Watch the servicing store (CBS) and debounce-trigger a re-scan on any local
 	// install/uninstall — instant auto-detect without running the heavy scan on a
 	// timer (event-driven; no-op on non-Windows).
 	go watchServicingForRescan(ctx, scanTrigger)
 
-	if err := runAgent(ctx, cfg, buf, outbox, installJobs, sdi, stg, baseline, cabs, keys, scanTrigger, deviceStateTrigger, drainSignal); err != nil {
+	if err := runAgent(ctx, cfg, buf, outbox, installJobs, sdi, stg, baseline, cabs, keys, scanTrigger, deviceStateTrigger, fullInventoryReconnectTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
 	}
 	slog.Info("agent stopped")

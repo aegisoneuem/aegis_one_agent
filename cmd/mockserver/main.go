@@ -115,8 +115,12 @@ type server struct {
 	// third-party apps the endpoint reported (and at which versions). The server
 	// team's real catalog match runs server-side; this cache is a dev/testing
 	// convenience, not a durable store.
-	inventoryMu   sync.Mutex
-	lastInventory map[string]*pb.DeviceStateReport
+	inventoryMu       sync.Mutex
+	lastInventory     map[string]*pb.DeviceStateReport
+	// lastFullInventory caches the most recent Tier-3 FullInventoryReport
+	// per device (HW + SW snapshot sent every 6-12 h or on reconnect).
+	// Mock-side convenience for NSH queries about the HW inventory.
+	lastFullInventory map[string]*pb.FullInventoryReport
 
 }
 
@@ -1290,8 +1294,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			return err
 		}
 		if hb := msg.GetHeartbeat(); hb != nil {
-			mockPrintf("Received heartbeat -> device: %s, hostname: %s, version: %s, os: %s\n",
-				hb.DeviceId, hb.Hostname, hb.AgentVersion, hb.Os)
+			mockPrintf("Received heartbeat -> device: %s, hostname: %s, version: %s, os: %s, schema_version: %s, device_type: %s, capabilities: %d\n",
+				hb.DeviceId, hb.Hostname, hb.AgentVersion, hb.Os, hb.SchemaVersion, hb.DeviceType, len(hb.AgentCapabilities))
 			// Attribute update from heartbeat: hostname is mutable and NOT the key.
 			// A rename keeps the same device record — only the attribute changes.
 			s.mu.Lock()
@@ -1364,6 +1368,23 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				s.lastInventory = make(map[string]*pb.DeviceStateReport)
 			}
 			s.lastInventory[ds.DeviceId] = ds
+			s.inventoryMu.Unlock()
+		}
+		if fi := msg.GetFullInventory(); fi != nil {
+			hw := fi.GetHardware()
+			mockPrintf("Received FULL inventory -> %s | trigger: %s, cpu: %s %s (%d/%d cores), ram: %d MB, disks: %d, nics: %d, apps: %d, system: %s %s\n",
+				s.identify(fi.DeviceId), fi.Trigger,
+				hw.GetCpuVendor(), hw.GetCpuModel(),
+				hw.GetCpuPhysicalCores(), hw.GetCpuLogicalCores(),
+				hw.GetMemoryTotalBytes()/(1024*1024),
+				len(hw.GetDisks()), len(hw.GetNics()),
+				len(fi.InstalledApps),
+				hw.GetSystemVendor(), hw.GetSystemProduct())
+			s.inventoryMu.Lock()
+			if s.lastFullInventory == nil {
+				s.lastFullInventory = make(map[string]*pb.FullInventoryReport)
+			}
+			s.lastFullInventory[fi.DeviceId] = fi
 			s.inventoryMu.Unlock()
 		}
 		if cf := msg.GetCacheFull(); cf != nil {

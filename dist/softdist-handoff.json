@@ -1,10 +1,10 @@
 ﻿{
-    "handoff_date":  "2026-11-02",
+    "handoff_date":  "2026-11-03",
     "platform":  "windows/amd64",
     "guide":  "docs/tester-guide-softdist.md (tester-ready) + docs/softdist-today-testing.md (dev reference)",
     "secondary_guide":  "docs/tester-guide-patching.md (UC-18 + UC-19 PASS); docs/tester-guide-nsh.md; docs/tester-guide-setup.md (first read for new testers)",
     "manual_cases":  33,
-    "primary_focus":  "Script content audit (UC-20): every SoftDist run of a .ps1/.bat/.cmd/.vbs/.py payload (and bundle entry_point scripts) writes a tamper-evident transcript to <SKVC>\\logs\\softdist\\<action_id>.transcript BEFORE execution. Default record is SHA-256 + size + first/last 500 bytes. Signed per-task flag SoftwareDeploySpec.capture_script_content opts into FULL content capture; endpoint policy AEGIS_LOG_SCRIPT_CONTENT (enabled|disabled|always) overrides the signed flag (kill switch for regulated endpoints, force-on for forensic endpoints). SecureParameters NEVER appear in the transcript — scripts are read verbatim from disk before any ${name} substitution. Audit read / transcript write failures fail the deploy loud (phase FAILED) — never run unaudited. BigFix parity goal met: BigFix client logs show the script filename but not content; Aegis One now surfaces content with policy control.",
+    "primary_focus":  "UC-21 foundation + Tier-3 full inventory: (1) Heartbeat + EnrollRequest now carry schema_version=\"1\", agent_capabilities[] (auto-derived from dispatch handlers + feature flags), device_type=\"endpoint\" — the server can gate feature rollouts without parsing agent_version strings and Phase-2 NMS \"probe\" fits non-breakingly. (2) New Tier-3 FullInventoryReport message carries a full HW + SW snapshot (CPU/RAM/disks/NICs/BIOS/chassis + installed_apps). Sent at startup, every AEGIS_FULL_INVENTORY_INTERVAL (default 6h), and ONCE on reconnect-after-offline with a flap floor (AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL, default 1h) so a flapping NIC does not DoS the server. HW collector is PURE Go + registry + x/sys/windows — no WMI, no COM, no cgo — snapshot cost single-ms, binary growth <100 KB. Agent binary stays at 20.97 MB (budget 25 MB). Previous UC-20 Script content audit remains green.",
     "blocks":  [
                    "A. multi-file packages (PASS)",
                    "B. pre/post commands (PASS)",
@@ -19,39 +19,40 @@
                    "K. bandwidth throttling: per-task fetch rate, per-task upload rate, lower-wins policy enforcement (native regression PASS; VM pending)",
                    "UC-18. third-party installed-apps inventory via DeviceStateReport (PASS 2026-11-01)",
                    "UC-19. HKU per-user Uninstall parity + 'inventory refresh' on-demand pull (PASS 2026-11-02)",
-                   "UC-20. script content audit: hash+preview default + opt-in full content + endpoint kill switch / force-on (PASS 2026-11-02)"
+                   "UC-20. script content audit: hash+preview default + opt-in full content + endpoint kill switch / force-on (PASS 2026-11-02)",
+                   "UC-21. foundation fields (schema_version + agent_capabilities + device_type on Heartbeat/EnrollRequest) + Tier-3 FullInventoryReport (6h scheduled + reconnect with flap floor) + HW inventory collector (pure Go, no WMI, binary 20.97 MB) (native regression PASS; VM pending)"
                ],
-    "additive_engine_updates":  "Agent-side durability + bandwidth throttling + per-user HKU inventory + on-demand DeviceStateReport trigger + script content audit (new): script_audit module (SHA-256 + head/tail/full), AEGIS_LOG_SCRIPT_CONTENT endpoint policy, SoftwareDeploySpec.capture_script_content signed per-task flag, fail-loud read-before-exec. These are additive (older servers keep working) and native-tested.",
+    "additive_engine_updates":  "Agent-side durability + bandwidth throttling + per-user HKU inventory + on-demand DeviceStateReport trigger + script content audit + Tier-3 full-inventory snapshot (new): internal/capabilities (schemaVersion + agent capability list + DeviceType), internal/hwinventory (Windows HW collector; registry + x/sys/windows syscalls; no WMI/COM/cgo), AEGIS_FULL_INVENTORY_INTERVAL (default 6h) + AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL (default 1h, flap floor), runFullInventoryReport goroutine, reconnect-after-offline trigger wired into the main connect loop. All additive (older servers keep working) and native-tested.",
     "related_fixes":  [
                           "explicit CMD quote/redirection preservation for paths with spaces",
                           "SoftDist queue pickup, install-gate wait and execution-stage diagnostics; queued status while waiting for another installer"
                       ],
-    "shared_proto_commit":  "8bb9650",
+    "shared_proto_commit":  "83b3338",
     "shared_proto_repository":  "https://github.com/aegisoneuem/aegis_one_proto",
     "validation":  {
-                       "agent_tests":  "PASS: go test ./... (2026-11-02 — includes new script_audit_test.go: 5 cases)",
-                       "agent_vet":  "PASS: go vet ./... (2026-11-02)",
+                       "agent_tests":  "PASS: go test ./... (2026-11-03 — includes new internal/capabilities 5 tests + internal/hwinventory 3 tests)",
+                       "agent_vet":  "PASS: go vet ./... (2026-11-03)",
                        "proto_tests":  "regenerated locally; proto push pending",
                        "msi_payload":  "PASS: AegisOneClient.msi rebuilt from fresh AegisOneClient.exe this handoff",
-                       "vm_acceptance":  "A-F, J, UC-18, UC-19, UC-20 blocks PASS. G/H/I/K native regression PASS; VM acceptance pending.",
-                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 PASS 2026-11-01. UC-19 PASS 2026-11-02. UC-20 PASS 2026-11-02 (all 8 sub-cases A..H including SecureParameters leak check).",
+                       "vm_acceptance":  "A-F, J, UC-18, UC-19, UC-20 blocks PASS. G/H/I/K/UC-21 native regression PASS; VM acceptance pending.",
+                       "real_vendor_acceptance":  "7-Zip (E) and Firefox (F) PASS reported 2026-10-27. J block PASS 2026-10-29. UC-18 PASS 2026-11-01. UC-19 PASS 2026-11-02. UC-20 PASS 2026-11-02. UC-21 pending VM acceptance (foundation fields + Tier-3 FullInventoryReport + HW collector).",
                        "production_backend_ui":  "Server team integration remains separate"
                    },
     "artifacts":  [
                       {
                           "file":  "AegisOneClient.exe",
-                          "bytes":  21900288,
-                          "sha256":  "9dea7f801836e1cb0df379eff2aa6f42ae6dbff37e18524457f291c8e8d7a580"
+                          "bytes":  21983232,
+                          "sha256":  "f4e0084d66acc2fbfdd50464e874d29e99da0f10f7152ec3e460da99be2f06d4"
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19639808,
-                          "sha256":  "4508e3fd9a0d538390b9732efae2be63e43374230c9c9dcf133d278b845eeae4"
+                          "bytes":  19678720,
+                          "sha256":  "9be2767dbf3971d4a10eb5ab6673ae50660cc7f66b2a24800a74e39ed98b39e0"
                       },
                       {
                           "file":  "AegisOneClient.msi",
-                          "bytes":  11829248,
-                          "sha256":  "ad19d5e965e89846752de014d2e852702233456f008699801392244a178ec1ea"
+                          "bytes":  11866112,
+                          "sha256":  "06f6e5f17412d3f92376a3f08cddc905110003c0532c03a449d12351d7bdf802"
                       }
                   ]
 }

@@ -115,6 +115,18 @@ type Config struct {
 	// never captured on either path (they are delivered via child stdin).
 	LogScriptContent string
 
+	// FullInventoryInterval is the Tier-3 cycle: how often the agent sends
+	// a full HW + SW inventory snapshot. BigFix equivalent is 6-24 h. Default
+	// 6 h. This is the SAFETY NET report that self-corrects the server's
+	// view even if a Tier-2 change event was missed.
+	FullInventoryInterval time.Duration
+
+	// ReconnectSnapshotMinInterval is the flap floor on reconnect-triggered
+	// Tier-3 snapshots: the agent will send AT MOST one reconnect snapshot
+	// per this duration. Prevents a flapping NIC / unstable network from
+	// DoS'ing the server with repeated full snapshots. Default 1 h.
+	ReconnectSnapshotMinInterval time.Duration
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -281,6 +293,8 @@ func Load() Config {
 		SoftdistVerifyAttempts: int(int64FromEnv("AEGIS_SOFTDIST_VERIFY_ATTEMPTS", 4)),
 		FetchBytesPerSecond:    int64FromEnv("AEGIS_FETCH_MAX_BYTES_PER_SECOND", 0),
 		LogScriptContent:       getenv("AEGIS_LOG_SCRIPT_CONTENT", "enabled"),
+		FullInventoryInterval:        durationFromEnv("AEGIS_FULL_INVENTORY_INTERVAL", 6*time.Hour),
+		ReconnectSnapshotMinInterval: durationFromEnv("AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL", time.Hour),
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

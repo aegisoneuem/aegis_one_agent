@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/capabilities"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
@@ -85,15 +86,18 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, tpmEK, sys
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	resp, err := pb.NewAgentControlPlaneClient(conn).Enroll(cctx, &pb.EnrollRequest{
-		EnrollToken:  cfg.EnrollToken,
-		DeviceId:     deviceID,
-		CsrPem:       string(csrPEM),
-		SystemUuid:   systemUUID,
-		MachineGuid:  machineGUID,
-		TpmEk:        tpmEK,
-		Hostname:     cfg.Hostname,
-		Os:           cfg.OS,
-		AgentVersion: cfg.AgentVersion,
+		EnrollToken:       cfg.EnrollToken,
+		DeviceId:          deviceID,
+		CsrPem:            string(csrPEM),
+		SystemUuid:        systemUUID,
+		MachineGuid:       machineGUID,
+		TpmEk:             tpmEK,
+		Hostname:          cfg.Hostname,
+		Os:                cfg.OS,
+		AgentVersion:      cfg.AgentVersion,
+		SchemaVersion:     capabilities.SchemaVersion(),
+		AgentCapabilities: capabilities.List(),
+		DeviceType:        capabilities.DeviceType(),
 	})
 	if err != nil {
 		return deviceID, fmt.Errorf("enroll RPC failed: %w", err)

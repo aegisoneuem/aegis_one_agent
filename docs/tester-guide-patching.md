@@ -872,6 +872,168 @@ Fill one row per sub-case per OS. Attach the agent log excerpt on any FAIL.
 
 ---
 
+## UC-21 — Foundation fields + Tier-3 full inventory
+
+**Why:** DeviceStateReport (UC-18/UC-19) is Tier-1 — fast, sends on change,
+small payload. UC-21 adds TWO new pieces to the foundation:
+
+1. **Foundation fields on Heartbeat + EnrollRequest** — `schema_version`,
+   `agent_capabilities[]`, `device_type`. The server gates feature rollouts
+   on these instead of parsing free-form `agent_version` strings; adding
+   them NOW makes future protocol changes non-breaking.
+2. **Tier-3 FullInventoryReport** — a 6-hour-interval FULL HW + SW snapshot
+   (CPU / RAM / disks / NICs / BIOS / chassis + installed_apps). This is the
+   SAFETY NET report: even if a Tier-2 change event was missed, one Tier-3
+   cycle self-corrects the server's view. Also sent ONCE on
+   reconnect-after-offline, with a flap floor so a flapping NIC does not DoS
+   the server.
+
+### UC-21 — Pre-reqs
+
+- Agent build from this handoff (binary ≤ 25 MB).
+- For speed, set `AEGIS_FULL_INVENTORY_INTERVAL=60` (plain integer SECONDS,
+  60 = every 1 min; default is 21600 = 6 h) and
+  `AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL=30` on the VM. Restart the service.
+  **Same env-var gotcha as `AEGIS_DEVICE_STATE_INTERVAL`: INTEGER SECONDS,
+  not Go duration format.**
+
+### UC-21A — Foundation fields on Heartbeat
+
+**Goal:** confirm every heartbeat carries `schema_version`,
+`agent_capabilities`, `device_type`.
+
+**Steps:**
+1. Start mockserver.
+2. Start agent on the VM.
+3. Within 60 s, mockserver console shows:
+   ```
+   Received heartbeat -> device: <guid>, hostname: <vm>, version: <v>, os: windows, schema_version: 1, device_type: endpoint, capabilities: 22
+   ```
+
+**PASS CRITERIA:**
+- `schema_version: 1`
+- `device_type: endpoint`
+- `capabilities:` count ≥ 15 (dispatch handler count + feature flags)
+
+### UC-21B — Foundation fields on EnrollRequest
+
+**Goal:** confirm the SAME fields on first-enroll (fresh install).
+
+**Steps:**
+1. Uninstall agent on VM.
+2. Delete `<SKVC>` folder so enrollment runs fresh.
+3. Install agent.
+4. On the mockserver console (if your mock prints enrollment payload — check
+   it does), confirm `schema_version=1`, `device_type=endpoint`, non-empty
+   capabilities list appear in the enrollment record.
+
+**PASS CRITERIA:** same three fields present at enrollment. (This is the
+"before the first heartbeat" moment the server uses to store the
+capability profile atomically with the issued cert.)
+
+### UC-21C — Tier-3 scheduled snapshot
+
+**Goal:** on the configured interval, a FULL inventory snapshot arrives.
+
+**Steps:**
+1. Start fresh (mock + agent).
+2. Within ONE `AEGIS_FULL_INVENTORY_INTERVAL` cycle (60 s with the test
+   override), mockserver console shows:
+   ```
+   Received FULL inventory -> <device> | trigger: startup, cpu: GenuineIntel <model> (<cores>/<logical> cores), ram: NNNNN MB, disks: N, nics: N, apps: N, system: <vendor> <product>
+   ```
+3. ~60 s later, another line with `trigger: scheduled`.
+
+**PASS CRITERIA:**
+- `trigger` shows `startup` first, then `scheduled` thereafter.
+- CPU / RAM / disks / NICs / apps counts are non-zero on a real VM.
+- `cpu_model` is a non-empty string (e.g. "Intel(R) Xeon(R) ..." or similar).
+- `system_vendor` and `system_product` are non-empty on a real OEM machine
+  (may be empty on a stripped VM — not a FAIL in that case).
+
+### UC-21D — Agent log inventory line
+
+**Goal:** the agent itself logs the Tier-3 send with proof of a few-ms cost.
+
+**On the VM:**
+```powershell
+Select-String -Path "<SKVC>\logs\agent-*.log" -Pattern "TIER-3 full-inventory: snapshot buffered"
+```
+
+**Expected line:**
+```
+INFO TIER-3 full-inventory: snapshot buffered trigger=startup apps=N disks=N nics=N cpu_model="..." ram_bytes=NNNN took_ms=12
+```
+
+**PASS CRITERIA:** `took_ms` ≤ 100 (should typically be <20 ms on a modern
+VM). If it ever goes above 500 ms, flag — the collector would be eating
+too much CPU.
+
+### UC-21E — Reconnect-triggered snapshot (and flap floor)
+
+**Goal:** disconnecting / reconnecting the agent triggers a snapshot;
+rapid reconnects within the flap floor are SUPPRESSED.
+
+**Steps:**
+1. Stop mockserver on the dev laptop. The agent will disconnect.
+2. Wait 10 s.
+3. Start mockserver.
+4. Within 5 s of mockserver restart, the console shows a FULL inventory
+   line with `trigger: reconnect`.
+5. Now stop + start mockserver RAPIDLY (within 30 s). The second reconnect
+   should NOT trigger another full snapshot (flap floor engaged).
+6. Agent log should show:
+   ```
+   DEBUG TIER-3 full-inventory: reconnect trigger suppressed by flap floor age=... floor=30s
+   ```
+
+**PASS CRITERIA:**
+- First reconnect: `trigger: reconnect` snapshot arrives.
+- Second rapid reconnect: NO second snapshot; `suppressed by flap floor` in
+  agent log.
+
+### UC-21F — Binary size budget
+
+**Goal:** confirm the agent binary stays under the 25 MB budget Vijay set.
+
+```powershell
+(Get-Item "<path>\dist\AegisOneClient.exe").Length
+```
+
+**PASS CRITERIA:** value ≤ 26,214,400 (25 MB). Should be around 21-22 MB
+on this handoff.
+
+### UC-21G — No WMI / no COM check
+
+**Goal:** confirm the HW collector did not pull in WMI / COM dependencies
+(binary-size and runtime-cost rule from Vijay).
+
+**On the VM, while the agent is running:**
+```powershell
+Get-Process AegisOneClient | Format-List HandleCount, ProcessName, Modules
+# Inspect loaded modules; wbemprox.dll, wbemcore.dll, oleaut32.dll should NOT appear
+```
+
+(For a stronger check, run SysInternals `Process Explorer` → View → Lower
+Pane → DLLs. No WMI DLLs should be loaded on top of the baseline Windows
+services.)
+
+**PASS CRITERIA:** No WMI / wbem DLLs loaded by AegisOneClient.exe.
+
+### UC-21 — Record sheet
+
+| Case | Sub | Env | VM | Start | End | Result | Notes |
+|---|---|---|---|---|---|---|---|
+| UC-21 | A heartbeat fields | Win11 |  |  |  |  |  |
+| UC-21 | B enroll fields | Win11 |  |  |  |  |  |
+| UC-21 | C scheduled snapshot | Win11 |  |  |  |  |  |
+| UC-21 | D agent log took_ms | Win11 |  |  |  |  |  |
+| UC-21 | E reconnect + flap | Win11 |  |  |  |  |  |
+| UC-21 | F binary size | n/a |  |  |  | by `Get-Item` | ≤ 26,214,400 |
+| UC-21 | G no WMI loaded | Win11 |  |  |  |  |  |
+
+---
+
 ## 10. End
 
 If a case FAILs with no clear classification in the agent log, capture:
