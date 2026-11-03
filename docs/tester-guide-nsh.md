@@ -1784,6 +1784,79 @@ nsh> cat C:\x >
 
 ---
 
+## 5.15 UC-23 — Path tab-completion (Phase 1b)
+
+**Why:** Before Phase 1b, only verbs completed on Tab. For verbs that take
+a filesystem path (cd, cat, grab, pull, copy, mkdir, touch, delete,
+move), the completer now dispatches a signed `file_operation`
+`list_directory` to the current cd target and offers matching entries.
+
+### Pre-reqs
+- Agent build ≥ 2026-11-03 (`fd55408a…` or later).
+- Single cd target set (multi-target cd skips path completion by design).
+
+### Steps
+1. `cd \\<hostname>` to pick a target.
+2. `cd c:\<Tab>` → candidate list of top-level entries at `C:\` on the
+   target.
+3. `cd c:\pro<Tab>` → `Program Files\` and `ProgramData\` dikhen.
+4. `cat c:\temp\v<Tab>` → files starting with `v` under `C:\temp\`
+   complete.
+
+### PASS CRITERIA
+- Tab after a path arg returns matching entries from the target device.
+- Directories render with a trailing `\`.
+- Agent log shows one `file_operation accepted operation=list_directory
+  source=<dir>` per Tab (within the 5-sec cache; rapid Tabs do not spam
+  the agent).
+- Verb completion still works (`inv<Tab>` → `inventory`).
+
+### Known limitations (not FAIL)
+- UNC-form path (`\\host\...`) does not complete — fall back to typing.
+- Multi-target cd (`cd \\fleet-group`) does not complete.
+
+---
+
+## 5.16 UC-24 — Command attribution in agent log (actor + source + issued_at)
+
+**Why:** Before Phase 1b, the agent log showed WHAT ran (command text)
+but not WHO started it, FROM WHERE, or WHEN they clicked run.
+Enterprise audit needs all four. These three fields now ride in the
+signed Command envelope and appear on every `command received`,
+`run_command: accepted`, and `file_operation accepted` log line.
+
+### Steps
+1. From NSH REPL (as the signed-in operator), run any command:
+   ```
+   nsh> cd \\<hostname>
+   <hostname>> run dir /shell cmd
+   ```
+2. On the VM, inspect the agent log:
+   ```powershell
+   Get-Content "C:\...\SKVC\logs\agent-*.log" -Tail 10 |
+     Select-String "command received|run_command: accepted"
+   ```
+
+### Expected
+```
+command received command_id=nsh-… type=run_command actor=nsh:<os-user>@<host> source=mockserver.nsh issued_at=1762173...
+run_command: accepted command_id=nsh-… shell=cmd command=dir actor=nsh:<os-user>@<host> source=mockserver.nsh issued_at=1762173...
+```
+
+### PASS CRITERIA
+- `actor=nsh:<os-user>@<host>` present on both lines ✅
+- `source=mockserver.nsh` ✅
+- `issued_at=<unix seconds>` non-zero ✅
+- Older dispatchers (that don't populate attribution) show
+  `actor=<unknown>` instead of a crash — backward compatible.
+
+### Env-driven dispatch (bonus)
+Mock-launched commands via `AEGIS_SERVE_COMMAND=hostname` etc. show
+`actor=server:auto[<os-user>@<host>] source=mockserver.server` — proves
+the fallback path works.
+
+---
+
 ## 6. Record Sheet
 
 Use one row per sub-case. Flag any FAIL with full output + agent-side
