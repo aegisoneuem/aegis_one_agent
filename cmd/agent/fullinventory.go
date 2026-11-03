@@ -15,14 +15,39 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// fullInventoryFingerprint hashes the content-relevant fields of a
-// FullInventoryReport (everything EXCEPT collected_at and trigger, which
-// vary every snapshot by construction). A stable hash means no drift —
-// safe to skip the send until the safety-net interval forces one anyway.
+// fullInventoryFingerprint hashes the STRUCTURAL fields of a
+// FullInventoryReport — the parts that only change when the hardware or
+// installed software actually changes. Operational / fluctuating values
+// (collected_at, trigger, disk free bytes, DHCP IPs, link status / speed)
+// are zeroed out before hashing: they vary every poll and would otherwise
+// trigger "drift" sends on no real change.
+//
+// Values are still SENT to the server in the full report — this hash only
+// controls whether a send is suppressed as unchanged.
 func fullInventoryFingerprint(rep *pb.FullInventoryReport) string {
 	snap := proto.Clone(rep).(*pb.FullInventoryReport)
+	// Always-noisy top-level fields.
 	snap.CollectedAt = 0
 	snap.Trigger = ""
+	// Disk free space fluctuates every poll (Windows caches, logs, service
+	// temp files allocate / free constantly). Zero it for the fingerprint;
+	// total size + drive type + file system are the stable structural keys.
+	for _, d := range snap.GetHardware().GetDisks() {
+		if d != nil {
+			d.FreeBytes = 0
+		}
+	}
+	// NIC addresses and link state are operational. The adapter's name +
+	// MAC are the stable physical identity; link flap / DHCP renewal must
+	// not fire inventory drift.
+	for _, n := range snap.GetHardware().GetNics() {
+		if n != nil {
+			n.Ipv4Addresses = nil
+			n.Ipv6Addresses = nil
+			n.LinkSpeedBps = 0
+			n.Status = ""
+		}
+	}
 	bytes, err := proto.Marshal(snap)
 	if err != nil {
 		// Marshal of a proto we just built should never fail. Return a
