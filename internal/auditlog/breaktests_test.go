@@ -154,6 +154,51 @@ func TestBreak_EmptyDeviceID(t *testing.T) {
 	}
 }
 
+// BREAK 8: Startup after mid-file tamper — admin edited audit.log
+// between agent runs. New() must detect the break, quarantine the file,
+// and start a fresh chain.
+// EXPECTED: Quarantine report returned; original file is renamed to
+// audit-TAMPERED-<ts>.log; fresh audit.log starts empty.
+func TestBreak_StartupQuarantineOnTamper(t *testing.T) {
+	tmp := t.TempDir()
+	l1, _ := New(tmp)
+	_, _ = l1.Append(Event{DeviceID: "d", EventType: "command_received", CommandID: "c1", Decision: "accepted", SignatureOK: true})
+	_, _ = l1.Append(Event{DeviceID: "d", EventType: "command_received", CommandID: "c2", Decision: "accepted", SignatureOK: true})
+	_, _ = l1.Append(Event{DeviceID: "d", EventType: "command_received", CommandID: "c3", Decision: "accepted", SignatureOK: true})
+	path := filepath.Join(tmp, "audit.log")
+	data, _ := os.ReadFile(path)
+	// Edit c2 → cX — breaks c2's own line_hash.
+	tampered := strings.Replace(string(data), `"c2"`, `"cX"`, 1)
+	_ = os.WriteFile(path, []byte(tampered), 0o600)
+	// Agent restart: New() should quarantine the broken file.
+	l2, err := New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qr := l2.LastQuarantine()
+	if qr == nil {
+		t.Fatal("expected QuarantineReport; got nil (startup did not detect tamper)")
+	}
+	if qr.BrokenAt != 1 && qr.BrokenAt != 2 {
+		t.Errorf("BrokenAt = %d, expected 1 or 2", qr.BrokenAt)
+	}
+	// Original file renamed away.
+	if _, err := os.Stat(path); err == nil {
+		// Could be fresh empty file after quarantine — that's OK if
+		// quarantined file exists adjacent.
+	}
+	// Quarantined file exists.
+	matches, _ := filepath.Glob(filepath.Join(tmp, "audit-TAMPERED-*.log"))
+	if len(matches) == 0 {
+		t.Error("no audit-TAMPERED-*.log file produced — forensics evidence lost")
+	}
+	// Fresh audit.log is empty-or-ready; next Append starts a new chain.
+	ev, _ := l2.Append(Event{DeviceID: "d", EventType: "command_received", CommandID: "c-fresh", Decision: "accepted", SignatureOK: true})
+	if ev.PrevHash != "" {
+		t.Errorf("fresh chain first event prev_hash = %q, want empty", ev.PrevHash)
+	}
+}
+
 // BREAK 7: Read-only directory (admin or policy locks the logs dir).
 // EXPECTED: Append fails cleanly; in-memory chain head NOT advanced.
 // NOTE: On Windows O_CREATE often succeeds even in a dir with weird

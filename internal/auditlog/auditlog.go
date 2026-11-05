@@ -73,12 +73,13 @@ type Event struct {
 // Append calls from multiple goroutines — a mutex guards the file write
 // and the lastHash chain state.
 type Logger struct {
-	mu        sync.Mutex
-	dir       string
-	maxBytes  int64
-	path      string
-	lastHash  string
-	fileBytes int64
+	mu             sync.Mutex
+	dir            string
+	maxBytes       int64
+	path           string
+	lastHash       string
+	fileBytes      int64
+	lastQuarantine *QuarantineReport
 }
 
 // New opens (or creates) <dir>/audit.log for append, seeds lastHash from
@@ -93,6 +94,16 @@ func New(dir string) (*Logger, error) {
 
 // NewWithLimit is the test / config variant that takes an explicit
 // maxBytes for the rolling cap.
+//
+// Startup integrity: BEFORE seeding the chain, this runs VerifyChain on
+// any existing audit.log. If the chain is broken (admin edited, inserted,
+// or deleted a line), the suspect file is QUARANTINED — renamed to
+// audit-TAMPERED-<unix-ts>.log and left on disk for forensics — and a
+// fresh audit.log is created. The next audit event starts a new chain
+// from prev_hash="", and the quarantined file preserves evidence of the
+// tamper attempt. The caller (agent) sees the integrity failure in the
+// returned QuarantineReport so it can emit an "audit_degraded" event to
+// the server.
 func NewWithLimit(dir string, maxBytes int64) (*Logger, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBytes
@@ -101,8 +112,14 @@ func NewWithLimit(dir string, maxBytes int64) (*Logger, error) {
 		return nil, fmt.Errorf("auditlog: mkdir %s: %w", dir, err)
 	}
 	l := &Logger{dir: dir, maxBytes: maxBytes, path: filepath.Join(dir, "audit.log")}
-	// Seed the chain state from any existing audit.log so a restart
-	// continues the chain.
+	if qr := checkAndQuarantine(l.path); qr != nil {
+		l.lastQuarantine = qr
+		// Seeded from empty — the quarantined file holds the old chain.
+		l.lastHash = ""
+		l.fileBytes = 0
+		return l, nil
+	}
+	// Chain intact — seed from the tail so a restart continues it.
 	last, size, err := tailHashAndSize(l.path)
 	if err != nil {
 		return nil, fmt.Errorf("auditlog: seed from %s: %w", l.path, err)
@@ -110,6 +127,52 @@ func NewWithLimit(dir string, maxBytes int64) (*Logger, error) {
 	l.lastHash = last
 	l.fileBytes = size
 	return l, nil
+}
+
+// QuarantineReport describes a startup integrity failure: the suspect
+// audit.log had its chain broken and was renamed to QuarantinePath. The
+// caller can read it to emit an "audit_degraded" event to the server so
+// the central server_audit.log has an authoritative record of the
+// tamper attempt.
+type QuarantineReport struct {
+	QuarantinePath string
+	BrokenAt       int
+	Reason         string
+}
+
+// LastQuarantine returns the most recent quarantine report from New() /
+// NewWithLimit(), or nil when the startup chain was intact.
+func (l *Logger) LastQuarantine() *QuarantineReport { return l.lastQuarantine }
+
+// checkAndQuarantine verifies the chain of path (if the file exists); on
+// a break, renames it to audit-TAMPERED-<unix-ts>.log and returns a
+// QuarantineReport. Returns nil when the file is missing OR verified.
+func checkAndQuarantine(path string) *QuarantineReport {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() == 0 {
+		return nil
+	}
+	idx, reason, err := VerifyChain(path)
+	if err != nil {
+		// Read failure is distinct from chain break — surface it as a
+		// quarantine too so the admin inspects the file.
+		q := quarantine(path, -2, "verify read error: "+err.Error())
+		return q
+	}
+	if idx == -1 {
+		return nil
+	}
+	return quarantine(path, idx, reason)
+}
+
+// quarantine renames path to audit-TAMPERED-<ts>.log (adjacent to path)
+// and returns the report. If rename fails we still return a report so
+// the caller logs — the broken file is left in place as a last resort.
+func quarantine(path string, idx int, reason string) *QuarantineReport {
+	dir := filepath.Dir(path)
+	target := filepath.Join(dir, fmt.Sprintf("audit-TAMPERED-%d.log", time.Now().Unix()))
+	_ = os.Rename(path, target) // best effort — forensics preserved either way
+	return &QuarantineReport{QuarantinePath: target, BrokenAt: idx, Reason: reason}
 }
 
 // Append writes one event to the rolling log. It fills in TS (if zero),

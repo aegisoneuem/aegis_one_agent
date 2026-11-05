@@ -23,6 +23,12 @@ var auditLogger *auditlog.Logger
 // restarts. Called once from main() before runAgent. A failure here is
 // logged as a warning — the server-side audit stream still works even
 // without a local buffer.
+//
+// Startup integrity: if the existing audit.log fails chain verification
+// (admin edited, inserted, or deleted a line), the file is quarantined
+// to audit-TAMPERED-<ts>.log and a fresh audit.log is started. We log
+// loud and remember the report so the agent can emit an audit_degraded
+// event to the server once the outbox is wired.
 func initAuditLogger(cfg config.Config) {
 	dir := filepath.Join(cfg.SecureDir, "logs")
 	l, err := auditlog.New(dir)
@@ -32,7 +38,33 @@ func initAuditLogger(cfg config.Config) {
 		return
 	}
 	auditLogger = l
+	if qr := l.LastQuarantine(); qr != nil {
+		slog.Warn("audit log tamper detected at startup; quarantined suspect file and started a fresh chain",
+			"quarantined_to", qr.QuarantinePath,
+			"broken_at_line", qr.BrokenAt,
+			"reason", qr.Reason)
+	}
 	slog.Info("audit log ready", "path", filepath.Join(dir, "audit.log"))
+}
+
+// EmitStartupQuarantineEvent sends an audit_degraded event to the server
+// if the previous audit.log was quarantined at startup. Called from
+// runAgent AFTER the outbox is wired (initAuditLogger runs before the
+// outbox exists, so we defer the send until the first stream is up).
+func EmitStartupQuarantineEvent(ctx context.Context, outbox chan<- *pb.AgentMessage, deviceID string) {
+	if auditLogger == nil {
+		return
+	}
+	qr := auditLogger.LastQuarantine()
+	if qr == nil {
+		return
+	}
+	recordAuditEvent(ctx, outbox, auditlog.Event{
+		DeviceID:  deviceID,
+		EventType: "audit_degraded",
+		Decision:  "degraded",
+		Reason:    "startup chain break: " + qr.Reason + " (quarantined to " + qr.QuarantinePath + ")",
+	})
 }
 
 // recordAudit writes one audit record to the local rolling buffer AND
