@@ -1,16 +1,14 @@
 // Command auditcheck reads an Aegis One audit.log (or an archived
-// audit-<ts>.log / audit-TAMPERED-<ts>.log) and produces a human-
-// readable transcript of every event plus a chain-integrity verdict.
-//
-// Intended for admins / auditors inspecting the local rolling buffer
-// without hand-reading dense JSON lines.
+// audit-<ts>.log) and pretty-prints every event. Intended for field L1
+// engineers inspecting the local JSONL trace on an endpoint without
+// server portal access. The server-side audit log is the authoritative
+// compliance record; this tool is a convenience over the local trace.
 //
 // Usage:
-//   auditcheck <path>              Verify and pretty-print every event.
-//   auditcheck -v <path>           Verify only (compact "CHAIN OK / BROKEN" output).
-//   auditcheck -j <path>           JSON passthrough (each event on its own line, no verify).
+//   auditcheck <path>              Pretty-print every event.
+//   auditcheck -j <path>           JSON passthrough (each event on its own line).
 //
-// Exit code 0 on chain intact, 1 on chain break, 2 on I/O error.
+// Exit code 0 on success, 2 on I/O error.
 package main
 
 import (
@@ -24,10 +22,9 @@ import (
 )
 
 func main() {
-	verifyOnly := flag.Bool("v", false, "verify only (do not print events)")
 	rawJSON := flag.Bool("j", false, "print events as JSON (no formatting)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage:\n  %s [-v | -j] <audit.log path>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage:\n  %s [-j] <audit.log path>\n\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -38,56 +35,41 @@ func main() {
 	}
 	path := args[0]
 
-	data, err := os.ReadFile(path)
+	events, err := auditlog.Read(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read %s: %v\n", path, err)
 		os.Exit(2)
 	}
-	lines := splitLines(data)
-	if len(lines) == 0 {
+	if len(events) == 0 {
 		fmt.Println("(empty audit log)")
 		return
 	}
-
-	// Verify chain first.
-	brokenAt, brokenReason, err := auditlog.VerifyChain(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "verify %s: %v\n", path, err)
-		os.Exit(2)
-	}
-
-	if !*verifyOnly {
-		for i, raw := range lines {
-			if *rawJSON {
-				fmt.Printf("%d: %s\n", i, raw)
-				continue
-			}
-			var ev auditlog.Event
-			if err := json.Unmarshal(raw, &ev); err != nil {
-				fmt.Printf("line %d: PARSE ERROR: %v\n", i, err)
-				continue
-			}
-			prettyPrint(i, ev)
+	for i, ev := range events {
+		if *rawJSON {
+			raw, _ := eventToJSON(ev)
+			fmt.Printf("%d: %s\n", i, raw)
+			continue
 		}
-		fmt.Println()
+		prettyPrint(i, ev)
 	}
+	fmt.Printf("\n%d event(s).\n", len(events))
+}
 
-	fmt.Printf("CHAIN SUMMARY: %d event(s), ", len(lines))
-	if brokenAt == -1 {
-		fmt.Println("INTEGRITY OK")
-		return
+func eventToJSON(ev auditlog.Event) (string, error) {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return "", err
 	}
-	fmt.Printf("INTEGRITY BROKEN at line %d\n  reason: %s\n", brokenAt, brokenReason)
-	os.Exit(1)
+	return string(data), nil
 }
 
 func prettyPrint(idx int, ev auditlog.Event) {
 	ts := time.UnixMilli(ev.TS).UTC().Format("2006-01-02 15:04:05.000 UTC")
-	sigIcon := "✗"
+	sigIcon := "no"
 	if ev.SignatureOK {
-		sigIcon = "✓"
+		sigIcon = "ok"
 	}
-	fmt.Printf("── line %d ─────────────────────────────────────────────\n", idx)
+	fmt.Printf("-- line %d --------------------------------------------\n", idx)
 	fmt.Printf("  time    : %s\n", ts)
 	fmt.Printf("  event   : %s   decision: %s   signature: %s\n", ev.EventType, ev.Decision, sigIcon)
 	if ev.CommandID != "" {
@@ -112,30 +94,4 @@ func prettyPrint(idx int, ev auditlog.Event) {
 		fmt.Printf("  details : %s\n", ev.Details)
 	}
 	fmt.Printf("  device  : %s\n", ev.DeviceID)
-	fmt.Printf("  prev    : %s\n", shortHash(ev.PrevHash))
-	fmt.Printf("  hash    : %s\n", shortHash(ev.LineHash))
-}
-
-func shortHash(h string) string {
-	if h == "" {
-		return "(empty — chain genesis)"
-	}
-	if len(h) > 16 {
-		return h[:16] + "…"
-	}
-	return h
-}
-
-func splitLines(data []byte) [][]byte {
-	var out [][]byte
-	start := 0
-	for i := 0; i <= len(data); i++ {
-		if i == len(data) || data[i] == '\n' {
-			if i > start {
-				out = append(out, data[start:i])
-			}
-			start = i + 1
-		}
-	}
-	return out
 }

@@ -251,10 +251,6 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 		// full-inventory trigger. runFullInventoryReport enforces the flap
 		// floor (ReconnectSnapshotMinInterval) so a flapping NIC is safe.
 		signalDrain(fullInventoryReconnectTrigger)
-		// Emit a startup-quarantine audit event (one shot) if the local
-		// audit.log was tampered with between runs — the server sees an
-		// authoritative record of the attempt.
-		EmitStartupQuarantineEvent(ctx, outbox, cfg.DeviceID)
 
 		// Cert renewal: periodically check if the client cert is nearing expiry;
 		// if so, renew it over THIS mTLS channel (no token) and reconnect to use it.

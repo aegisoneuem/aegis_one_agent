@@ -374,9 +374,13 @@ func (p *patchInstaller) startProgressPings(cmdID, actionType, kb string, starte
 	return func() { close(stop) }
 }
 
-// sendStatus queues an ActionStatus for the sender goroutine to transmit.
+// sendStatus queues an ActionStatus for the sender goroutine to transmit,
+// then (for terminal phases) emits a command_completed audit event so the
+// audit record pairs the earlier command_received line with its outcome.
+// See recordCompletionAudit for decision mapping.
 func sendStatus(outbox chan<- *pb.AgentMessage, st *pb.ActionStatus) {
 	outbox <- actionStatusMsg(st)
+	recordCompletionAudit(outbox, st)
 }
 
 // sanitize makes a string safe to use in a file name.

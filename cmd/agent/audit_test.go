@@ -77,23 +77,14 @@ func TestRecordAudit_EmitsAcceptedAndRejected(t *testing.T) {
 		if got.Decision != cmds[i].dec {
 			t.Errorf("event %d: decision=%q, want %q", i, got.Decision, cmds[i].dec)
 		}
-		if got.LineHash == "" {
-			t.Errorf("event %d: line_hash empty", i)
-		}
 	}
-	// Chain intact — event N's prev_hash must equal event N-1's line_hash.
-	for i := 1; i < len(events); i++ {
-		if events[i].PrevHash != events[i-1].LineHash {
-			t.Errorf("chain broken at event %d: prev=%q, want %q", i, events[i].PrevHash, events[i-1].LineHash)
-		}
-	}
-	// On-disk audit.log mirrors the stream + chain verifies.
-	idx, reason, err := auditlog.VerifyChain(filepath.Join(tmp, "audit.log"))
+	// On-disk audit.log mirrors the stream — read it back and assert count.
+	disk, err := auditlog.Read(filepath.Join(tmp, "audit.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if idx != -1 {
-		t.Errorf("local audit.log chain broken: line %d: %s", idx, reason)
+	if len(disk) != len(cmds) {
+		t.Errorf("on-disk events = %d, want %d", len(disk), len(cmds))
 	}
 }
 
