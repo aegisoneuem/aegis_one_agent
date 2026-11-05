@@ -10,6 +10,7 @@ import (
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/hwinventory"
+	"github.com/aegisoneuem/aegis_one_agent/internal/patch"
 	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
@@ -120,6 +121,27 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 				UninstallString: a.UninstallString,
 			})
 		}
+		// Driver inventory for OEM driver patching. Best-effort — a WMI
+		// failure here must NOT drop the whole snapshot (HW + apps still
+		// ship). The server catalog decides which drivers are patchable.
+		if drivers, derr := patch.CollectDrivers(); derr != nil {
+			slog.Warn("TIER-3 full-inventory: driver enumerate failed (continuing without drivers)", "error", derr.Error(), "trigger", trigger)
+		} else {
+			rep.Drivers = make([]*pb.DriverInventory, 0, len(drivers))
+			for _, d := range drivers {
+				rep.Drivers = append(rep.Drivers, &pb.DriverInventory{
+					DeviceName:    d.DeviceName,
+					DeviceClass:   d.DeviceClass,
+					DriverVersion: d.DriverVersion,
+					DriverDate:    d.DriverDate,
+					ProviderName:  d.ProviderName,
+					HardwareId:    d.HardwareID,
+					InfName:       d.InfName,
+					Manufacturer:  d.Manufacturer,
+					IsSigned:      d.IsSigned,
+				})
+			}
+		}
 		// Send-on-change gate (BigFix-style drift detection):
 		//   - startup / reconnect   -> ALWAYS send (server needs fresh state)
 		//   - scheduled & unchanged -> skip until SafetyNetInterval elapsed
@@ -158,6 +180,7 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 			"trigger", trigger,
 			"reason", reason,
 			"apps", len(rep.InstalledApps),
+			"drivers", len(rep.Drivers),
 			"disks", len(rep.GetHardware().GetDisks()),
 			"nics", len(rep.GetHardware().GetNics()),
 			"cpu_model", rep.GetHardware().GetCpuModel(),

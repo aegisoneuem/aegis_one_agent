@@ -1417,11 +1417,25 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				hw.GetOsProductName(), hw.GetOsDisplayVersion(), hw.GetOsBuild(),
 				hw.GetVirtualization(),
 				hw.GetSystemVendor(), hw.GetSystemProduct())
+			mockPrintf("  BIOS: %s %s (%s) | drivers: %d\n",
+				hw.GetBiosVendor(), hw.GetBiosVersion(), hw.GetBiosReleaseDate(), len(fi.GetDrivers()))
 			for _, d := range hw.GetDisks() {
 				mockPrintf("  disk %s | %s | %s | %.1f GB (%.1f GB free)\n",
 					d.MountPoint, d.DriveType, d.FileSystem,
 					float64(d.TotalBytes)/(1024*1024*1024),
 					float64(d.FreeBytes)/(1024*1024*1024))
+			}
+			// Driver inventory: print the first few so a tester can eyeball the
+			// OEM driver coverage; full list is cached for NSH inspection.
+			shownDrivers := fi.GetDrivers()
+			for i, d := range shownDrivers {
+				if i >= 15 {
+					mockPrintf("  ... and %d more driver(s)\n", len(shownDrivers)-15)
+					break
+				}
+				mockPrintf("  driver %-36s v%-16s %-12s %-14s signed=%v [%s]\n",
+					truncate(d.GetDeviceName(), 36), d.GetDriverVersion(), d.GetDriverDate(),
+					truncate(d.GetProviderName(), 14), d.GetIsSigned(), d.GetDeviceClass())
 			}
 			s.inventoryMu.Lock()
 			if s.lastFullInventory == nil {
