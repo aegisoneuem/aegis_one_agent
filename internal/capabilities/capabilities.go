@@ -56,6 +56,9 @@ var supported = []string{
 	"file_operation_list_directory",
 	// Phase 1b — command attribution (actor + source + issued_at)
 	"command_attribution",
+	// Phase 1b — streamed audit events (server-authoritative; agent keeps
+	// a local rolling buffer with chain-hash tamper detection)
+	"audit_log_streaming",
 }
 
 // SchemaVersion returns the stable contract version the server uses to

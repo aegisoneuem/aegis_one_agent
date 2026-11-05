@@ -347,9 +347,11 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 					"issued_at", cmd.IssuedAt)
 				if !verifyCommand(cmd) {
 					slog.Warn("command signature invalid — rejecting", "command_id", cmd.CommandId)
+					recordAudit(ctx, outbox, cfg.DeviceID, cmd, false, "rejected", "signature verification failed")
 					send(ctx, outbox, buildCommandResultMessage(cmd.CommandId, "rejected", "signature verification failed"))
 					continue
 				}
+				recordAudit(ctx, outbox, cfg.DeviceID, cmd, true, "accepted", "")
 
 				// Route to the per-type handler (registry; no hardcoded switch). Patch
 				// install/uninstall queue on the serial worker; stage/reboot/scan run their
@@ -677,6 +679,13 @@ func runProcess(ctx context.Context) {
 	// enforced INSIDE runFullInventoryReport so a flapping NIC does not DoS
 	// the server. The 6-12 h scheduled timer is never suppressed by the floor.
 	fullInventoryReconnectTrigger := make(chan struct{}, 1)
+
+	// Audit log: open the local rolling buffer (seeds the chain from any
+	// existing file so restarts continue the hash chain). The server
+	// remains the AUTHORITATIVE compliance surface via streamed
+	// AuditEvent messages; the local buffer is best-effort + offline-
+	// grace.
+	initAuditLogger(cfg)
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.

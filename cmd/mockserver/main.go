@@ -1430,6 +1430,15 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			s.lastFullInventory[fi.DeviceId] = fi
 			s.inventoryMu.Unlock()
 		}
+		if ae := msg.GetAuditEvent(); ae != nil {
+			mockPrintf("AUDIT -> %s | ts=%d event=%s cmd_id=%s cmd_type=%s actor=%s source=%s sig_ok=%v decision=%s reason=%q line_hash=%s prev_hash=%s\n",
+				s.identify(ae.DeviceId), ae.Ts, ae.EventType, ae.CommandId, ae.CommandType,
+				ae.Actor, ae.Source, ae.SignatureOk, ae.Decision, ae.Reason,
+				shortID(ae.LineHash), shortID(ae.PrevHash))
+			// server-authoritative audit log: for the demo mock we just
+			// print; server-team's server_audit.log is where the real
+			// chain-hash tamper-evident record lives.
+		}
 		if cf := msg.GetCacheFull(); cf != nil {
 			mockPrintf("Received CACHE-FULL report -> device: %s, pending: %s, needed: %d, cap: %d, in_use: %d, msg: %s\n",
 				cf.DeviceId, cf.PendingId, cf.NeededBytes, cf.CapBytes, cf.InUseBytes, cf.Message)
