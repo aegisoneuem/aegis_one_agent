@@ -313,6 +313,32 @@ func (s *nshSession) interactiveLoop() {
 // a block replay. Routes to the verb, returns false on `exit`.
 func (s *nshSession) exec(line string) bool {
 	line = strings.TrimSpace(line)
+	// REPL-wide output redirection: `<verb args> > dst` or `>> dst`.
+	// Pre-parse strips the redirect; execCore runs the verb against a
+	// size-capped buffer; runWithRedirect flushes to dst. `cat` is
+	// exempt (parseNSHRedirect returns Redirect=false) because cat has
+	// its own `>` / `>>` semantics (source→dest file copy).
+	if red, err := parseNSHRedirect(line); err != nil {
+		s.printf("nsh: %v\n", err)
+		return true
+	} else if red.Redirect {
+		// exit/quit through a redirect still terminates — capture the
+		// inner verb's return value and bubble it back out.
+		keepGoing := true
+		if werr := s.runWithRedirect(red.Destination, red.Append, func() {
+			keepGoing = s.execCore(red.StrippedLine)
+		}); werr != nil {
+			s.printf("nsh: redirect write failed: %v\n", werr)
+		}
+		return keepGoing
+	}
+	return s.execCore(line)
+}
+
+// execCore is the verb-dispatch body of exec. Kept separate so the
+// redirect wrapper in exec() can call it inside a captured output
+// context without duplicating the switch.
+func (s *nshSession) execCore(line string) bool {
 	verb, rest := splitFirst(line)
 	switch strings.ToLower(verb) {
 	case "exit", "quit", "bye":
@@ -401,6 +427,11 @@ EXECUTION
      Cross-host paths are NSH device paths, not Windows SMB shares.
      set file-workers 4 | file-max-bytes 524288000 | file-max-files 10000
   <cmd> | run <cmd>         run on current target(s) (bare line = run)
+  run <cmd> /shell <X>      one-off per-command shell override (X: cmd|powershell|pwsh|ps|bash|sh|zsh)
+                            trailing /shell or --shell only; otherwise session default from 'use'
+  <any verb> > <dst>        redirect verb stdout to a file; <dst> may be local or UNC '\\<host>\<drive>\<path>'
+  <any verb> >> <dst>       append verb stdout to <dst> (file created if missing)
+                            cat is exempt (it has its own > / >> semantics); 100 MB cap per invocation
   grab [path] <cmd>         run + save stdout as server-side file
   pull <remote> [path]      fetch an endpoint file verbatim
   fanout <cmd>              explicit multi-target run, aggregated output
@@ -785,6 +816,17 @@ func (s *nshSession) verbRun(cmdText string, fan bool) {
 	if !fan && len(s.targets) > 1 {
 		s.printf("nsh: %d targets selected; use `fanout <cmd>` for multi-target\n", len(s.targets))
 		return
+	}
+	// Per-command shell override: trailing "/shell <X>" or "--shell <X>"
+	// chooses a one-off interpreter without changing the session default
+	// that `use <X>` set. A valid override swaps s.shell for THIS
+	// dispatch only; everything else (run_command spec, parameters) is
+	// unchanged. Session shell is restored after dispatch.
+	if sh, stripped := parseShellOverride(cmdText); sh != "" {
+		saved := s.shell
+		s.shell = sh
+		defer func() { s.shell = saved }()
+		cmdText = stripped
 	}
 	// Capture mode: each target gets its OWN per-host path so a fan-out never
 	// collides into one file. Single-target still gets a host-folder path so

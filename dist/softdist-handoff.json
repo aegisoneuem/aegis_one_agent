@@ -50,8 +50,8 @@
                       },
                       {
                           "file":  "mockserver.exe",
-                          "bytes":  19738112,
-                          "sha256":  "7cecb73953bdf3276d25ee901e99ffcc773d97e9c999c7231172542074277f3e"
+                          "bytes":  19745792,
+                          "sha256":  "3dc839e247367f7d8c5d8f9426ab68fe2be611f9ff0d7bec2f0ccd353d7729eb"
                       },
                       {
                           "file":  "auditcheck.exe",
