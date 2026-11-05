@@ -225,7 +225,7 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 			s.printf("# %s\n", line)
 		}
 		s.history = append(s.history, line)
-		if cont := s.engine.execLine(line); !cont {
+		if cont := s.execInputLine(line); !cont {
 			return
 		}
 		if err != nil {
@@ -303,7 +303,7 @@ func (s *nshSession) interactiveLoop() {
 			line.AppendHistory(input)
 			s.history = append(s.history, input)
 		}
-		if cont := s.engine.execLine(input); !cont {
+		if cont := s.execInputLine(input); !cont {
 			return
 		}
 	}
@@ -313,32 +313,6 @@ func (s *nshSession) interactiveLoop() {
 // a block replay. Routes to the verb, returns false on `exit`.
 func (s *nshSession) exec(line string) bool {
 	line = strings.TrimSpace(line)
-	// REPL-wide output redirection: `<verb args> > dst` or `>> dst`.
-	// Pre-parse strips the redirect; execCore runs the verb against a
-	// size-capped buffer; runWithRedirect flushes to dst. `cat` is
-	// exempt (parseNSHRedirect returns Redirect=false) because cat has
-	// its own `>` / `>>` semantics (source→dest file copy).
-	if red, err := parseNSHRedirect(line); err != nil {
-		s.printf("nsh: %v\n", err)
-		return true
-	} else if red.Redirect {
-		// exit/quit through a redirect still terminates — capture the
-		// inner verb's return value and bubble it back out.
-		keepGoing := true
-		if werr := s.runWithRedirect(red.Destination, red.Append, func() {
-			keepGoing = s.execCore(red.StrippedLine)
-		}); werr != nil {
-			s.printf("nsh: redirect write failed: %v\n", werr)
-		}
-		return keepGoing
-	}
-	return s.execCore(line)
-}
-
-// execCore is the verb-dispatch body of exec. Kept separate so the
-// redirect wrapper in exec() can call it inside a captured output
-// context without duplicating the switch.
-func (s *nshSession) execCore(line string) bool {
 	verb, rest := splitFirst(line)
 	switch strings.ToLower(verb) {
 	case "exit", "quit", "bye":

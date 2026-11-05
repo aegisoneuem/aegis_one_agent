@@ -169,6 +169,44 @@ func (c *cappedBuffer) Overflowed() bool  { return c.overflow }
 func (c *cappedBuffer) Size() int         { return len(c.buf) }
 func newCappedBuffer(max int) *cappedBuffer { return &cappedBuffer{buf: make([]byte, 0, 4096), max: max} }
 
+// execInputLine is the REPL's input entry point. Both the interactive
+// loop (readline) and the script readLoop route through here BEFORE
+// handing the line to the scripting engine. The pre-parser strips a
+// trailing `> dst` / `>> dst` so verb output is captured into a size-
+// capped buffer and flushed to the destination. On no redirect (or on
+// a parse error) the original line goes to engine.execLine unchanged.
+//
+// This replaces the previous direct engine.execLine calls — the old
+// path missed the pre-parser, which is why redirect fell through to
+// the verbs' own argument handling (e.g. `inventory apps > apps.txt`
+// treated the redirect as a filter string).
+func (s *nshSession) execInputLine(line string) bool {
+	// dispatch selects the real runtime (engine when present) or the
+	// per-verb exec() fallback (used by test harnesses that don't stand
+	// up a full scripting engine). Pre-parser runs BEFORE either.
+	dispatch := func(l string) bool {
+		if s.engine != nil {
+			return s.engine.execLine(l)
+		}
+		return s.exec(l)
+	}
+	red, err := parseNSHRedirect(line)
+	if err != nil {
+		s.printf("nsh: %v\n", err)
+		return true
+	}
+	if !red.Redirect {
+		return dispatch(line)
+	}
+	keepGoing := true
+	if werr := s.runWithRedirect(red.Destination, red.Append, func() {
+		keepGoing = dispatch(red.StrippedLine)
+	}); werr != nil {
+		s.printf("nsh: redirect write failed: %v\n", werr)
+	}
+	return keepGoing
+}
+
 // runWithRedirect swaps the session's output writer for a size-capped
 // buffer, runs the dispatch callback (the verb), then flushes the
 // buffer to the destination. stderr stream is NOT redirected — errors

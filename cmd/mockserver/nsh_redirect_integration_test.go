@@ -33,7 +33,7 @@ func TestNSHRedirect_Integration_LocalFile(t *testing.T) {
 	var stdout bytes.Buffer
 	s := newTestSession(t, &stdout)
 
-	cont := s.exec("help > " + dst)
+	cont := s.execInputLine("help > " + dst)
 	if !cont {
 		t.Error("exec returned false on help; want true")
 	}
@@ -62,11 +62,11 @@ func TestNSHRedirect_Integration_AppendGrows(t *testing.T) {
 	dst := filepath.Join(tmp, "log.txt")
 	s := newTestSession(t, io.Discard)
 
-	s.exec("help > " + dst)
+	s.execInputLine("help > " + dst)
 	fi1, _ := os.Stat(dst)
 	size1 := fi1.Size()
 
-	s.exec("help >> " + dst)
+	s.execInputLine("help >> " + dst)
 	fi2, _ := os.Stat(dst)
 	size2 := fi2.Size()
 
@@ -81,11 +81,11 @@ func TestNSHRedirect_Integration_OverwriteStable(t *testing.T) {
 	dst := filepath.Join(tmp, "stable.txt")
 	s := newTestSession(t, io.Discard)
 
-	s.exec("help > " + dst)
+	s.execInputLine("help > " + dst)
 	fi1, _ := os.Stat(dst)
 	size1 := fi1.Size()
 
-	s.exec("help > " + dst)
+	s.execInputLine("help > " + dst)
 	fi2, _ := os.Stat(dst)
 	size2 := fi2.Size()
 
@@ -103,7 +103,7 @@ func TestNSHRedirect_Integration_Break_EmptyOutputCreatesFile(t *testing.T) {
 	s := newTestSession(t, io.Discard)
 	// pwd with no targets prints nothing; a path that produces no bytes
 	// still creates the file so the operator sees "I ran it".
-	_ = s.exec("pwd > " + dst)
+	_ = s.execInputLine("pwd > " + dst)
 	if _, err := os.Stat(dst); err != nil {
 		t.Errorf("empty redirect did not create destination: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestNSHRedirect_Integration_Break_CatBypassesPreparser(t *testing.T) {
 	tmp := t.TempDir()
 	dst := filepath.Join(tmp, "cat-handled.txt")
 	s := newTestSession(t, io.Discard)
-	_ = s.exec("cat C:\\nonexistent-src.txt > " + dst)
+	_ = s.execInputLine("cat C:\\nonexistent-src.txt > " + dst)
 	// Since no agent is configured, cat's remote read fails; what we
 	// are asserting here is that the NSH pre-parser did NOT create an
 	// empty destination file via its own path. If it had, the file
