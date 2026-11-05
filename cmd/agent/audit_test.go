@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/auditlog"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestRecordAudit_EmitsAcceptedAndRejected is the integration test the
@@ -92,6 +94,75 @@ func TestRecordAudit_EmitsAcceptedAndRejected(t *testing.T) {
 	}
 	if idx != -1 {
 		t.Errorf("local audit.log chain broken: line %d: %s", idx, reason)
+	}
+}
+
+// L1.9 integration — end-to-end: build a realistic signed command with
+// a parsable payload, call recordAudit, and assert the audit record
+// carries the payload-type-specific Details field. Covers the full
+// production path (not just the summary helper in isolation).
+func TestRecordAudit_IncludesPayloadDetails(t *testing.T) {
+	tmp := t.TempDir()
+	l, err := auditlog.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := auditLogger
+	auditLogger = l
+	defer func() { auditLogger = saved }()
+
+	outbox := make(chan *pb.AgentMessage, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	spec := &pb.RunCommandSpec{Shell: "powershell", Command: "Get-Process"}
+	payload, _ := proto.Marshal(spec)
+	cmd := &pb.Command{CommandId: "nsh-xyz", Type: "run_command", Payload: payload,
+		Actor: "nsh:tester@localhost", Source: "mockserver.nsh"}
+	recordAudit(ctx, outbox, "dev-integ", cmd, true, "accepted", "")
+	close(outbox)
+
+	var ev *pb.AuditEvent
+	for msg := range outbox {
+		if ae := msg.GetAuditEvent(); ae != nil {
+			ev = ae
+			break
+		}
+	}
+	if ev == nil {
+		t.Fatal("no AuditEvent reached the outbox")
+	}
+	if !strings.Contains(ev.Details, "shell=powershell") {
+		t.Errorf("Details missing shell: %q", ev.Details)
+	}
+	if !strings.Contains(ev.Details, "command=Get-Process") {
+		t.Errorf("Details missing command text: %q", ev.Details)
+	}
+}
+
+// L1.9 integration — rejected-command path must NOT compute details
+// (hostile payload could be malformed; we refuse to parse it).
+func TestRecordAudit_RejectedSkipsDetails(t *testing.T) {
+	tmp := t.TempDir()
+	l, _ := auditlog.New(tmp)
+	saved := auditLogger
+	auditLogger = l
+	defer func() { auditLogger = saved }()
+
+	outbox := make(chan *pb.AgentMessage, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	cmd := &pb.Command{CommandId: "bad-1", Type: "run_command", Payload: []byte{0xde, 0xad}}
+	recordAudit(ctx, outbox, "dev-x", cmd, false, "rejected", "bad signature")
+	close(outbox)
+
+	for msg := range outbox {
+		if ae := msg.GetAuditEvent(); ae != nil {
+			if ae.Details != "" {
+				t.Errorf("rejected command carried Details=%q; must be empty", ae.Details)
+			}
+		}
 	}
 }
 

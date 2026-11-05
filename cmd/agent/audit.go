@@ -82,6 +82,15 @@ func recordAudit(ctx context.Context, outbox chan<- *pb.AgentMessage, deviceID s
 	if !signatureOK || decision == "rejected" {
 		eventType = "command_rejected"
 	}
+	// Details: per-command-type payload summary. Only computed for
+	// accepted commands — a rejected command may have a payload the
+	// agent could not trust / unmarshal. For rejected events, keeping
+	// Details empty prevents a malformed hostile payload from being
+	// echoed into the audit record.
+	details := ""
+	if signatureOK {
+		details = payloadSummary(cmd)
+	}
 	ev := auditlog.Event{
 		DeviceID:    deviceID,
 		TS:          time.Now().UnixMilli(),
@@ -94,6 +103,7 @@ func recordAudit(ctx context.Context, outbox chan<- *pb.AgentMessage, deviceID s
 		SignatureOK: signatureOK,
 		Decision:    decision,
 		Reason:      reason,
+		Details:     details,
 	}
 	writeAuditEvent(ctx, outbox, ev)
 }
@@ -155,6 +165,7 @@ func sendAuditEvent(ctx context.Context, outbox chan<- *pb.AgentMessage, ev audi
 		SignatureOk: ev.SignatureOK,
 		Decision:    ev.Decision,
 		Reason:      ev.Reason,
+		Details:     ev.Details,
 		PrevHash:    ev.PrevHash,
 		LineHash:    ev.LineHash,
 	}}}

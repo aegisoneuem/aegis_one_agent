@@ -108,6 +108,9 @@ func prettyPrint(idx int, ev auditlog.Event) {
 	if ev.Reason != "" {
 		fmt.Printf("  reason  : %s\n", ev.Reason)
 	}
+	if ev.Details != "" {
+		fmt.Printf("  details : %s\n", ev.Details)
+	}
 	fmt.Printf("  device  : %s\n", ev.DeviceID)
 	fmt.Printf("  prev    : %s\n", shortHash(ev.PrevHash))
 	fmt.Printf("  hash    : %s\n", shortHash(ev.LineHash))

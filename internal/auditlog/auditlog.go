@@ -65,8 +65,12 @@ type Event struct {
 	SignatureOK bool   `json:"signature_ok"`
 	Decision    string `json:"decision"`
 	Reason      string `json:"reason,omitempty"`
-	PrevHash    string `json:"prev_hash,omitempty"`
-	LineHash    string `json:"line_hash"`
+	// Details: short per-command-type payload summary so an auditor can
+	// tell WHAT was done, not just that "a command was received". Format
+	// and per-type keys documented on pb.AuditEvent.details.
+	Details  string `json:"details,omitempty"`
+	PrevHash string `json:"prev_hash,omitempty"`
+	LineHash string `json:"line_hash"`
 }
 
 // Logger is the serialized append-only audit sink. Safe for concurrent
@@ -293,6 +297,7 @@ func canonicalJSON(ev Event) ([]byte, error) {
 		"signature_ok": ev.SignatureOK,
 		"decision":     ev.Decision,
 		"reason":       ev.Reason,
+		"details":      ev.Details,
 		"prev_hash":    ev.PrevHash,
 		"line_hash":    ev.LineHash,
 	}

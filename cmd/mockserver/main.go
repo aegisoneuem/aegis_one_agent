@@ -1431,9 +1431,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			s.inventoryMu.Unlock()
 		}
 		if ae := msg.GetAuditEvent(); ae != nil {
-			mockPrintf("AUDIT -> %s | ts=%d event=%s cmd_id=%s cmd_type=%s actor=%s source=%s sig_ok=%v decision=%s reason=%q line_hash=%s prev_hash=%s\n",
+			mockPrintf("AUDIT -> %s | ts=%d event=%s cmd_id=%s cmd_type=%s actor=%s source=%s sig_ok=%v decision=%s reason=%q details=%q line_hash=%s prev_hash=%s\n",
 				s.identify(ae.DeviceId), ae.Ts, ae.EventType, ae.CommandId, ae.CommandType,
-				ae.Actor, ae.Source, ae.SignatureOk, ae.Decision, ae.Reason,
+				ae.Actor, ae.Source, ae.SignatureOk, ae.Decision, ae.Reason, ae.Details,
 				shortID(ae.LineHash), shortID(ae.PrevHash))
 			// server-authoritative audit log: for the demo mock we just
 			// print; server-team's server_audit.log is where the real
