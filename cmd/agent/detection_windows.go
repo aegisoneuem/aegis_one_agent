@@ -19,16 +19,26 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// runPatchDetection launches the two detection layers; both only ever write to
+// runPatchDetection launches patch detection; both layers only ever write to
 // the buffer (the sender goroutine drains it), never the network.
-//   - Layer 1 (frequent): lightweight installed-KB/build report, sent on change.
-//   - Layer 4 (weekly): the heavier offline cab reconciliation scan (needs a cab).
+//
+//   - Layer 1 (PRIMARY): lightweight build + installed-KB report, sent on
+//     change. The server diffs this against its server-side catalog to compute
+//     "missing" — the endpoint never needs a cab. This is the scalable path
+//     (see docs/server-spec-patch-detection.md).
+//   - Layer 4 (OPTIONAL reconciliation): the heavier offline cab scan. DEMOTED
+//     — it needs a local wsusscn2.cab and is OFF by default. Enable it only for
+//     air-gapped sites or on-demand deep reconciliation by setting
+//     AEGIS_WSUS_SCAN_CAB. Do NOT distribute the cab to the fleet for routine
+//     detection; that is exactly the scaling problem Layer 1 removes.
 func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, installedSet *installedStore, scanTrigger <-chan struct{}, deviceStateTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	go runDeviceStateReport(cfg, buf, baseline, rebootStore, deviceStateTrigger, drainSignal)
 	if cfg.WsusScanCab == "" {
-		slog.Info("patch compliance scan disabled (no AEGIS_WSUS_SCAN_CAB configured)")
+		// Expected default in the server-side-diff model — NOT a misconfiguration.
+		slog.Info("patch detection: Layer 1 (server-side-diff) active; Layer 4 offline cab scan OFF by default (set AEGIS_WSUS_SCAN_CAB only for air-gapped/on-demand reconciliation)")
 		return
 	}
+	slog.Info("patch detection: Layer 4 offline cab reconciliation ENABLED (optional path)", "cab", cfg.WsusScanCab)
 	go runReconciliationScan(cfg, buf, installedSet, scanTrigger, drainSignal)
 }
 
@@ -108,6 +118,10 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			RebootPendingKbs:     pendingKBs,
 			RebootPendingSources: rebootSources,
 			InstalledApps:        installedApps,
+			// Installed-KB set (registry/CBS, no cab) — the diff input the
+			// SERVER needs to compute "missing" without shipping a cab to the
+			// endpoint. See docs/server-spec-patch-detection.md.
+			InstalledKbs: state.InstalledKBs,
 		}
 		fp := deviceStateFingerprint(rep)
 		if fp == lastFingerprint {
@@ -124,7 +138,7 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			return
 		}
 		lastFingerprint = fp
-		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "reboot_pending", rep.RebootPending, "installed_apps", len(rep.InstalledApps))
+		slog.Info("FAST-LANE patch-state: CHANGED -> sending", "build", rep.Build, "reboot_pending", rep.RebootPending, "installed_apps", len(rep.InstalledApps), "installed_kbs", len(rep.InstalledKbs))
 		signalDrain(drainSignal)
 	}
 
@@ -190,13 +204,21 @@ func deviceStateFingerprint(rep *pb.DeviceStateReport) string {
 	h.Write([]byte{'|'})
 	h.Write([]byte(rep.Architecture))
 	// Pending-reboot state so a newly-pending (or post-reboot cleared) device is
-	// reported promptly, not suppressed as "unchanged". (The installed-KB list is no
-	// longer in the fast lane; servicing-set changes are caught by the CBS watch.)
+	// reported promptly, not suppressed as "unchanged".
 	h.Write([]byte{'|'})
 	if rep.RebootPending {
 		h.Write([]byte("reboot-pending"))
 	}
 	for _, kb := range rep.RebootPendingKbs {
+		h.Write([]byte(kb))
+		h.Write([]byte{','})
+	}
+	// Installed-KB set drives change detection in the server-side-diff model:
+	// an install/uninstall changes this set, which MUST trigger a prompt Layer 1
+	// resend so the server re-diffs against its catalog. CollectLocalState
+	// returns the set already sorted + deduped, so the hash is stable.
+	h.Write([]byte{'|'})
+	for _, kb := range rep.InstalledKbs {
 		h.Write([]byte(kb))
 		h.Write([]byte{','})
 	}

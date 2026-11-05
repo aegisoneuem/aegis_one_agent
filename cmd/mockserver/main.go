@@ -1388,8 +1388,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 		if ds := msg.GetDeviceState(); ds != nil {
-			mockPrintf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v, installed_apps: %d",
-				s.identify(ds.DeviceId), ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending, len(ds.InstalledApps))
+			mockPrintf("Received patch state report -> %s | product: %s, build: %s, arch: %s, reboot_pending: %v, installed_apps: %d, installed_kbs: %d",
+				s.identify(ds.DeviceId), ds.ProductName, ds.Build, ds.Architecture, ds.RebootPending, len(ds.InstalledApps), len(ds.GetInstalledKbs()))
 			if ds.RebootPending {
 				mockPrintf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}
