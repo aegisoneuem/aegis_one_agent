@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -311,13 +312,23 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, installedSet *i
 		}
 		defer servicingGate.Unlock()
 
+		// Optional path: the cab may be configured but not yet delivered (peer-
+		// cache drops it later and fires scanTrigger). A missing cab is NOT a
+		// compliance failure in the server-side-diff model — skip quietly instead
+		// of logging ERROR / buffering a FAILED status every run. Only a cab that
+		// IS present but fails to scan is a real (loud) error, below.
+		if _, statErr := os.Stat(cfg.WsusScanCab); statErr != nil {
+			slog.Debug("reconciliation (cab): optional catalog not present — skipping (server-side diff is primary)", "cab", cfg.WsusScanCab)
+			return
+		}
+
 		actionID := fmt.Sprintf("scan-%d", time.Now().Unix())
 		started := time.Now().Unix()
-		slog.Info("FULL-SCAN (cab): starting offline cab scan", "cab", cfg.WsusScanCab)
+		slog.Info("reconciliation (cab): starting optional offline cab scan", "cab", cfg.WsusScanCab)
 		scan, err := patch.ScanOffline(cfg.WsusScanCab)
 		if err != nil {
-			// Fail loud: an errored scan is UNKNOWN, never silently "compliant".
-			slog.Error("FULL-SCAN (cab): scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
+			// Cab present but the scan broke — that IS loud (status UNKNOWN).
+			slog.Error("reconciliation (cab): scan failed (patch status UNKNOWN, not compliant)", "error", err.Error())
 			bufferActionStatus(&pb.ActionStatus{
 				ActionId: actionID, ActionType: actionScan, DeviceId: cfg.DeviceID,
 				Phase: pb.ActionPhase_ACTION_PHASE_FAILED, Reason: "scan failed: " + err.Error(),
@@ -368,20 +379,20 @@ func runReconciliationScan(cfg config.Config, buf buffer.Buffer, installedSet *i
 		signalDrain(drainSignal)
 	}
 
-	slog.Info("FULL-SCAN (cab): running at startup (heavy; then only on weekly interval / new catalog / on-demand)")
+	slog.Debug("reconciliation (cab): optional scan loop started (runs only when a cab is present: startup, weekly, new catalog, or on-demand)")
 	safeRun("patch-compliance-scan", scan) // once at startup, then on the interval OR a trigger
 	ticker := time.NewTicker(cfg.ReconScanInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			slog.Info("FULL-SCAN (cab): running on the periodic interval", "interval", cfg.ReconScanInterval.String())
+			slog.Debug("reconciliation (cab): periodic interval tick", "interval", cfg.ReconScanInterval.String())
 			safeRun("patch-compliance-scan", scan)
 		case <-scanTrigger:
 			// A new catalog (cab) landed (or an on-demand scan was requested) — run
-			// the heavy scan now instead of waiting for the weekly tick. Install/
-			// uninstall WITHOUT a cab change is handled cheaply by the fast lane.
-			slog.Info("FULL-SCAN (cab): triggered (new catalog / on-demand)")
+			// the scan now instead of waiting for the weekly tick. Install/uninstall
+			// WITHOUT a cab change is handled cheaply by the fast lane.
+			slog.Debug("reconciliation (cab): triggered (new catalog / on-demand)")
 			safeRun("patch-compliance-scan", scan)
 		}
 	}
