@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/appxinventory"
 	"github.com/aegisoneuem/aegis_one_agent/internal/buffer"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/hwinventory"
@@ -142,6 +143,26 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 				})
 			}
 		}
+		// MSIX/AppX/Store inventory — the modern-app surface the Uninstall hive
+		// misses. Best-effort; a failure never drops the HW/apps/drivers snapshot.
+		if appx, aerr := appxinventory.Collect(); aerr != nil {
+			slog.Warn("TIER-3 full-inventory: appx enumerate failed (continuing without appx)", "error", aerr.Error(), "trigger", trigger)
+		} else {
+			rep.InstalledAppx = make([]*pb.InstalledAppx, 0, len(appx))
+			for _, a := range appx {
+				rep.InstalledAppx = append(rep.InstalledAppx, &pb.InstalledAppx{
+					DisplayName:       a.DisplayName,
+					PackageFullName:   a.PackageFullName,
+					PackageFamilyName: a.PackageFamilyName,
+					Name:              a.Name,
+					Version:           a.Version,
+					Architecture:      a.Architecture,
+					PublisherId:       a.PublisherID,
+					InstallLocation:   a.InstallLocation,
+					Origin:            a.Origin,
+				})
+			}
+		}
 		// Send-on-change gate (BigFix-style drift detection):
 		//   - startup / reconnect   -> ALWAYS send (server needs fresh state)
 		//   - scheduled & unchanged -> skip until SafetyNetInterval elapsed
@@ -183,6 +204,7 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 			"reason", reason,
 			"apps", len(rep.InstalledApps),
 			"drivers", len(rep.Drivers),
+			"appx", len(rep.InstalledAppx),
 			"disks", len(rep.GetHardware().GetDisks()),
 			"nics", len(rep.GetHardware().GetNics()),
 			"cpu_model", rep.GetHardware().GetCpuModel(),

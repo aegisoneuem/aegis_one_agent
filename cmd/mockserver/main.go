@@ -1417,8 +1417,21 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				hw.GetOsProductName(), hw.GetOsDisplayVersion(), hw.GetOsBuild(),
 				hw.GetVirtualization(),
 				hw.GetSystemVendor(), hw.GetSystemProduct())
-			mockPrintf("  BIOS: %s %s (%s) | drivers: %d\n",
-				hw.GetBiosVendor(), hw.GetBiosVersion(), hw.GetBiosReleaseDate(), len(fi.GetDrivers()))
+			mockPrintf("  BIOS: %s %s (%s) | drivers: %d | appx: %d\n",
+				hw.GetBiosVendor(), hw.GetBiosVersion(), hw.GetBiosReleaseDate(), len(fi.GetDrivers()), len(fi.GetInstalledAppx()))
+			shownAppx := fi.GetInstalledAppx()
+			for i, a := range shownAppx {
+				if i >= 12 {
+					mockPrintf("  ... and %d more appx package(s)\n", len(shownAppx)-12)
+					break
+				}
+				name := a.GetDisplayName()
+				if name == "" {
+					name = a.GetName()
+				}
+				mockPrintf("  appx %-34s v%-16s %-8s [%s]\n",
+					truncate(name, 34), a.GetVersion(), a.GetArchitecture(), a.GetOrigin())
+			}
 			for _, d := range hw.GetDisks() {
 				mockPrintf("  disk %s | %s | %s | %.1f GB (%.1f GB free)\n",
 					d.MountPoint, d.DriveType, d.FileSystem,
