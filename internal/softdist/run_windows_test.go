@@ -35,6 +35,12 @@ func TestBuildInvocation(t *testing.T) {
 			"pnputil.exe", `/add-driver C:\p\net.inf /install`},
 		{"auto infers inf", Params{}, `C:\p\net.inf`,
 			"pnputil.exe", `/add-driver C:\p\net.inf /install`},
+		{"msix install default skiplicense", Params{InstallerType: "msix"}, `C:\p\app.msix`,
+			"dism.exe", `/online /add-provisionedappxpackage /packagepath:C:\p\app.msix /skiplicense`},
+		{"auto infers msix", Params{}, `C:\p\app.msix`,
+			"dism.exe", `/online /add-provisionedappxpackage /packagepath:C:\p\app.msix /skiplicense`},
+		{"msixbundle with deps (no default skiplicense)", Params{InstallerType: "msixbundle", SilentArgs: "/dependencypackagepath:C:\\p\\vclibs.appx"}, `C:\p\app.msixbundle`,
+			"dism.exe", `/online /add-provisionedappxpackage /packagepath:C:\p\app.msixbundle /dependencypackagepath:C:\p\vclibs.appx`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,6 +69,49 @@ func TestBuildInvocationUnknownType(t *testing.T) {
 func TestBuildInvocationInfUninstallRejected(t *testing.T) {
 	if _, _, err := buildInvocation(Params{InstallerType: "inf", Action: "uninstall"}, `C:\p\net.inf`, ""); err == nil {
 		t.Fatal("expected an error for inf uninstall via software_deploy")
+	}
+}
+
+func TestMsixUninstallName(t *testing.T) {
+	// Fileless msix uninstall by PackageFullName (via product_code).
+	name, ok := msixUninstallName(Params{InstallerType: "msix", Action: "uninstall",
+		ProductCode: "Contoso.App_1.0.0.0_x64__abc123"})
+	if !ok || name != "Contoso.App_1.0.0.0_x64__abc123" {
+		t.Errorf("got (%q,%v), want the package full name + true", name, ok)
+	}
+	// uninstall_key fallback when product_code empty.
+	if n, ok := msixUninstallName(Params{InstallerType: "appx", Action: "uninstall", UninstallKey: "Fam_pub"}); !ok || n != "Fam_pub" {
+		t.Errorf("uninstall_key fallback failed: (%q,%v)", n, ok)
+	}
+	// Not msix / has a file / install action / no name -> not the fileless path.
+	for _, p := range []Params{
+		{InstallerType: "msi", Action: "uninstall", ProductCode: "x"},               // wrong type
+		{InstallerType: "msix", Action: "install", ProductCode: "x"},                // install
+		{InstallerType: "msix", Action: "uninstall", FilePath: `C:\a.msix`, ProductCode: "x"}, // has file
+		{InstallerType: "msix", Action: "uninstall"},                                // no name
+	} {
+		if _, ok := msixUninstallName(p); ok {
+			t.Errorf("should NOT be fileless msix uninstall: %+v", p)
+		}
+	}
+}
+
+func TestMsixRemoveByName(t *testing.T) {
+	bin, args := msixRemoveByName("Contoso.App_1.0.0.0_x64__abc123", "")
+	if bin != "dism.exe" {
+		t.Errorf("bin = %q", bin)
+	}
+	want := "/online /remove-provisionedappxpackage /packagename:Contoso.App_1.0.0.0_x64__abc123"
+	if got := strings.Join(args, " "); got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+}
+
+// msix uninstall via buildInvocation (file path present, no name) is rejected
+// with a clear error — removal must go through the fileless by-name path.
+func TestBuildInvocationMsixUninstallRejected(t *testing.T) {
+	if _, _, err := buildInvocation(Params{InstallerType: "msix", Action: "uninstall"}, `C:\p\app.msix`, ""); err == nil {
+		t.Fatal("expected an error for file-based msix uninstall via buildInvocation")
 	}
 }
 

@@ -72,6 +72,15 @@ func Run(ctx context.Context, p Params) Result {
 		return runRegistryUninstall(ctx, p)
 	}
 
+	// Fileless MSIX/AppX uninstall: a provisioned package is removed BY NAME
+	// (PackageFullName), not a file — DISM /remove-provisionedappxpackage. The
+	// server supplies the PackageFullName via product_code or uninstall_key. No
+	// file means no integrity/signature check to run.
+	if name, ok := msixUninstallName(p); ok {
+		bin, args := msixRemoveByName(name, Substitute(p.SilentArgs, p.Parameters))
+		return execInstaller(ctx, p, bin, args, "")
+	}
+
 	// Generic "command" type: run ANY command the admin specifies — a system tool
 	// (netsh, reg), an interpreter (java -jar ...), choco, etc. No file is required
 	// and no delivery/hash/signature is enforced (the admin owns the command). This is
@@ -511,6 +520,42 @@ func classify(p Params, exit int, out string) Result {
 	return res
 }
 
+// msixUninstallName returns the PackageFullName to remove for a fileless
+// MSIX/AppX uninstall, and whether this IS such an uninstall: installer_type is
+// msix/appx(bundle), action is uninstall, no installer file is given, and a
+// package name was supplied (product_code preferred, else uninstall_key).
+func msixUninstallName(p Params) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(p.InstallerType)) {
+	case "msix", "appx", "msixbundle", "appxbundle":
+	default:
+		return "", false
+	}
+	if !strings.EqualFold(strings.TrimSpace(p.Action), "uninstall") {
+		return "", false
+	}
+	if strings.TrimSpace(p.FilePath) != "" {
+		return "", false // a file was given — not the fileless path
+	}
+	name := strings.TrimSpace(p.ProductCode)
+	if name == "" {
+		name = strings.TrimSpace(p.UninstallKey)
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// msixRemoveByName builds the DISM command to remove a provisioned MSIX/AppX
+// package by PackageFullName. Extra server args (if any) are appended.
+func msixRemoveByName(name, extraArgs string) (string, []string) {
+	args := []string{"/online", "/remove-provisionedappxpackage", "/packagename:" + name}
+	if extra, err := splitWindowsArgs(extraArgs); err == nil {
+		args = append(args, extra...)
+	}
+	return "dism.exe", args
+}
+
 // buildInvocation chooses the process + args for the installer type. "auto" (or
 // empty) infers from the file extension. Silent/unattended flags come from the
 // payload (vendor-specific); only msi gets a sane default when none are given.
@@ -526,6 +571,10 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 			typ = "bat"
 		case ".inf":
 			typ = "inf"
+		case ".msix", ".appx":
+			typ = "msix"
+		case ".msixbundle", ".appxbundle":
+			typ = "msixbundle"
 		case ".py":
 			typ = "python"
 		case ".vbs":
@@ -589,6 +638,25 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 			return "", nil, fmt.Errorf("inf uninstall is not supported via software_deploy; the published oemNN.inf name is required — use a device-targeted driver removal")
 		}
 		return "pnputil.exe", append([]string{"/add-driver", abs, "/install"}, extra...), nil
+	case "msix", "appx", "msixbundle", "appxbundle":
+		// MSIX/AppX/Store package install — DISM provisioned install (all users +
+		// future users), NO PowerShell (Add-AppxPackage is PS; BigFix falls back
+		// to it — we don't). Reuses the DISM infra + deploy pipeline. Framework
+		// dependencies and a license are passed by the server via silent_args
+		// (/dependencypackagepath:<dep>, /licensepath:<lic>); with none we default
+		// to /skiplicense (sideloaded LOB / non-Store). DISM 0/3010 handled as
+		// success. Per-user-only installs would need the WinRT PackageManager.
+		if uninstall {
+			// Removal is by PackageFullName (/remove-provisionedappxpackage
+			// /packagename:<full>), not a file — handled before this via a
+			// fileless path; reaching here means no package name was supplied.
+			return "", nil, fmt.Errorf("msix uninstall requires the PackageFullName (removed by name, not file) — supply it as product_code/uninstall_key")
+		}
+		args := []string{"/online", "/add-provisionedappxpackage", "/packagepath:" + abs}
+		if len(extra) == 0 {
+			args = append(args, "/skiplicense")
+		}
+		return "dism.exe", append(args, extra...), nil
 	default:
 		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|cmd|python|vbs|inf|command|auto)", p.InstallerType)
 	}
