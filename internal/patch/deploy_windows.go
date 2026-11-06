@@ -191,7 +191,7 @@ func RunWUSAInstall(path string, timeout time.Duration) *DeployResult {
 	if err != nil {
 		return &DeployResult{Reason: fmt.Sprintf("resolve patch path %q: %v", path, err)}
 	}
-	slog.Info("deploy: installing local patch via wusa (fallback)", "file", abs, "timeout", timeout.String())
+	slog.Info("deploy: installing local patch via wusa", "file", abs, "timeout", timeout.String())
 
 	// wusa.exe needs the Windows Update service (wuauserv). If it is disabled,
 	// temporarily enable it and restore afterward (see ensureWUServiceForWUSA).
