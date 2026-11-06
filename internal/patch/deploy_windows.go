@@ -210,21 +210,7 @@ func RunWUSAInstall(path string, timeout time.Duration) *DeployResult {
 
 	exitCode := cmd.ProcessState.ExitCode()
 	res := &DeployResult{Path: abs, ExitCode: exitCode, Detail: tail(string(out), 600)}
-	switch exitCode {
-	case 0:
-		res.Success = true
-	case 3010, 1641:
-		res.Success = true
-		res.RebootRequired = true
-	case 0x240006: // WU_S_ALREADY_INSTALLED — the KB is already present; this is a
-		// no-op, NOT a fresh install. Surface it as "already installed" so the caller
-		// reports NOT_APPLICABLE instead of a misleading SUCCESS.
-		res.AlreadyInstalled = true
-		res.Reason = "already installed (nothing to do)"
-	default:
-		res.Success = false
-		res.Reason = fmt.Sprintf("wusa install failed (exit %d / 0x%X)", exitCode, uint32(exitCode))
-	}
+	classifyWusaExit(exitCode, res)
 	switch {
 	case res.AlreadyInstalled:
 		slog.Info("deploy: wusa reports patch already installed (no-op)", "file", abs, "exit_code", exitCode)

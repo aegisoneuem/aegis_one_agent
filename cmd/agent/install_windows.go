@@ -90,6 +90,9 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 			case wres.AlreadyInstalled:
 				slog.Info("install_patch: wusa reports the KB is already installed — nothing to do", "kb", spec.Kb, "exit_code", wres.ExitCode)
 				res = wres
+			case wres.NotApplicable:
+				slog.Info("install_patch: wusa reports the update is NOT APPLICABLE to this device — benign (wrong OS/build or missing prerequisite)", "kb", spec.Kb, "exit_code", wres.ExitCode)
+				res = wres
 			case wres.Success:
 				slog.Info("install_patch: installed via wusa fallback", "kb", spec.Kb, "exit_code", wres.ExitCode, "reboot_required", wres.RebootRequired)
 				res = wres
@@ -113,6 +116,13 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 		st.Phase = pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE
 		st.Reason = "already installed (nothing to do)"
 		st.RebootRequired = false // nothing was installed this time
+	case res.NotApplicable:
+		// The update does not apply to this device (wrong OS/build/arch or a
+		// missing prerequisite). Benign, NOT a failure — this is the signal the
+		// server's self-correcting diff uses to stop re-offering the patch.
+		st.Phase = pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE
+		st.Reason = res.Reason
+		st.RebootRequired = false
 	case res.Success:
 		st.Phase = pb.ActionPhase_ACTION_PHASE_SUCCESS
 		// Make the terminal status explicit about restart state so the console can
