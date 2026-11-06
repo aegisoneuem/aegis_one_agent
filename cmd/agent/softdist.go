@@ -538,6 +538,7 @@ func (s *softdistInstaller) run(job softdistJob) {
 		SuccessCodes:     spec.SuccessExitCodes,
 		Timeout:          time.Duration(spec.TimeoutSeconds) * time.Second,
 		RequireSignature: spec.RequireSignature,
+		RequireACPower:   spec.RequireAcPower,
 		ProductCode:      spec.ProductCode,
 		UninstallKey:     spec.UninstallKey,
 		DisplayName:      spec.DisplayName,

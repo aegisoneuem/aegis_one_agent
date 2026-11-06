@@ -88,6 +88,14 @@ func Run(ctx context.Context, p Params) Result {
 		return execInstaller(ctx, p, bin, args, "")
 	}
 
+	// AC-power safety gate (BIOS/firmware flash): refuse on battery BEFORE we
+	// touch the installer, so a risky flash never starts on an unsafe power state.
+	onAC, known := SystemOnACPower()
+	if blocked, reason := acPowerBlocked(p.RequireACPower, onAC, known); blocked {
+		slog.Error("softdist: AC-power gate blocked deploy", "reason", reason)
+		return Result{Reason: reason}
+	}
+
 	abs, err := filepath.Abs(p.FilePath)
 	if err != nil {
 		return Result{Reason: fmt.Sprintf("resolve installer path %q: %v", p.FilePath, err)}
@@ -516,6 +524,8 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 			typ = "ps1"
 		case ".bat", ".cmd":
 			typ = "bat"
+		case ".inf":
+			typ = "inf"
 		case ".py":
 			typ = "python"
 		case ".vbs":
@@ -565,8 +575,22 @@ func buildInvocation(p Params, abs, logPath string) (bin string, args []string, 
 		return "cscript.exe", append([]string{"//nologo", "//B", abs}, extra...), nil
 	case "exe":
 		return abs, extra, nil
+	case "inf":
+		// Raw .inf driver package (no vendor installer) — covers OEM drivers
+		// Windows Update does not carry. pnputil is a NATIVE Windows tool, not
+		// PowerShell. /install actually applies the driver to matching devices
+		// (without it pnputil only stages into the driver store). pnputil returns
+		// 0 on success and 3010 when a reboot is required — both already treated
+		// as success by the deploy pipeline.
+		if uninstall {
+			// Uninstalling a driver needs the PUBLISHED "oemNN.inf" name assigned
+			// when it was added (not the original .inf), plus device-level care.
+			// Out of scope for this path — do a device-targeted uninstall instead.
+			return "", nil, fmt.Errorf("inf uninstall is not supported via software_deploy; the published oemNN.inf name is required — use a device-targeted driver removal")
+		}
+		return "pnputil.exe", append([]string{"/add-driver", abs, "/install"}, extra...), nil
 	default:
-		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|cmd|python|vbs|command|auto)", p.InstallerType)
+		return "", nil, fmt.Errorf("unknown installer_type %q (want msi|exe|ps1|bat|cmd|python|vbs|inf|command|auto)", p.InstallerType)
 	}
 }
 

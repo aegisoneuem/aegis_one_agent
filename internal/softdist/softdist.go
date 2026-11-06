@@ -49,6 +49,11 @@ type Params struct {
 	// signature (trusted publisher) and REFUSE to run an unsigned/untrusted file —
 	// the standard-UEM publisher check. Left false for internal/unsigned installers.
 	RequireSignature bool
+	// RequireACPower, when true, REFUSES the deploy if the machine is running on
+	// battery (not on AC/mains). The safety gate for a BIOS/firmware flash — a
+	// power loss mid-flash can brick the device. Deeper flash safety (BitLocker
+	// suspend, multi-reboot sequencing) is owned by the vendor flash utility.
+	RequireACPower bool
 }
 
 // Result is the outcome of one deploy: a terminal mapping (Success /

@@ -31,6 +31,10 @@ func TestBuildInvocation(t *testing.T) {
 			"powershell.exe", `-NonInteractive -NoProfile -ExecutionPolicy Bypass -File C:\p\run.ps1`},
 		{"bat payload", Params{InstallerType: "bat"}, `C:\p\run.bat`,
 			"cmd.exe", `/c C:\p\run.bat`},
+		{"inf driver install", Params{InstallerType: "inf"}, `C:\p\net.inf`,
+			"pnputil.exe", `/add-driver C:\p\net.inf /install`},
+		{"auto infers inf", Params{}, `C:\p\net.inf`,
+			"pnputil.exe", `/add-driver C:\p\net.inf /install`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -51,6 +55,14 @@ func TestBuildInvocation(t *testing.T) {
 func TestBuildInvocationUnknownType(t *testing.T) {
 	if _, _, err := buildInvocation(Params{InstallerType: "rpm"}, `C:\p\x`, ""); err == nil {
 		t.Fatal("expected an error for an unknown installer_type")
+	}
+}
+
+// inf uninstall is intentionally unsupported (needs the published oemNN.inf) —
+// it must return a clear error, not silently run pnputil with the wrong name.
+func TestBuildInvocationInfUninstallRejected(t *testing.T) {
+	if _, _, err := buildInvocation(Params{InstallerType: "inf", Action: "uninstall"}, `C:\p\net.inf`, ""); err == nil {
+		t.Fatal("expected an error for inf uninstall via software_deploy")
 	}
 }
 
