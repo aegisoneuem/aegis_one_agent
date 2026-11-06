@@ -188,6 +188,11 @@ func RunWUSAInstall(path string, timeout time.Duration) *DeployResult {
 	}
 	slog.Info("deploy: installing local patch via wusa (fallback)", "file", abs, "timeout", timeout.String())
 
+	// wusa.exe needs the Windows Update service (wuauserv). If it is disabled,
+	// temporarily enable it and restore afterward (see ensureWUServiceForWUSA).
+	restoreWU, wuWasDisabled := ensureWUServiceForWUSA()
+	defer restoreWU()
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "wusa.exe", abs, "/quiet", "/norestart")
@@ -225,6 +230,9 @@ func RunWUSAInstall(path string, timeout time.Duration) *DeployResult {
 		slog.Info("deploy: wusa reports patch already installed (no-op)", "file", abs, "exit_code", exitCode)
 	case res.Success:
 		slog.Info("deploy: wusa install succeeded", "file", abs, "exit_code", exitCode, "reboot_required", res.RebootRequired)
+	}
+	if wuWasDisabled {
+		res.Detail = strings.TrimSpace(res.Detail + "\n" + wuServiceDisabledDetail())
 	}
 	return res
 }
