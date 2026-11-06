@@ -86,7 +86,10 @@ func CollectDrivers() ([]DriverInfo, error) {
 		}
 	}
 	sortDrivers(out)
-	slog.Info("driver inventory collected", "total_rows", count, "reported", len(out))
+	// Debug, not Info: this runs on every Tier-3 fingerprint cycle (even when
+	// the snapshot is unchanged and skipped), so an Info line here is per-cycle
+	// noise. The actual send is logged by the caller.
+	slog.Debug("driver inventory collected", "total_rows", count, "reported", len(out))
 	return out, nil
 }
 

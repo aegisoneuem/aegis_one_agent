@@ -152,7 +152,9 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 		age := time.Since(lastSentAt)
 		mu.Unlock()
 		if !forceSend && sameFP && age < cfg.FullInventorySafetyNetInterval {
-			slog.Info("TIER-3 full-inventory: unchanged -> skipping send (safety-net not yet due)",
+			// Debug, not Info: fires every scheduled cycle when nothing changed;
+			// an Info line here is per-cycle log noise.
+			slog.Debug("TIER-3 full-inventory: unchanged -> skipping send (safety-net not yet due)",
 				"trigger", trigger,
 				"age", age.Round(time.Second).String(),
 				"safety_net", cfg.FullInventorySafetyNetInterval.String())

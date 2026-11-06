@@ -32,7 +32,7 @@ import (
 //     AEGIS_WSUS_SCAN_CAB. Do NOT distribute the cab to the fleet for routine
 //     detection; that is exactly the scaling problem Layer 1 removes.
 func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, installedSet *installedStore, scanTrigger <-chan struct{}, deviceStateTrigger <-chan struct{}, drainSignal chan<- struct{}) {
-	go runDeviceStateReport(cfg, buf, baseline, rebootStore, deviceStateTrigger, drainSignal)
+	go runDeviceStateReport(cfg, buf, baseline, rebootStore, installedSet, deviceStateTrigger, drainSignal)
 	if cfg.WsusScanCab == "" {
 		// Expected default in the server-side-diff model — NOT a misconfiguration.
 		slog.Info("patch detection: Layer 1 (server-side-diff) active; Layer 4 offline cab scan OFF by default (set AEGIS_WSUS_SCAN_CAB only for air-gapped/on-demand reconciliation)")
@@ -47,15 +47,39 @@ func runPatchDetection(cfg config.Config, buf buffer.Buffer, baseline *baselineS
 // when it CHANGED since the last send (the installed set rarely changes, so
 // sending every cycle would be wasteful at fleet scale). The agent reports
 // installed facts only; the server computes "missing".
-func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, deviceStateTrigger <-chan struct{}, drainSignal chan<- struct{}) {
+func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baselineStore, rebootStore *rebootPendingStore, installedSet *installedStore, deviceStateTrigger <-chan struct{}, drainSignal chan<- struct{}) {
 	var lastFingerprint string
 	var lastSelfDiffKey string
-	report := func() {
+	// Full installed-KB set (WUA ∪ QFE ∪ CBS) is heavier than the cheap CBS
+	// build read, so it is refreshed on a TTL (or forced on-demand / after a
+	// servicing change), cached, and reused between refreshes. installedSet
+	// also persists it for the install worker's "already installed?" check.
+	var cachedInstalledKBs []string
+	var lastInstalledRefresh time.Time
+	const installedRefreshTTL = 1 * time.Hour
+	report := func(forceInstalledRefresh bool) {
 		state, err := patch.CollectLocalState()
 		if err != nil {
 			// Fail loud: unknown local state is not "nothing installed".
 			slog.Error("FAST-LANE patch-state: could not read local state", "error", err.Error())
 			return
+		}
+
+		// Refresh the COMPLETE installed-KB set when forced, uninitialized, or
+		// the TTL elapsed. This is the appwiz.cpl-parity set (CBS alone misses
+		// cumulative updates). A failure falls back to the cheap CBS set so the
+		// report still goes out — never block on it.
+		if forceInstalledRefresh || cachedInstalledKBs == nil || time.Since(lastInstalledRefresh) > installedRefreshTTL {
+			if kbs, ierr := patch.CollectInstalledKBs(); ierr != nil {
+				slog.Warn("FAST-LANE patch-state: full installed-KB collection failed; using CBS fallback", "error", ierr.Error())
+				if cachedInstalledKBs == nil {
+					cachedInstalledKBs = state.InstalledKBs
+				}
+			} else {
+				cachedInstalledKBs = kbs
+				lastInstalledRefresh = time.Now()
+				installedSet.replace(kbs) // persist for the install worker's pre-check
+			}
 		}
 
 		// Best-effort offline self-diff against the server's cached baseline —
@@ -118,10 +142,11 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 			RebootPendingKbs:     pendingKBs,
 			RebootPendingSources: rebootSources,
 			InstalledApps:        installedApps,
-			// Installed-KB set (registry/CBS, no cab) — the diff input the
-			// SERVER needs to compute "missing" without shipping a cab to the
-			// endpoint. See docs/server-spec-patch-detection.md.
-			InstalledKbs: state.InstalledKBs,
+			// Complete installed-KB set (WUA ∪ QFE ∪ CBS, no cab) — the diff
+			// input the SERVER needs to compute "missing" without shipping a cab
+			// to the endpoint. appwiz.cpl parity (CBS alone missed cumulative
+			// updates). See docs/server-spec-patch-detection.md.
+			InstalledKbs: cachedInstalledKBs,
 		}
 		fp := deviceStateFingerprint(rep)
 		if fp == lastFingerprint {
@@ -142,20 +167,23 @@ func runDeviceStateReport(cfg config.Config, buf buffer.Buffer, baseline *baseli
 		signalDrain(drainSignal)
 	}
 
-	safeRun("layer1-device-state", report) // once at startup, then on the interval
+	// Startup: force a full installed-KB refresh to populate the set.
+	safeRun("layer1-device-state", func() { report(true) })
 	ticker := time.NewTicker(cfg.DeviceStateInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			safeRun("layer1-device-state", report)
+			// Periodic tick: TTL governs whether the heavy set is re-collected.
+			safeRun("layer1-device-state", func() { report(false) })
 		case <-deviceStateTrigger:
-			// On-demand refresh (signed report_device_state command). Reset the
-			// change-detection fingerprint so the next report is sent even when
-			// nothing on the device has changed since the last send.
-			slog.Info("FAST-LANE patch-state: on-demand refresh requested — resetting fingerprint")
+			// On-demand refresh (signed report_device_state command, OR a CBS
+			// servicing change = install/uninstall). Reset the fingerprint AND
+			// force a full installed-KB recollection so a just-installed/removed
+			// patch is reflected immediately and the server re-diffs.
+			slog.Info("FAST-LANE patch-state: on-demand/servicing refresh — resetting fingerprint + recollecting installed KBs")
 			lastFingerprint = ""
-			safeRun("layer1-device-state", report)
+			safeRun("layer1-device-state", func() { report(true) })
 		}
 	}
 }

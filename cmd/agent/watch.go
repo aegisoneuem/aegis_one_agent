@@ -13,11 +13,13 @@ import (
 // time; waiting for things to settle coalesces the burst into ONE heavy scan.
 const servicingRescanDebounce = 60 * time.Second
 
-// watchServicingForRescan bridges CBS servicing changes to a debounced compliance
-// re-scan: it watches the servicing store (event-driven, ~zero cost) and, after
-// changes settle, pokes scanTrigger so the agent re-scans "what is missing" right
-// after a local install/uninstall — without running the heavy scan on a timer.
-func watchServicingForRescan(ctx context.Context, scanTrigger chan<- struct{}) {
+// watchServicingForRescan bridges CBS servicing changes to a debounced refresh:
+// it watches the servicing store (event-driven, ~zero cost) and, after changes
+// settle, pokes deviceStateTrigger (Layer 1 recollects the full installed-KB set
+// so the server re-diffs promptly after a local install/uninstall) and, when the
+// optional Layer 4 cab scan is enabled, scanTrigger too. Either trigger is best-
+// effort (coalescing channels); a nil scanTrigger is skipped.
+func watchServicingForRescan(ctx context.Context, scanTrigger chan<- struct{}, deviceStateTrigger chan<- struct{}) {
 	defer recoverLog("servicing-watch")
 
 	fire := make(chan struct{}, 1)
@@ -67,8 +69,11 @@ func watchServicingForRescan(ctx context.Context, scanTrigger chan<- struct{}) {
 				break
 			}
 			armed = false
-			slog.Info("servicing settled — triggering compliance re-scan")
-			signalDrain(scanTrigger)
+			slog.Info("servicing settled — refreshing installed-KB state (Layer 1)")
+			signalDrain(deviceStateTrigger)
+			if scanTrigger != nil {
+				signalDrain(scanTrigger)
+			}
 		}
 	}
 }

@@ -94,6 +94,33 @@ func (s *installedStore) remove(kb string) {
 	}
 }
 
+// list returns the full installed-KB set (normalized "KB<digits>" form, sorted),
+// or nil when no set has been collected yet. Used by the Layer 1 report to send
+// the complete installed list to the server.
+func (s *installedStore) list() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return nil
+	}
+	var kbs []string
+	if json.Unmarshal(data, &kbs) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(kbs))
+	for _, k := range kbs {
+		if n := normalizeKB(k); n != "" {
+			out = append(out, "KB"+n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // has reports whether the KB is in the last scan's installed set. False when no
 // scan has run yet (the caller then falls back to the CBS check / the installer's
 // own already-installed detection).

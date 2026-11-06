@@ -699,7 +699,7 @@ func runProcess(ctx context.Context) {
 	// Watch the servicing store (CBS) and debounce-trigger a re-scan on any local
 	// install/uninstall — instant auto-detect without running the heavy scan on a
 	// timer (event-driven; no-op on non-Windows).
-	go watchServicingForRescan(ctx, scanTrigger)
+	go watchServicingForRescan(ctx, scanTrigger, deviceStateTrigger)
 
 	if err := runAgent(ctx, cfg, buf, outbox, installJobs, sdi, stg, baseline, cabs, keys, scanTrigger, deviceStateTrigger, fullInventoryReconnectTrigger, drainSignal); err != nil {
 		slog.Error("agent exited with error", "error", err.Error())
