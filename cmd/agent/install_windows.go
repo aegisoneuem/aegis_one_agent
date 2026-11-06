@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,46 +60,48 @@ func handleInstallPatch(spec *pb.InstallPatchSpec, installPath string, timeout t
 	}
 	emit(pb.ActionPhase_ACTION_PHASE_RUNNING)
 
+	// Installer choice is by file type and is CORRECTNESS-critical:
+	//   .msu  → wusa.exe (the Windows Update Standalone Installer). DISM
+	//           /add-package returns a FALSE SUCCESS (exit 0) for .NET Framework
+	//           .msu without actually installing, and "not supported" (exit 50)
+	//           for others. wusa installs every .msu type and reports TRUSTWORTHY
+	//           exit codes (0 / 3010 / WU_E_NOT_APPLICABLE). This is also what
+	//           BigFix's patch Fixlets use. We do NOT fall back to DISM for a
+	//           .msu — a false success is far worse than an honest failure.
+	//   .cab  → DISM (wusa cannot install a .cab).
 	var res *patch.DeployResult
-	var err error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		res, err = patch.RunDISM(installPath, timeout)
+	if strings.EqualFold(filepath.Ext(installPath), ".msu") {
+		res = patch.RunWUSAInstall(installPath, timeout)
 		if res == nil {
-			// Could not even start DISM (bad path, missing binary) — not retryable.
-			reason := "install failed"
-			if err != nil {
-				reason = err.Error()
-			}
-			return installFailed(spec.Kb, reason)
+			return installFailed(spec.Kb, "wusa produced no result")
 		}
-		if res.Success || !res.Transient || attempt == maxAttempts {
-			break
+		switch {
+		case res.AlreadyInstalled:
+			slog.Info("install_patch: wusa reports the KB is already installed — nothing to do", "kb", spec.Kb, "exit_code", res.ExitCode)
+		case res.NotApplicable:
+			slog.Info("install_patch: wusa reports the update is NOT APPLICABLE to this device — benign (wrong OS/build/.NET version or missing prerequisite)", "kb", spec.Kb, "exit_code", res.ExitCode)
+		case res.Success:
+			slog.Info("install_patch: installed via wusa", "kb", spec.Kb, "exit_code", res.ExitCode, "reboot_required", res.RebootRequired)
+		default:
+			slog.Warn("install_patch: wusa install failed", "kb", spec.Kb, "exit_code", res.ExitCode, "reason", res.Reason)
 		}
-		slog.Warn("install_patch: attempt failed (transient), retrying",
-			"kb", spec.Kb, "attempt", attempt, "of", maxAttempts, "reason", res.Reason, "backoff", retryBackoff.String())
-		time.Sleep(retryBackoff)
-	}
-
-	// DISM failed — some .msu (especially on Windows Server) install via wusa but
-	// not DISM ("The request is not supported"). Fall back to wusa.exe (exactly what
-	// the manual "install this update" does). Skip when the failure was the disk
-	// pre-flight — wusa needs the same free space, so retrying there is pointless.
-	if !res.Success && !strings.Contains(strings.ToLower(res.Reason), "disk space") {
-		slog.Info("install_patch: DISM could not install this .msu — falling back to wusa (the manual install path)", "kb", spec.Kb, "dism_exit", res.ExitCode, "dism_reason", res.Reason)
-		if wres := patch.RunWUSAInstall(installPath, timeout); wres != nil {
-			switch {
-			case wres.AlreadyInstalled:
-				slog.Info("install_patch: wusa reports the KB is already installed — nothing to do", "kb", spec.Kb, "exit_code", wres.ExitCode)
-				res = wres
-			case wres.NotApplicable:
-				slog.Info("install_patch: wusa reports the update is NOT APPLICABLE to this device — benign (wrong OS/build or missing prerequisite)", "kb", spec.Kb, "exit_code", wres.ExitCode)
-				res = wres
-			case wres.Success:
-				slog.Info("install_patch: installed via wusa fallback", "kb", spec.Kb, "exit_code", wres.ExitCode, "reboot_required", wres.RebootRequired)
-				res = wres
-			default:
-				res.Detail = strings.TrimSpace(res.Detail + "\n-- wusa fallback also failed: " + wres.Reason + " --\n" + wres.Detail)
+	} else {
+		var err error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			res, err = patch.RunDISM(installPath, timeout)
+			if res == nil {
+				reason := "install failed"
+				if err != nil {
+					reason = err.Error()
+				}
+				return installFailed(spec.Kb, reason)
 			}
+			if res.Success || !res.Transient || attempt == maxAttempts {
+				break
+			}
+			slog.Warn("install_patch: DISM attempt failed (transient), retrying",
+				"kb", spec.Kb, "attempt", attempt, "of", maxAttempts, "reason", res.Reason, "backoff", retryBackoff.String())
+			time.Sleep(retryBackoff)
 		}
 	}
 

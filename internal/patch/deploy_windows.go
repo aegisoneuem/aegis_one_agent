@@ -43,14 +43,14 @@ func SetDiskMultiplier(n int64) {
 
 // DeployResult is the outcome of installing one local patch file.
 
-// InstallLocalPatch installs a LOCAL patch file (.msu or .cab) with DISM — no
-// internet and no PowerShell. The server delivers the file to the endpoint via
-// peer-cache; this function only ever touches that local file, never the
-// network. Requires Administrator (the agent runs as a LocalSystem service in
-// production; a non-elevated dev run will fail).
+// InstallLocalPatch installs a LOCAL patch file — no internet, no PowerShell.
+// The server delivers the file via peer-cache; this only touches that local
+// file. Requires Administrator (the agent runs as LocalSystem in production).
 //
-// DISM was chosen over wusa.exe as Microsoft's current, recommended offline
-// install path (handles .cab and .msu); revisit if Microsoft changes course.
+// Installer by type (correctness-critical): .msu → wusa.exe (DISM returns a
+// FALSE success for .NET Framework .msu without installing, and "not supported"
+// for others; wusa installs every .msu and reports trustworthy exit codes —
+// this is what BigFix's Fixlets use). .cab → DISM (wusa can't do .cab).
 //
 // expectedSHA256 (hex) is the file integrity check: when non-empty the file's
 // SHA-256 must match or the install is refused before DISM runs. In production
@@ -59,6 +59,11 @@ func SetDiskMultiplier(n int64) {
 func InstallLocalPatch(path, expectedSHA256 string) (*DeployResult, error) {
 	if err := VerifyPatchFile(path, expectedSHA256, "sha256"); err != nil {
 		return &DeployResult{Path: path, Success: false, Detail: err.Error()}, err
+	}
+	// .msu → wusa (DISM false-succeeds on .NET .msu); .cab → DISM. See
+	// handleInstallPatch for the full rationale.
+	if strings.EqualFold(filepath.Ext(path), ".msu") {
+		return RunWUSAInstall(path, installTimeout), nil
 	}
 	return RunDISM(path, installTimeout)
 }
