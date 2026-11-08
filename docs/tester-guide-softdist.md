@@ -3,7 +3,7 @@
 **Audience:** QA engineer with no prior Aegis codebase context.
 **Purpose:** validate the agent's Software Distribution pipeline end to end on a Windows VM, using the mockserver as the signed-command source. Hinglish/English OK; copy-paste commands exactly.
 
-**Last updated:** 2026-11-02 (handoff `fa694fb`).
+**Last updated:** 2026-11-08 (handoff `9f0b147`). Blocks G/H/I/K VM-PASS; added Block M (resumable download / checkpoint restart); G now uses two-box server delivery; I redirect fixed.
 
 ---
 
@@ -26,6 +26,7 @@ What this guide covers:
 | I | Descendant termination on timeout | 1 |
 | J | Reboot-sensitive 3010 + MSI/MST + config-only parameter update | 3 |
 | K | Bandwidth throttling (fetch, upload, lower-wins policy) | 3 |
+| M | Resumable download / checkpoint restart (disconnect resumes from offset) | 1 (+1 automated) |
 | L | Run-As + secure parameters + per-user detection | 5 |
 | UE | Uninstall edge cases (ambiguity, HKCU refusal, timeout, tampering, hash pin, …) | 34 |
 | UC-18 | Third-party installed-apps inventory (DeviceStateReport) | brief; depth in patching guide |
@@ -1200,7 +1201,13 @@ echo Rollback sample bundle>C:\temp\AegisBundleDemo-src\readme.txt
 if exist C:\temp\AegisRollbackBundle.zip del C:\temp\AegisRollbackBundle.zip
 mockserver.exe pack C:\temp\AegisBundleDemo-src C:\temp\AegisRollbackBundle.zip
 set "AEGIS_TARGET_DEVICE=<DEVICE_UUID>"
-set "AEGIS_DEPLOY_FILE=C:\temp\AegisRollbackBundle.zip"
+rem Two-box (endpoint + mockserver on SEPARATE hosts): deliver via content_id +
+rem SERVE + AUTO_HASH, and leave AEGIS_DEPLOY_FILE EMPTY. A pre-staged
+rem AEGIS_DEPLOY_FILE path only works when both run on the SAME machine.
+set "AEGIS_DEPLOY_FILE="
+set "AEGIS_DEPLOY_CONTENT_ID=rollback-demo-v1"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisRollbackBundle.zip"
+set "AEGIS_DEPLOY_AUTO_HASH=1"
 set "AEGIS_DEPLOY_HASH="
 set "AEGIS_DEPLOY_ACTION=install"
 set "AEGIS_DEPLOY_TYPE=command"
@@ -1382,9 +1389,10 @@ The agent wraps each installer in a Windows Job Object; on timeout, every descen
 ```cmd
 set "AEGIS_DEPLOY_NAME=I1 Descendant kill with diagnostic"
 set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
-set "AEGIS_DEPLOY_ARGS=/D /C ping -n 30 127.0.0.1 ^> nul"
+set "AEGIS_DEPLOY_ARGS=/D /C ping -n 30 127.0.0.1"
 set "AEGIS_DEPLOY_TIMEOUT=5"
 set "AEGIS_DEPLOY_ROLLBACK_COMMAND="
+set "AEGIS_DEPLOY_ROLLBACK_TIMEOUT_SECONDS="
 mockserver.exe server
 ```
 
@@ -1659,6 +1667,88 @@ mockserver.exe server
 - Mock shows `fetch_rate=2000000 B/s` on send (the signed value).
 - Actual DOWNLOADING wall-clock ≈ 4 seconds (NOT 1 second). Agent applied `min(500000 admin cap, 2000000 signed) = 500000 B/s`.
 - Terminal `SUCCESS`, exit 0.
+
+> **K3 note:** `setx /M` does NOT reliably reach a running service. Set the admin
+> cap via `config.json` instead (the service reads it at startup): **Endpoint**
+> `sc stop AegisOneClient`, then write
+> `{ "AEGIS_FETCH_MAX_BYTES_PER_SECOND": "500000" }` (ASCII, no BOM) to
+> `C:\Program Files\AegisOne\Client\SKVC\config.json`, then `sc start AegisOneClient`.
+> Revert by deleting that file and restarting the service.
+
+---
+
+## 15A. Block M — Resumable download (checkpoint restart)
+
+A mid-transfer disconnect no longer re-downloads a large package from zero. The
+agent writes received bytes to a content-addressed partial file next to the
+destination; on a dropped connection the partial is KEPT (for SHA-pinned
+transfers), and when the server re-issues the command the next fetch resumes from
+the partial's byte offset (`ContentRequest.offset`). The WHOLE file's SHA-256 is
+re-verified before accept, so a resumed transfer is as trustworthy as a single
+one. Applies to every `FetchContent` transfer (bundles, patch content, cab).
+
+### 15A.1 Case M1 — disconnect mid-fetch resumes from the byte offset
+
+Use a bundle big enough that a throttled fetch gives a wide interrupt window.
+
+**Mockserver** — FRESH CMD; build a 6 MB bundle and serve it throttled at
+200 KB/s (~30 s download) via server delivery:
+
+```cmd
+cd /d C:\temp\mock
+powershell -NoProfile -Command "$p='C:\temp\AegisResumeSrc'; New-Item -ItemType Directory -Force $p | Out-Null; $b=[byte[]]::new(6MB); (New-Object Random).NextBytes($b); [IO.File]::WriteAllBytes(\"$p\big.bin\",$b)"
+if exist C:\temp\AegisResumeBundle.zip del C:\temp\AegisResumeBundle.zip
+mockserver.exe pack C:\temp\AegisResumeSrc C:\temp\AegisResumeBundle.zip
+set "AEGIS_TARGET_DEVICE=<DEVICE_UUID>"
+set "AEGIS_DEPLOY_FILE="
+set "AEGIS_DEPLOY_CONTENT_ID=resume-demo-v2"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisResumeBundle.zip"
+set "AEGIS_DEPLOY_AUTO_HASH=1"
+set "AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=200000"
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_NAME=M1 resume after disconnect"
+set "AEGIS_DEPLOY_BUNDLE_ENTRY="
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_BUNDLE_DEST="
+set "AEGIS_DEPLOY_BUNDLE_CLEANUP="
+set "AEGIS_DEPLOY_ARGS=/D /C echo resume-run"
+set "AEGIS_DEPLOY_TIMEOUT=120"
+set "AEGIS_DEPLOY_PRE_COMMAND="
+set "AEGIS_DEPLOY_POST_COMMAND="
+set "AEGIS_DEPLOY_ROLLBACK_COMMAND="
+set "AEGIS_DEPLOY_ROLLBACK_TIMEOUT_SECONDS="
+mockserver.exe server
+```
+
+When the endpoint reaches `ACTION_PHASE_DOWNLOADING`, wait ~8–10 s (so the fetch
+is genuinely mid-transfer, NOT nearly done), press `Ctrl+C` on the mockserver,
+wait ~5 s, then run `mockserver.exe server` again in the same CMD.
+
+**Expected (PASS):**
+
+- **Mockserver** on the re-issue prints
+  `FetchContent: resuming from offset <N> (<rest> bytes remain)` and
+  `FetchContent: done (<rest>)` — `<rest>` LESS than the full bundle size.
+- **Endpoint agent log** (in order): `fetch: connection lost mid-transfer;
+  partial kept for resume on re-issue have_bytes=<N>`, then `fetch: found a
+  partial from an earlier interrupted transfer — will resume have_bytes=<N>`,
+  then `content fetched and verified ... resumed_from=<N>` with `<N>` > 0.
+- Terminal `ACTION_PHASE_SUCCESS`, `cleanup: removed`. Whole-file SHA-256 passed
+  across two connections.
+
+> **Pitfall:** if the binaries are not the current build, the test silently
+> reverts to re-download-from-zero. Verify the service exe with
+> `certutil -hashfile "C:\Program Files\AegisOne\Client\AegisOneClient.exe" SHA256`
+> against `dist/softdist-handoff.json` before running. The success log MUST
+> contain `resumed_from=` — a pre-resume build omits that field.
+
+### 15A.2 Case M2 — unpinned fetch never resumes (hardening)
+
+Resume only trusts a persisted partial when the transfer is SHA-pinned. This is
+covered by the agent's automated tests (`TestFetchContent_UnpinnedDoesNotResume`)
+— no manual VM step is required; it is listed here so the server team knows an
+unpinned (no `expected_hash`) deploy always restarts from zero by design.
 
 ---
 
