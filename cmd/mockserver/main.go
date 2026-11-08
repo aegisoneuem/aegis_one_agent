@@ -619,6 +619,23 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 	}
 	defer f.Close()
 	mockPrintf("FetchContent: serving %s (kind=%s, id=%s)\n", path, req.Kind, req.Id)
+	// Checkpoint restart: the agent resumes an interrupted transfer by asking for
+	// the bytes it does not yet have. Seek to that offset and stream only the
+	// remainder. An offset past the file end is rejected so the agent restarts
+	// cleanly from zero rather than silently receiving nothing.
+	if req.Offset > 0 {
+		info, serr := f.Stat()
+		if serr != nil {
+			return serr
+		}
+		if req.Offset > info.Size() {
+			return status.Errorf(codes.OutOfRange, "resume offset %d is past the end of the %d-byte file", req.Offset, info.Size())
+		}
+		if _, serr := f.Seek(req.Offset, io.SeekStart); serr != nil {
+			return serr
+		}
+		mockPrintf("FetchContent: resuming from offset %d (%d bytes remain)\n", req.Offset, info.Size()-req.Offset)
+	}
 	buf := make([]byte, 64*1024)
 	var total int64
 	for {

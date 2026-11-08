@@ -15,11 +15,19 @@ vendor cases. Run the real cases in E and F in their stated order.
 | [D. Advanced detection](#d-advanced-detection) | File skip, native file version, registry ALL/ANY | Vijay reports PASS |
 | [E. Real 7-Zip MSI lifecycle](#e-real-7-zip-msi-lifecycle) | Install, repeat skip, upgrade, uninstall, repeat uninstall | PASS reported; action logs reviewed |
 | [F. Real Firefox installer and configuration](#f-real-firefox-installer-and-configuration) | EXE + JSON bundle, post-copy, active browser policy | PASS reported after recovery |
-| [G. Rollback-on-failure orchestration](#g-rollback-on-failure-orchestration-new-block-28-october-2026) | Main-failure rollback, partial rollback, success skips rollback | Native regression PASS, VM acceptance pending |
-| [H. Crash recovery and durable journal](#h-crash-recovery-and-durable-journal-new-block-28-october-2026) | Agent restart, orphan package directory sweep | Native regression PASS, VM acceptance pending |
-| [I. Descendant termination on timeout](#i-descendant-termination-on-timeout-new-block-28-october-2026) | Timeout kills children, reports count hint | Native regression PASS, VM acceptance pending |
+| [G. Rollback-on-failure orchestration](#g-rollback-on-failure-orchestration-new-block-28-october-2026) | Main-failure rollback, partial rollback, success skips rollback | **VM-PASS 2026-11-08 (two-box, server-delivery)** |
+| [H. Crash recovery and durable journal](#h-crash-recovery-and-durable-journal-new-block-28-october-2026) | Agent restart, orphan package directory sweep | **VM-PASS 2026-11-08 (recovery-demo + recovery-h2)** |
+| [I. Descendant termination on timeout](#i-descendant-termination-on-timeout-new-block-28-october-2026) | Timeout kills children, reports count hint | **VM-PASS 2026-11-08** |
 | [J. Reboot-sensitive + MST + config-only](#j-reboot-sensitive--msimst--config-only-primary-focus-28-october-2026) | Deterministic 3010 handling, 7-Zip MSI + MST transform, config-only parameter update via post-step | **PASS 2026-10-29 (Vijay VM run)** |
-| [K. Bandwidth throttling](#k-bandwidth-throttling-bigfix-aligned-30-october-2026) | Per-task fetch rate, per-task upload rate, lower-wins policy enforcement | Native regression PASS, VM acceptance pending |
+| [K. Bandwidth throttling](#k-bandwidth-throttling-bigfix-aligned-30-october-2026) | Per-task fetch rate, per-task upload rate, lower-wins policy enforcement | **K1/K2 VM-PASS 2026-11-08; K3 lower-wins via config.json (logic unit-tested)** |
+| [L. Resumable download (checkpoint restart)](#l-resumable-download-checkpoint-restart-new-block-8-november-2026) | Mid-transfer disconnect resumes from byte offset, not zero | **VM-PASS 2026-11-08 (6 MB bundle, resumed from 1 MB)** |
+
+> **Two-box note (2026-11-08):** when mockserver and the endpoint are on
+> SEPARATE machines (the normal setup), blocks G/I/L deliver the bundle via
+> `AEGIS_DEPLOY_CONTENT_ID` + `AEGIS_SERVE_SOFTWARE` + `AEGIS_DEPLOY_AUTO_HASH=1`
+> with `AEGIS_DEPLOY_FILE` EMPTY (server delivery). A pre-staged `AEGIS_DEPLOY_FILE`
+> path only works when both run on the SAME box. The Windows service name is
+> `AegisOneClient` (used by `sc stop/start`).
 
 All commands are manual CMD commands. Open a NEW MOCKSERVER CMD for each block
 with your normal TLS settings; stop the previous server first. Each block states
@@ -1547,11 +1555,11 @@ Using PowerShell for the here-doc write (JSON content, UTF-8, no BOM required):
 powershell -NoProfile -Command "@{command_id='recovery-demo'; device_id='test'; name='Recovery demo'; action='install'; state='running'; started_at=1709999999; last_updated=1709999999} | ConvertTo-Json | Set-Content -Encoding ASCII 'C:\Program Files\AegisOne\Client\SKVC\jobs\recovery-demo.state'"
 ```
 
-Then restart the agent service:
+Then restart the agent service (the Windows service name is `AegisOneClient`):
 
 ```cmd
-sc stop AegisOneAgent
-sc start AegisOneAgent
+sc stop AegisOneClient
+sc start AegisOneClient
 ```
 
 **MOCKSERVER**, keep running (or restart it; the ActionStatus is buffered
@@ -1582,8 +1590,8 @@ if not exist "%AEGIS_PACKAGES_ROOT%" mkdir "%AEGIS_PACKAGES_ROOT%"
 mkdir "%AEGIS_PACKAGES_ROOT%\aegis-package-recovery-h2"
 echo leftover>"%AEGIS_PACKAGES_ROOT%\aegis-package-recovery-h2\leftover.txt"
 powershell -NoProfile -Command "@{command_id='recovery-h2'; device_id='test'; name='Recovery H2'; action='install'; state='extracting'; package_dir='C:\Program Files\AegisOne\Client\SKVC\download\packages\aegis-package-recovery-h2'; started_at=1709999999; last_updated=1709999999} | ConvertTo-Json | Set-Content -Encoding ASCII 'C:\Program Files\AegisOne\Client\SKVC\jobs\recovery-h2.state'"
-sc stop AegisOneAgent
-sc start AegisOneAgent
+sc stop AegisOneClient
+sc start AegisOneClient
 ```
 
 #### 3. Expected results
@@ -1618,7 +1626,7 @@ count in the terminal status — the Firefox / MSI acceptance gap flagged as
 ```cmd
 set "AEGIS_DEPLOY_NAME=Descendant kill with diagnostic"
 set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
-set "AEGIS_DEPLOY_ARGS=/D /C ping -n 30 127.0.0.1 ^> nul"
+set "AEGIS_DEPLOY_ARGS=/D /C ping -n 30 127.0.0.1"
 set "AEGIS_DEPLOY_TIMEOUT=5"
 set "AEGIS_DEPLOY_ROLLBACK_COMMAND="
 mockserver.exe server
@@ -2061,3 +2069,119 @@ Agent config env vars documented for the admin:
 Signed proto fields: `SoftwareDeploySpec.max_fetch_bytes_per_second`,
 `CollectFileSpec.max_upload_bytes_per_second`.
 All in BYTES/sec. 0 = unlimited.
+
+### Case K3 — lower-wins via config.json (reliable method)
+
+`setx /M` does NOT reliably reach a running service (the SCM environment block
+is not refreshed without a reboot/broadcast), so set the admin cap through
+`config.json`, which the service reads from disk at startup. **ENDPOINT:**
+
+```cmd
+sc stop AegisOneClient
+powershell -NoProfile -Command "'{ \"AEGIS_FETCH_MAX_BYTES_PER_SECOND\": \"500000\" }' | Set-Content -Encoding ASCII 'C:\Program Files\AegisOne\Client\SKVC\config.json'"
+sc start AegisOneClient
+```
+
+Then run a deploy with a LOOSER signed rate
+(`AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=2000000`) on a ~2 MB bundle. The
+DOWNLOADING phase must still take ~4 s (2 MB / 500000), proving the admin cap
+won. Revert afterwards: `del "C:\Program Files\AegisOne\Client\SKVC\config.json"`
+then stop/start the service.
+
+
+## L. Resumable download (checkpoint restart) (new block, 8 November 2026)
+
+A mid-transfer disconnect no longer re-downloads a large package from zero. The
+agent writes the bytes it receives to a content-addressed partial file next to
+the destination (`<tmp>/.fetch-<sha12>.partial`). When the connection drops, the
+partial is kept; when the server re-issues the command, the next fetch resumes
+from the partial's byte offset. `ContentRequest.offset` carries the resume point;
+the server seeks there and streams only the remainder. The WHOLE file's SHA-256
+is still verified before it is accepted, so a resumed transfer is exactly as
+trustworthy as a single-shot one. A stale partial larger than the source (offset
+past end) or a completed-but-corrupt transfer is discarded and restarts clean.
+
+This is agent-side checkpoint restart (BigFix's resumable download at action
+time). It applies to ALL `FetchContent` transfers — software bundles, patch
+content and the wsusscn2 cab — because they share one `fetchContent`.
+
+### Case L1 — disconnect mid-fetch resumes from the byte offset
+
+#### 1. Purpose
+
+Prove an interrupted download resumes from where it stopped, not from zero, and
+that the resumed file is byte-identical (SHA-256 verified).
+
+#### 2. Commands
+
+Use a bundle large enough that the throttled fetch gives a wide interrupt window.
+
+**MOCKSERVER** — build a 6 MB bundle and serve it throttled at 200 KB/s
+(~30 s download) via server delivery:
+
+```cmd
+cd /d C:\temp\mock
+powershell -NoProfile -Command "$p='C:\temp\AegisResumeSrc'; New-Item -ItemType Directory -Force $p | Out-Null; $b=[byte[]]::new(6MB); (New-Object Random).NextBytes($b); [IO.File]::WriteAllBytes(\"$p\big.bin\",$b)"
+if exist C:\temp\AegisResumeBundle.zip del C:\temp\AegisResumeBundle.zip
+mockserver.exe pack C:\temp\AegisResumeSrc C:\temp\AegisResumeBundle.zip
+
+set "AEGIS_DEPLOY_FILE="
+set "AEGIS_DEPLOY_CONTENT_ID=resume-demo-v2"
+set "AEGIS_SERVE_SOFTWARE=C:\temp\AegisResumeBundle.zip"
+set "AEGIS_DEPLOY_AUTO_HASH=1"
+set "AEGIS_DEPLOY_FETCH_MAX_BYTES_PER_SEC=200000"
+set "AEGIS_DEPLOY_ACTION=install"
+set "AEGIS_DEPLOY_TYPE=command"
+set "AEGIS_DEPLOY_NAME=L1 resume after disconnect"
+set "AEGIS_DEPLOY_BUNDLE_ENTRY="
+set "AEGIS_DEPLOY_BUNDLE_COMMAND=cmd.exe"
+set "AEGIS_DEPLOY_BUNDLE_DEST="
+set "AEGIS_DEPLOY_BUNDLE_CLEANUP="
+set "AEGIS_DEPLOY_ARGS=/D /C echo resume-run"
+set "AEGIS_DEPLOY_TIMEOUT=120"
+mockserver.exe server
+```
+
+When the endpoint reaches `ACTION_PHASE_DOWNLOADING`, wait ~8–10 s (so the fetch
+is genuinely mid-transfer, NOT nearly done), then press `Ctrl+C` on MOCKSERVER.
+Wait ~5 s, then run `mockserver.exe server` again in the same CMD.
+
+#### 3. Expected results
+
+- **MOCKSERVER** on the re-issue prints
+  `FetchContent: resuming from offset <N> (<rest> bytes remain)` and
+  `FetchContent: done (<rest>)` where `<rest>` is LESS than the full bundle size.
+- **ENDPOINT agent log** shows, in order:
+  `fetch: connection lost mid-transfer; partial kept for resume on re-issue have_bytes=<N>`,
+  then `fetch: found a partial from an earlier interrupted transfer — will resume have_bytes=<N>`,
+  then `content fetched and verified ... resumed_from=<N>` with `<N>` > 0.
+- Terminal `ACTION_PHASE_SUCCESS`, `cleanup: removed`. The whole-file SHA-256
+  passed even though the download spanned two connections.
+
+Observed 2026-11-08 (Vijay VM, WIN-TUES4V46T7I): interrupted at 1048576 bytes of
+a 6291339-byte bundle; the re-issue resumed from offset 1048576
+(`5243763 bytes remain`), verified, installed SUCCESS.
+
+> **Pitfall:** if both binaries are not the current build, the test silently
+> reverts to re-download-from-zero. Verify the service exe with
+> `certutil -hashfile "C:\Program Files\AegisOne\Client\AegisOneClient.exe" SHA256`
+> against the build output before running, and confirm the running mockserver is
+> the current one. The success log MUST contain `resumed_from=` — the pre-resume
+> build omits that field.
+
+### What is NOT built: dynamic/network-sensing throttle (server-relay concern)
+
+BigFix also offers DYNAMIC bandwidth throttling — sensing the link's existing
+utilization and backing off / holding the transfer until the link is idle. The
+agent does NOT implement adaptive link-utilization sensing. What it does provide:
+
+- a static bytes/sec cap (admin + per-task, lower-wins — blocks K1–K3), and
+- gRPC flow-control backpressure, so a busy/slow link naturally slows the
+  transfer rather than saturating it, and
+- checkpoint restart (this block), so an interrupted large transfer resumes.
+
+True "sense busy → hold → send when idle" belongs at the server relay (BigFix's
+`_BESRelay_HTTPServer_ThrottleKBPS` / dynamic-download equivalents): enforce a
+cumulative outbound budget there, and gRPC flow control combines it with the
+agent-side cap as the lower of the two at the network layer. Nothing in the agent
+needs to change to coexist with that server-side cap.
