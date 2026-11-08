@@ -176,9 +176,17 @@ func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *p
 	// interrupted transfer resumes from the bytes already on disk. Keyed by the
 	// pinned SHA (falls back to id) rather than the dest path.
 	partialPath := fetchPartialPath(destPath, req)
-	if info, serr := os.Stat(partialPath); serr == nil && info.Size() > 0 {
-		slog.Info("fetch: found a partial from an earlier interrupted transfer — will resume",
-			"kind", req.Kind, "id", req.Id, "have_bytes", info.Size(), "partial", partialPath)
+	// Resume is only trusted when the transfer is integrity-pinned: a persisted
+	// partial is bytes-on-disk we did not verify this run, so we only reuse it when
+	// the whole-file SHA-256 will be checked before the file is accepted. An
+	// unpinned transfer never resumes — it starts fresh each attempt (see
+	// fetchAttempt) and never keeps a partial on exit.
+	resumable := strings.TrimSpace(req.Sha256) != ""
+	if resumable {
+		if info, serr := os.Stat(partialPath); serr == nil && info.Size() > 0 {
+			slog.Info("fetch: found a partial from an earlier interrupted transfer — will resume",
+				"kind", req.Kind, "id", req.Id, "have_bytes", info.Size(), "partial", partialPath)
+		}
 	}
 
 	var lastErr error
@@ -192,9 +200,10 @@ func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *p
 			// Shutdown / connection drop — stop retrying on THIS (now-dead) client.
 			// KEEP a non-empty partial so when the server re-issues the command on
 			// reconnect, the fresh fetch resumes from these bytes instead of zero
-			// (BigFix-style checkpoint restart across a reconnect). An empty partial
-			// has nothing to resume, so drop it to avoid litter.
-			if info, serr := os.Stat(partialPath); serr != nil || info.Size() == 0 {
+			// (BigFix-style checkpoint restart across a reconnect). Only for pinned
+			// transfers — an unpinned partial would be reused without verification,
+			// so it is never kept. An empty partial has nothing to resume either.
+			if info, serr := os.Stat(partialPath); !resumable || serr != nil || info.Size() == 0 {
 				_ = os.Remove(partialPath)
 			} else {
 				slog.Info("fetch: connection lost mid-transfer; partial kept for resume on re-issue",
@@ -237,9 +246,16 @@ func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *p
 // A returned error that is NOT errFetchCorruptPartial is a resumable interruption
 // (the partial is kept); errFetchCorruptPartial means the partial must be dropped.
 func fetchAttempt(ctx context.Context, client pb.AgentControlPlaneClient, req *pb.ContentRequest, partialPath, destPath string, bytesPerSecond int64) error {
+	// Resume (and therefore trust bytes already on disk) ONLY when the transfer is
+	// SHA-pinned, because the whole-file digest is what makes a resumed partial
+	// trustworthy. Unpinned transfers start fresh every attempt and truncate any
+	// leftover partial, so an unverified file is never reused.
+	resumable := strings.TrimSpace(req.Sha256) != ""
 	have := int64(0)
-	if info, err := os.Stat(partialPath); err == nil {
-		have = info.Size()
+	if resumable {
+		if info, err := os.Stat(partialPath); err == nil {
+			have = info.Size()
+		}
 	}
 	// Re-seed the running digest with the bytes already on disk so the final
 	// digest covers the WHOLE file after a resume, not just this pass's bytes.
@@ -256,8 +272,13 @@ func fetchAttempt(ctx context.Context, client pb.AgentControlPlaneClient, req *p
 		rf.Close()
 	}
 
-	// Append mode so a resume adds to the existing partial rather than truncating.
-	f, err := os.OpenFile(partialPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// Pinned: append so a resume adds to the existing partial. Unpinned: truncate
+	// so a stale leftover is never silently appended to or trusted.
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if !resumable {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	f, err := os.OpenFile(partialPath, flags, 0o600)
 	if err != nil {
 		return fmt.Errorf("open partial: %w", err)
 	}

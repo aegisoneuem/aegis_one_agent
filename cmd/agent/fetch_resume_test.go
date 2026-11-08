@@ -209,6 +209,37 @@ func TestFetchContent_ResumesAcrossSeparateCallsAfterCancel(t *testing.T) {
 	}
 }
 
+// TestFetchContent_UnpinnedDoesNotResume is a security hardening test: a transfer
+// with NO pinned SHA must never trust/resume a persisted partial (those bytes were
+// never verified). A planted stale partial must be ignored (truncated), the fetch
+// restarts at offset 0, and the delivered bytes are exactly what the server sent.
+func TestFetchContent_UnpinnedDoesNotResume(t *testing.T) {
+	fastBackoff(t)
+	data := randomBytes(20_000)
+	srv := &resumeTestServer{data: data}
+	client := newResumeClient(t, srv)
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "pkg.bin")
+	req := &pb.ContentRequest{Kind: "package", Id: "unpinned", Sha256: ""} // UNPINNED
+
+	// Plant a stale partial at the content-addressed path; it must NOT be reused.
+	partial := fetchPartialPath(dest, req)
+	if err := os.WriteFile(partial, []byte("STALE-GARBAGE-THAT-MUST-NOT-BE-TRUSTED"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchContent(context.Background(), client, req, dest, 0); err != nil {
+		t.Fatalf("unpinned fetch: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || sha256Hex(got) != sha256Hex(data) || len(got) != len(data) {
+		t.Fatal("unpinned fetch must deliver exactly the served bytes, not stale-partial + append")
+	}
+	if len(srv.offsets) == 0 || srv.offsets[0] != 0 {
+		t.Fatalf("unpinned fetch must request offset 0 (no resume), got %v", srv.offsets)
+	}
+}
+
 // TestFetchContent_SingleShotSucceeds proves the happy path still works and asks
 // for offset 0 exactly once.
 func TestFetchContent_SingleShotSucceeds(t *testing.T) {
