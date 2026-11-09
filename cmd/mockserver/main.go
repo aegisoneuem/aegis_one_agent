@@ -1010,6 +1010,32 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if lvl := os.Getenv("AEGIS_POLICY_LOG_LEVEL"); lvl != "" {
 				pol.Logging.Level = lvl
 			}
+			// Declared (◻️) fields — accepted + reported today, enforcement wiring
+			// incremental. Present here so a tester can round-trip them end to end.
+			if v := strings.TrimSpace(os.Getenv("AEGIS_POLICY_MIN_TLS")); v != "" {
+				pol.SecurityFloor.MinTLS = v
+			}
+			if d := strings.TrimSpace(os.Getenv("AEGIS_POLICY_MAINT_DAYS")); d != "" {
+				pol.Maintenance.Days = strings.Split(d, ",")
+			}
+			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_MAINT_START")); err == nil {
+				pol.Maintenance.StartHour = n
+			}
+			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_MAINT_END")); err == nil {
+				pol.Maintenance.EndHour = n
+			}
+			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_AUDIT_RATE")); err == nil && n > 0 {
+				pol.Audit.RatePerSec = n
+			}
+			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_AUDIT_BURST")); err == nil && n > 0 {
+				pol.Audit.Burst = n
+			}
+			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_AUDIT_DEDUP"), 10, 64); err == nil && v > 0 {
+				pol.Audit.DedupWindowSeconds = v
+			}
+			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_INV_FULL_INTERVAL"), 10, 64); err == nil && v > 0 {
+				pol.Inventory.FullIntervalSeconds = v
+			}
 			payload, err := json.Marshal(pol)
 			if err != nil {
 				log.Printf("failed to marshal policy: %v", err)

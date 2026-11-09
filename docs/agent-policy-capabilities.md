@@ -85,8 +85,13 @@ knob is accepted and reported, with runtime enforcement landing per release.
   posture** — the "prove it" surface for a customer.
 
 ### Mock env triggers (testing)
-`AEGIS_SET_POLICY=1` with `AEGIS_POLICY_ID`, `AEGIS_POLICY_ISSUED_AT`,
-`AEGIS_POLICY_REQUIRE_FIPS`, `AEGIS_POLICY_DENY`, `AEGIS_POLICY_ALLOW`,
-`AEGIS_POLICY_REBOOT`, `AEGIS_POLICY_FETCH_MAX_BPS`, `AEGIS_POLICY_LOG_LEVEL`.
-Lockdown threshold: `AEGIS_POLICY_LOCKDOWN_THRESHOLD` (default 3) under
+`AEGIS_SET_POLICY=1` with `AEGIS_POLICY_ID`, `AEGIS_POLICY_ISSUED_AT`
+(**Unix-epoch integer**, larger = newer), `AEGIS_POLICY_REQUIRE_FIPS`,
+`AEGIS_POLICY_DENY`, `AEGIS_POLICY_ALLOW`, `AEGIS_POLICY_REBOOT`,
+`AEGIS_POLICY_FETCH_MAX_BPS`, `AEGIS_POLICY_LOG_LEVEL`. Declared-field triggers
+(◻️ accepted + persisted): `AEGIS_POLICY_MIN_TLS`, `AEGIS_POLICY_MAINT_DAYS`,
+`AEGIS_POLICY_MAINT_START`, `AEGIS_POLICY_MAINT_END`, `AEGIS_POLICY_AUDIT_RATE`,
+`AEGIS_POLICY_AUDIT_BURST`, `AEGIS_POLICY_AUDIT_DEDUP`,
+`AEGIS_POLICY_INV_FULL_INTERVAL`. Lockdown threshold:
+`AEGIS_POLICY_LOCKDOWN_THRESHOLD` (default 3) under
 `HKLM\SOFTWARE\AegisOne\Client\Settings`.

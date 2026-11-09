@@ -363,6 +363,80 @@ module state (`crypto/fips140.Enabled()`), never a marketing flag.
 
 ---
 
+## 5D. Signed Agent Policy A2.6 — fail-closed safe mode + registry anti-rollback floor
+
+> **Policy delivery:** all `AEGIS_POLICY_*` go on the **mockserver** (it signs +
+> sends `set_policy`). Registry / audit checks run on the **endpoint**.
+> **`AEGIS_POLICY_ISSUED_AT` is a Unix-epoch integer** (seconds), NOT a date
+> string — larger = newer. Use an increasing ladder, e.g.
+> `1762700000 < 1762700100 < 1762700200`.
+>
+> Key locations (endpoint):
+> - Floor: `HKLM\SOFTWARE\AegisOne\Client` value **`PolicyFloor`** (REG_BINARY, sealed)
+> - Settings: `HKLM\SOFTWARE\AegisOne\Client\Settings`
+> - Persisted policy: `<SecureDir>\SKVC\policy.json`
+> - Audit: `<SecureDir>\SKVC\logs\audit.log` (or `auditcheck.exe`, or L3 `audit tail`)
+
+### SA-12 — Floor lands in the **registry** (not a file)
+1. Endpoint (before any policy): `reg query "HKLM\SOFTWARE\AegisOne\Client" /v PolicyFloor` → absent.
+2. Mockserver: `set AEGIS_SET_POLICY=1 & set AEGIS_POLICY_ID=p-100 & set AEGIS_POLICY_ISSUED_AT=1762700000` → run, let the endpoint apply.
+3. **Expect:** endpoint `reg query "HKLM\SOFTWARE\AegisOne\Client" /v PolicyFloor` → **REG_BINARY present**; `SKVC\policy.floor` file does **NOT** exist; audit has `policy_applied`.
+
+### SA-13 — Fail-closed safe mode (offline downgrade attempt → agent LOCKS)
+1. After SA-12, take the endpoint **offline** (disconnect from mockserver).
+2. Delete `<SecureDir>\SKVC\policy.json`. Restart the `AegisOneClient` service.
+3. **Expect (floor>0 but no valid policy → safe mode):**
+   - `run_command` / `open_shell` / `file_operation` / `remote_control` → **FAILED `blocked by agent policy` (safe mode)**.
+   - `set_policy` and `install_patch` → **allowed** (no lock-out).
+   - Audit: **`policy_safe_mode`** alert (buffered while offline).
+4. Confirms: offline policy-delete **locks** the agent, it does **not** free it.
+
+### SA-14 — Recovery (server re-asserts)
+1. After SA-13, bring the endpoint **online**. Mockserver: `AEGIS_POLICY_ID=p-101 AEGIS_POLICY_ISSUED_AT=1762700100` (valid, newer).
+2. **Expect:** safe mode **clears**; high-risk commands run again; buffered `policy_safe_mode` streams to server; `PolicyFloor` updated to the new issued_at; tamper streak reset.
+
+### SA-15 — Rollback refused + lockdown alert (break/negative)
+1. Floor now at `p-101 @ 1762700100`. Mockserver push an **older** policy: `AEGIS_POLICY_ISSUED_AT=1762690000`.
+2. **Expect:** **refused** — audit `policy_tampered kind=rollback`; policy NOT applied; floor unchanged.
+3. Repeat the rollback **3×** (default threshold) → on the 3rd: **`policy_lockdown`** high-severity "agent lock" alert.
+
+### SA-16 — Configurable lockdown threshold
+1. Endpoint: `reg add "HKLM\SOFTWARE\AegisOne\Client\Settings" /v PolicyLockdownThreshold /t REG_DWORD /d 5 /f` (or mockserver `AEGIS_POLICY_LOCKDOWN_THRESHOLD=5`). Restart.
+2. Repeat SA-15 → `policy_lockdown` now fires on the **5th** tamper, not the 3rd. (Client picks 3 / 5 / 7.)
+
+---
+
+## 5E. Signed Agent Policy A3 — full Ivanti-equivalent schema
+
+> Status key: ✅ enforced today · ◻️ declared (accepted + reported, enforcement
+> incremental). See `docs/agent-policy-capabilities.md`.
+
+### SA-17 — modules **deny** (deny-wins gate) ✅
+1. Mockserver: `AEGIS_POLICY_DENY=run_command,open_shell`.
+2. **Expect:** `run_command` / `open_shell` → **FAILED `blocked by agent policy`** before any handler; `scan_now` / `install_patch` / inventory still run; audit `command_completed ... reason="blocked by agent policy"`.
+
+### SA-18 — modules strict **allow-list** ✅
+1. Mockserver: `AEGIS_POLICY_ALLOW=scan_now,report_device_state,set_policy`.
+2. **Expect:** only allow-list types run; `install_patch` / `run_command` refused; **`set_policy` always allowed** (no lock-out — you can always push a corrective policy).
+
+### SA-19 — patch `reboot_policy=never` ✅
+1. Mockserver: `AEGIS_POLICY_REBOOT=never`, then send a `reboot` command.
+2. **Expect:** reboot → **NOT_APPLICABLE** (box does not reboot); audit shows skipped. Compare with `if_required` / `always`.
+
+### SA-20 — `require_fips` fail-closed on a non-FIPS build ✅
+1. On a normal (non-`GOFIPS140`) binary: `AEGIS_POLICY_REQUIRE_FIPS=1`. Restart the agent.
+2. **Expect:** `enforceFIPS()` → agent **fails closed** (refuses to start / stops) because FIPS is inactive. A `GOFIPS140=latest` build starts normally. (Dev-key warnings here are expected — server-wiring deferral.)
+
+### SA-21 — declared fields round-trip (honest ◻️ check)
+1. Mockserver: `AEGIS_POLICY_MIN_TLS=1.3 AEGIS_POLICY_MAINT_DAYS=mon,tue,wed AEGIS_POLICY_MAINT_START=1 AEGIS_POLICY_MAINT_END=5 AEGIS_POLICY_AUDIT_RATE=50 AEGIS_POLICY_AUDIT_BURST=100 AEGIS_POLICY_AUDIT_DEDUP=5 AEGIS_POLICY_INV_FULL_INTERVAL=86400 AEGIS_POLICY_FETCH_MAX_BPS=1048576 AEGIS_POLICY_LOG_LEVEL=debug`.
+2. **Expect:** policy **accepted** (`policy_applied`, no rejection); agent does **not** crash. These are ◻️ **declared** — verify they are accepted + persisted, NOT that behavior changes yet. (`security_posture` surfaces the core summary — policy_id/issued_at/require_fips/deny/allow/reboot; the other declared knobs persist in `policy.json` but are not all echoed in the summary string today.)
+
+### SA-22 — malformed / tampered policy refused, prior policy retained (break/negative)
+1. Apply a valid policy (`p-200`). Then send a `set_policy` with a corrupted payload or mismatched signature (tamper harness).
+2. **Expect:** **rejected**; agent **keeps `p-200`**; audit `policy_tampered kind=modified` (or `corrupt`); agent stays stable.
+
+---
+
 ## 6. Record sheet
 
 | Case | Surface | Env / trigger | PASS/FAIL | Notes |
@@ -378,3 +452,14 @@ module state (`crypto/fips140.Enabled()`), never a marketing flag.
 | SA-9 | enrollment / cert_renew audit | re-enroll on test VM | | L5 — local pre-connection trace |
 | SA-10 | security posture callout + attestation | agent startup log + `audit search security_posture` | VM-PASS 2026-11-09 | Signed Agent Policy step 1 |
 | SA-11 | FIPS mode report + AEGIS_REQUIRE_FIPS enforce | GOFIPS140 build + require flag | | optional; fail-closed when required |
+| SA-12 | policy floor in registry (not file) | AEGIS_SET_POLICY | | A2.6 — `PolicyFloor` REG_BINARY |
+| SA-13 | fail-closed safe mode (offline delete) | offline + delete policy.json | | A2.6 — agent LOCKS, not frees |
+| SA-14 | recovery on server re-assert | newer AEGIS_POLICY_ISSUED_AT | | A2.6 — safe mode clears |
+| SA-15 | rollback refused + lockdown | older issued_at ×3 | | A2.6 — `policy_lockdown` |
+| SA-16 | configurable lockdown threshold | PolicyLockdownThreshold=5 | | A2.6 — 3/5/7 per client |
+| SA-17 | modules deny (deny-wins) | AEGIS_POLICY_DENY | | A3 ✅ |
+| SA-18 | modules strict allow-list | AEGIS_POLICY_ALLOW | | A3 ✅ set_policy always allowed |
+| SA-19 | reboot_policy=never | AEGIS_POLICY_REBOOT=never | | A3 ✅ reboot NOT_APPLICABLE |
+| SA-20 | require_fips fail-closed | AEGIS_POLICY_REQUIRE_FIPS=1 non-FIPS build | | A3 ✅ refuse-to-start |
+| SA-21 | declared fields round-trip | AEGIS_POLICY_MIN_TLS/MAINT/AUDIT/INV | | A3 ◻️ accepted + persisted |
+| SA-22 | malformed policy refused | tamper harness | | A3 — prior policy retained |
