@@ -328,6 +328,38 @@ the existing AuditEvent stream (flood summaries) or in the local trace
 
 ---
 
+## 5C. Security posture + FIPS 140-3 (Signed Agent Policy step 1)
+
+**Security posture callout.** At startup the agent logs a clear, greppable
+`SECURITY POSTURE` block (transport mTLS + min **TLS 1.3**, command authorization
+Ed25519 + dev-key warning, at-rest DPAPI + AES-GCM, audit L1-L5, FIPS mode,
+client-cert serial/expiry) AND emits a streamed `security_posture` audit event —
+a per-device "prove it" record the console shows and an operator can pull via
+`audit search security_posture` (§5A). Every field is live/honest (nothing is
+claimed that the code does not enforce).
+
+**Production point:** the posture WARNS when the built-in **DEV** command-verify
+key is in use. Production deployment MUST set `AEGIS_CMD_VERIFY_KEY`
+(or `_FILE`) to the server's real Ed25519 public key; until then the agent would
+trust dev-signed commands.
+
+**FIPS 140-3 (optional).** The agent reports the LIVE Go FIPS module state
+(`crypto/fips140.Enabled()`), never a marketing flag.
+
+- **Normal build** → `fips_mode=false` (default; runs anywhere).
+- **FIPS build** → `GOFIPS140=latest go build ...` → `fips_mode=true` out of the
+  box (the dist ships `AegisOneClient-fips.exe` for this).
+- **Enforcement:** `AEGIS_REQUIRE_FIPS=1` makes the agent **refuse to start**
+  unless FIPS is active — fail-closed for compliance customers (a normal binary
+  with this set aborts with a clear FIPS error).
+
+> Honest scope: "FIPS 140-3 **mode** active" is reported from the live module.
+> A formal **CMVP-validated** product claim is a separate compliance step
+> (legal/validation sign-off on the exact build) — do NOT market "FIPS
+> certified" until that is confirmed.
+
+---
+
 ## 6. Record sheet
 
 | Case | Surface | Env / trigger | PASS/FAIL | Notes |
@@ -341,3 +373,5 @@ the existing AuditEvent stream (flood summaries) or in the local trace
 | SA-7 | audit_query tail/search/since | AEGIS_AUDIT_QUERY / NSH `audit` | VM-PASS 2026-11-09 | L3 remote audit query |
 | SA-8 | audit flood control (coalesce + rate cap + exempt) | AEGIS_AUDIT_RATE low + burst | | L5 — security events never dropped |
 | SA-9 | enrollment / cert_renew audit | re-enroll on test VM | | L5 — local pre-connection trace |
+| SA-10 | security posture callout + attestation | agent startup log + `audit search security_posture` | VM-PASS 2026-11-09 | Signed Agent Policy step 1 |
+| SA-11 | FIPS mode report + AEGIS_REQUIRE_FIPS enforce | GOFIPS140 build + require flag | | optional; fail-closed when required |

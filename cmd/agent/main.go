@@ -591,6 +591,13 @@ func runProcess(ctx context.Context) {
 		log.Fatalf("command verify key: %v", err)
 	}
 
+	// Fail-closed FIPS: if AEGIS_REQUIRE_FIPS is set, refuse to start unless the
+	// FIPS 140-3 module is active. A compliance customer gets no agent rather than
+	// a non-FIPS one.
+	if err := enforceFIPS(cfg); err != nil {
+		log.Fatalf("FIPS policy: %v", err)
+	}
+
 	keys := secure.NewKeyProvider(cfg.SecureDir)
 	bufPath := filepath.Join(cfg.SecureDir, "buffer", "patch-buffer.jsonl")
 	buf, err := buffer.NewEncryptedFileBuffer(bufPath, keys)

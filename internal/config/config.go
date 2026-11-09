@@ -187,6 +187,12 @@ type Config struct {
 	AuditRatePerSec  int           // sustained command_received events/sec before shedding (0 = default)
 	AuditBurst       int           // token-bucket capacity (0 = default)
 	AuditDedupWindow time.Duration // coalesce identical command_received seen within this window
+
+	// RequireFIPS, when true, makes the agent REFUSE to start unless the Go
+	// FIPS 140-3 crypto module is active (built with GOFIPS140 and run with
+	// GODEBUG=fips140=on/only). Fail-closed for compliance customers; off by
+	// default so a normal build runs anywhere.
+	RequireFIPS bool
 }
 
 // defaultConfigMap returns the config.json defaults (keys = env-var names).
@@ -362,6 +368,7 @@ func Load() Config {
 		AuditRatePerSec:        int(int64FromEnv("AEGIS_AUDIT_RATE", 50)),
 		AuditBurst:             int(int64FromEnv("AEGIS_AUDIT_BURST", 100)),
 		AuditDedupWindow:       durationFromEnv("AEGIS_AUDIT_DEDUP_WINDOW", 2*time.Second),
+		RequireFIPS:            int64FromEnv("AEGIS_REQUIRE_FIPS", 0) == 1,
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = defaultHostname()

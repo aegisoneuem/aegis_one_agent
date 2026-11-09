@@ -58,10 +58,25 @@ func TestPosture_DetailsAndStaticFields(t *testing.T) {
 		t.Fatalf("transport: %q", p.TransportTLS)
 	}
 	d := p.details()
-	for _, want := range []string{"tls=", "command_authz=", "at_rest=", "audit=", "fips_mode=", "client_cert=", `agent_version="9.9.9"`} {
+	for _, want := range []string{"tls=", "command_authz=", "at_rest=", "audit=", "fips_mode=", "fips_required=", "client_cert=", `agent_version="9.9.9"`} {
 		if !strings.Contains(d, want) {
 			t.Fatalf("details missing %q: %s", want, d)
 		}
+	}
+}
+
+// Fail-closed FIPS: required-but-inactive aborts startup; not-required is a no-op.
+// (The normal test binary is not a FIPS build, so fips140.Enabled() is false.)
+func TestEnforceFIPS(t *testing.T) {
+	if err := enforceFIPS(config.Config{RequireFIPS: false}); err != nil {
+		t.Fatalf("not-required must be a no-op, got %v", err)
+	}
+	err := enforceFIPS(config.Config{RequireFIPS: true})
+	if err == nil {
+		t.Fatal("required-but-inactive must return an error (fail-closed)")
+	}
+	if !strings.Contains(err.Error(), "FIPS") || !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("error should explain the FIPS refusal: %v", err)
 	}
 }
 
