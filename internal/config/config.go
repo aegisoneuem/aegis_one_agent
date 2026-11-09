@@ -193,6 +193,11 @@ type Config struct {
 	// GODEBUG=fips140=on/only). Fail-closed for compliance customers; off by
 	// default so a normal build runs anywhere.
 	RequireFIPS bool
+
+	// PolicyLockdownThreshold is how many consecutive policy-tamper events
+	// (modify/rollback/delete) raise the high-severity policy_lockdown alert.
+	// Customer-tunable (3/5/7/…); default 3.
+	PolicyLockdownThreshold int
 }
 
 // defaultConfigMap returns the config.json defaults (keys = env-var names).
@@ -368,7 +373,8 @@ func Load() Config {
 		AuditRatePerSec:        int(int64FromEnv("AEGIS_AUDIT_RATE", 50)),
 		AuditBurst:             int(int64FromEnv("AEGIS_AUDIT_BURST", 100)),
 		AuditDedupWindow:       durationFromEnv("AEGIS_AUDIT_DEDUP_WINDOW", 2*time.Second),
-		RequireFIPS:            int64FromEnv("AEGIS_REQUIRE_FIPS", 0) == 1,
+		RequireFIPS:             int64FromEnv("AEGIS_REQUIRE_FIPS", 0) == 1,
+		PolicyLockdownThreshold: int(int64FromEnv("AEGIS_POLICY_LOCKDOWN_THRESHOLD", 3)),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = defaultHostname()

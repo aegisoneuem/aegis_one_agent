@@ -255,6 +255,21 @@ func drain(out chan *pb.AgentMessage) {
 	}
 }
 
+// The lockdown threshold is customer-tunable; a value < 1 keeps the default so a
+// misconfig can never disable the lockdown alert.
+func TestPolicyLockdownThresholdConfigurable(t *testing.T) {
+	saved := policyLockdownThreshold
+	t.Cleanup(func() { policyLockdownThreshold = saved })
+	setPolicyLockdownThreshold(7)
+	if policyLockdownThreshold != 7 {
+		t.Fatalf("threshold should be 7, got %d", policyLockdownThreshold)
+	}
+	setPolicyLockdownThreshold(0) // invalid → keep previous
+	if policyLockdownThreshold != 7 {
+		t.Fatalf("invalid threshold must be ignored, got %d", policyLockdownThreshold)
+	}
+}
+
 // A2 — the dispatch module gate blocks a command type the active policy denies.
 func TestPolicyGate_DeniedCommandBlocked(t *testing.T) {
 	resetPolicy(t)

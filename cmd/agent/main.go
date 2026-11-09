@@ -701,6 +701,7 @@ func runProcess(ctx context.Context) {
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
 	// provider are ready (so a tamper raises a streamed/buffered alert) and before
 	// the FIPS gate (so a policy FIPS floor is enforced fail-closed).
+	setPolicyLockdownThreshold(cfg.PolicyLockdownThreshold)
 	loadStoredPolicy(cfg.SecureDir, keys, outbox, cfg.DeviceID)
 
 	// Fail-closed FIPS: if FIPS is required (by AEGIS_REQUIRE_FIPS or the active

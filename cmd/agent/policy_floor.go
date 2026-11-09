@@ -11,7 +11,16 @@ import (
 // policyLockdownThreshold is how many tamper events (modify/rollback/delete)
 // trigger the high-severity policy_lockdown alert — the "agent lock" signal the
 // console raises on repeated abuse (a downgrade brute-force or policy-DoS).
-const policyLockdownThreshold = 3
+// Customer-tunable via AEGIS_POLICY_LOCKDOWN_THRESHOLD; set once at startup.
+var policyLockdownThreshold = 3
+
+// setPolicyLockdownThreshold applies the configured threshold (values < 1 keep
+// the default so a misconfig cannot disable the lockdown alert).
+func setPolicyLockdownThreshold(n int) {
+	if n >= 1 {
+		policyLockdownThreshold = n
+	}
+}
 
 // policyFloor is the persisted anti-rollback + tamper state. It is sealed at rest
 // with the DPAPI-protected master key (machine-bound), so a casual local admin
