@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/auditlog"
 	"github.com/aegisoneuem/aegis_one_agent/internal/policy"
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_proto/commandsign"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
@@ -20,6 +23,8 @@ import (
 var (
 	policyMu     sync.RWMutex
 	activePolicy *policy.Policy
+	// policyKeys is the sealer for the anti-rollback floor, set once at startup.
+	policyKeys secure.KeyProvider
 )
 
 // storedPolicy is the signed set_policy envelope persisted to disk so the policy
@@ -60,34 +65,88 @@ func policyAllowsCommand(cmdType string) bool {
 	return getActivePolicy().CommandAllowed(cmdType)
 }
 
-// loadStoredPolicy reads and RE-VERIFIES the persisted policy at startup. It must
-// run AFTER loadCommandVerifyKey (needs the key) and BEFORE enforceFIPS (so a
-// policy-mandated FIPS floor is honored fail-closed). A missing file is normal;
-// an unreadable/invalid/tampered file is logged and ignored (no policy applied).
-func loadStoredPolicy(secureDir string) {
+// loadStoredPolicy reads and RE-VERIFIES the persisted policy at startup, with
+// TAMPER DETECTION against the sealed anti-rollback floor. It must run after the
+// verify key, audit logger, outbox and key provider are ready (so tamper alerts
+// can be recorded + streamed) and before enforceFIPS (so a policy FIPS floor is
+// honored). Detected tamper classes:
+//   - DELETED  : policy file missing but the floor shows one was applied before
+//   - MODIFIED : signature invalid (a local admin edited the file)
+//   - ROLLBACK : a validly-signed but OLDER policy (issued_at < floor)
+//   - CORRUPT  : unparseable
+// Each is refused (no policy applied), AUDITED (policy_tampered — streamed, and
+// buffered when offline), and on repeat raises the policy_lockdown "agent lock"
+// alert. A valid, non-rolled-back policy is applied and clears the tamper streak.
+func loadStoredPolicy(secureDir string, keys secure.KeyProvider, outbox chan<- *pb.AgentMessage, deviceID string) {
+	policyKeys = keys
+	floor := loadPolicyFloor(keys, secureDir)
+
 	data, err := os.ReadFile(policyStorePath(secureDir))
 	if err != nil {
-		return // no policy yet
+		if floor.MinIssuedAt > 0 {
+			recordPolicyTamper(secureDir, keys, outbox, deviceID, &floor, "deleted",
+				fmt.Sprintf("policy file missing but a policy (epoch %d) was previously applied", floor.MinIssuedAt))
+		}
+		return // genuinely no policy yet
 	}
 	var sp storedPolicy
 	if err := json.Unmarshal(data, &sp); err != nil {
-		slog.Error("policy: stored policy file is corrupt — ignoring", "error", err.Error())
+		recordPolicyTamper(secureDir, keys, outbox, deviceID, &floor, "corrupt", "stored policy file is not valid JSON")
 		return
 	}
 	if !commandsign.Verify(cmdVerifyKey, sp.Type, sp.CommandID, sp.Payload, sp.Signature) {
-		slog.Error("policy: stored policy SIGNATURE INVALID — ignoring (tampered or wrong key)")
+		recordPolicyTamper(secureDir, keys, outbox, deviceID, &floor, "modified", "stored policy signature is INVALID (edited or wrong key)")
 		return
 	}
 	p, err := policy.Parse(sp.Payload)
 	if err != nil {
-		slog.Error("policy: stored policy invalid — ignoring", "error", err.Error())
+		recordPolicyTamper(secureDir, keys, outbox, deviceID, &floor, "corrupt", "stored policy failed validation: "+err.Error())
 		return
 	}
+	if p.IssuedAt < floor.MinIssuedAt {
+		recordPolicyTamper(secureDir, keys, outbox, deviceID, &floor, "rollback",
+			fmt.Sprintf("policy issued_at %d is older than the anti-rollback floor %d", p.IssuedAt, floor.MinIssuedAt))
+		return
+	}
+
+	// Valid and not a rollback: apply, raise the floor, clear the tamper streak.
 	policyMu.Lock()
 	activePolicy = p
 	policyMu.Unlock()
+	floor.MinIssuedAt = p.IssuedAt
+	floor.TamperCount = 0
+	_ = savePolicyFloor(keys, secureDir, floor)
 	slog.Info("policy: loaded agent policy", "summary", p.Summary())
 	applyPolicy(p)
+}
+
+// recordPolicyTamper bumps the tamper counter, logs + AUDITS the tamper (streamed
+// to the console, buffered when offline), and raises the policy_lockdown alert on
+// repeated abuse. It never applies a policy — a tampered/rolled-back policy is
+// refused; the server re-asserts the correct one on the next check-in.
+func recordPolicyTamper(secureDir string, keys secure.KeyProvider, outbox chan<- *pb.AgentMessage, deviceID string, floor *policyFloor, kind, reason string) {
+	floor.TamperCount++
+	floor.LastTamper = time.Now().Unix()
+	_ = savePolicyFloor(keys, secureDir, *floor)
+
+	slog.Error("policy: TAMPER detected", "kind", kind, "reason", reason, "tamper_count", floor.TamperCount)
+	recordAuditEvent(context.Background(), outbox, auditlog.Event{
+		DeviceID:  deviceID,
+		EventType: "policy_tampered",
+		Decision:  "tampered",
+		Reason:    kind + ": " + reason,
+		Details:   fmt.Sprintf("kind=%s, tamper_count=%d", kind, floor.TamperCount),
+	})
+	if floor.TamperCount >= policyLockdownThreshold {
+		slog.Error("policy: LOCKDOWN — repeated policy tampering", "tamper_count", floor.TamperCount)
+		recordAuditEvent(context.Background(), outbox, auditlog.Event{
+			DeviceID:  deviceID,
+			EventType: "policy_lockdown",
+			Decision:  "locked",
+			Reason:    fmt.Sprintf("repeated policy tampering detected (count=%d) — agent integrity at risk; server policy re-assertion required", floor.TamperCount),
+			Details:   fmt.Sprintf("tamper_count=%d, threshold=%d, last_tamper=%d", floor.TamperCount, policyLockdownThreshold, floor.LastTamper),
+		})
+	}
 }
 
 // applyPolicy enacts the parts of a policy that take effect immediately. In A1
@@ -114,10 +173,13 @@ func (d *dispatcher) handleSetPolicyCmd(ctx context.Context, _ pb.AgentControlPl
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetPolicy, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, err.Error()))
 		return
 	}
-	// Anti-rollback: never downgrade to an older/equal signed policy (replay).
-	if !p.Supersedes(getActivePolicy()) {
+	// Anti-rollback: never downgrade below the in-memory active policy OR the
+	// persisted sealed floor (the floor survives a restart/file-deletion, so a
+	// replayed OLD signed policy is refused even on a fresh boot).
+	floor := loadPolicyFloor(policyKeys, d.cfg.SecureDir)
+	if !p.Supersedes(getActivePolicy()) || p.IssuedAt < floor.MinIssuedAt {
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetPolicy, d.cfg.DeviceID, "",
-			pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "policy not newer than the active policy (anti-rollback)"))
+			pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "policy not newer than the active policy/floor (anti-rollback)"))
 		return
 	}
 	sp := storedPolicy{Type: cmd.Type, CommandID: cmd.CommandId, Payload: append(json.RawMessage(nil), cmd.Payload...), Signature: cmd.Signature}
@@ -128,6 +190,11 @@ func (d *dispatcher) handleSetPolicyCmd(ctx context.Context, _ pb.AgentControlPl
 	policyMu.Lock()
 	activePolicy = p
 	policyMu.Unlock()
+	// Raise the floor + clear the tamper streak — a legit newer policy is a
+	// healthy signal that overrides prior tamper counts.
+	floor.MinIssuedAt = p.IssuedAt
+	floor.TamperCount = 0
+	_ = savePolicyFloor(policyKeys, d.cfg.SecureDir, floor)
 	applyPolicy(p)
 
 	recordAuditEvent(ctx, d.outbox, auditlog.Event{

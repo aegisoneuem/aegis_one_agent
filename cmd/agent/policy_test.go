@@ -12,6 +12,7 @@ import (
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/policy"
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_proto/commandsign"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
@@ -19,14 +20,28 @@ import (
 func resetPolicy(t *testing.T) {
 	t.Helper()
 	saved := activePolicy
+	savedKeys := policyKeys
 	t.Cleanup(func() {
 		policyMu.Lock()
 		activePolicy = saved
 		policyMu.Unlock()
+		policyKeys = savedKeys
 	})
 	policyMu.Lock()
 	activePolicy = nil
 	policyMu.Unlock()
+	policyKeys = nil
+}
+
+// countEvents scans an outbox for audit events of the given type.
+func countEvents(out chan *pb.AgentMessage, eventType string) int {
+	n := 0
+	for len(out) > 0 {
+		if ae := (<-out).GetAuditEvent(); ae != nil && ae.EventType == eventType {
+			n++
+		}
+	}
+	return n
 }
 
 func policyCmd(t *testing.T, p policy.Policy) *pb.Command {
@@ -133,41 +148,104 @@ func TestLoadStoredPolicy_VerifiesSignature(t *testing.T) {
 	t.Cleanup(func() { cmdVerifyKey = savedKey })
 	cmdVerifyKey = pub
 
-	secure := t.TempDir()
+	dir := t.TempDir()
+	out := make(chan *pb.AgentMessage, 16)
 	payload, _ := json.Marshal(policy.Policy{Version: 1, PolicyID: "signed", IssuedAt: 500})
 	sig := commandsign.Sign(priv, "set_policy", "pol-x", payload)
 	writeStore := func(sig []byte, payload []byte) {
 		sp := storedPolicy{Type: "set_policy", CommandID: "pol-x", Payload: payload, Signature: sig}
 		raw, _ := json.Marshal(sp)
-		if err := os.WriteFile(filepath.Join(secure, "policy.json"), raw, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "policy.json"), raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Valid signature → loaded.
 	writeStore(sig, payload)
-	loadStoredPolicy(secure)
+	loadStoredPolicy(dir, nil, out, "dev")
 	if getActivePolicy() == nil || getActivePolicy().PolicyID != "signed" {
 		t.Fatal("validly-signed policy should load")
 	}
 
-	// Tampered payload (signature no longer matches) → ignored.
+	// Tampered payload (signature no longer matches) → ignored + a tamper alert.
 	policyMu.Lock()
 	activePolicy = nil
 	policyMu.Unlock()
 	tampered, _ := json.Marshal(policy.Policy{Version: 1, PolicyID: "evil", IssuedAt: 999})
 	writeStore(sig, tampered) // old sig, new payload
-	loadStoredPolicy(secure)
+	loadStoredPolicy(dir, nil, out, "dev")
 	if getActivePolicy() != nil {
 		t.Fatal("tampered policy must be rejected by signature re-verification")
+	}
+	if countEvents(out, "policy_tampered") == 0 {
+		t.Fatal("a modified policy must raise a policy_tampered alert")
 	}
 }
 
 func TestLoadStoredPolicy_MissingIsNoop(t *testing.T) {
 	resetPolicy(t)
-	loadStoredPolicy(t.TempDir()) // no file
+	out := make(chan *pb.AgentMessage, 4)
+	loadStoredPolicy(t.TempDir(), nil, out, "dev") // no file, no prior floor
 	if getActivePolicy() != nil {
 		t.Fatal("no stored policy should leave activePolicy nil")
+	}
+	if countEvents(out, "policy_tampered") != 0 {
+		t.Fatal("a first-time missing policy (no floor) is NOT a tamper")
+	}
+}
+
+// A2.5 — anti-rollback floor + tamper alerts, sealed with a real key provider.
+func TestPolicyTamper_RollbackAndDeleteAndLockdown(t *testing.T) {
+	resetPolicy(t)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	savedKey := cmdVerifyKey
+	t.Cleanup(func() { cmdVerifyKey = savedKey })
+	cmdVerifyKey = pub
+
+	dir := t.TempDir()
+	keys := secure.NewKeyProvider(dir)
+	out := make(chan *pb.AgentMessage, 64)
+	writeStore := func(policyID string, issuedAt int64) {
+		payload, _ := json.Marshal(policy.Policy{Version: 1, PolicyID: policyID, IssuedAt: issuedAt})
+		sig := commandsign.Sign(priv, "set_policy", "c", payload)
+		sp := storedPolicy{Type: "set_policy", CommandID: "c", Payload: payload, Signature: sig}
+		raw, _ := json.Marshal(sp)
+		if err := os.WriteFile(filepath.Join(dir, "policy.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Apply a current policy (epoch 500) → raises the floor.
+	writeStore("cur", 500)
+	loadStoredPolicy(dir, keys, out, "dev")
+	if getActivePolicy() == nil || getActivePolicy().PolicyID != "cur" {
+		t.Fatal("current policy should apply and raise the floor")
+	}
+	drain(out)
+
+	// ROLLBACK: a validly-signed but OLDER policy (epoch 100) must be refused.
+	policyMu.Lock()
+	activePolicy = nil
+	policyMu.Unlock()
+	writeStore("old", 100)
+	loadStoredPolicy(dir, keys, out, "dev")
+	if getActivePolicy() != nil {
+		t.Fatal("rolled-back (older) policy must be refused by the sealed floor")
+	}
+	if countEvents(out, "policy_tampered") == 0 {
+		t.Fatal("rollback must raise a tamper alert")
+	}
+
+	// DELETE: file gone but floor known → tamper. Repeat to cross the lockdown
+	// threshold and raise the policy_lockdown "agent lock" alert.
+	_ = os.Remove(filepath.Join(dir, "policy.json"))
+	var lockdown int
+	for i := 0; i < policyLockdownThreshold+1; i++ {
+		loadStoredPolicy(dir, keys, out, "dev")
+		lockdown += countEvents(out, "policy_lockdown")
+	}
+	if lockdown == 0 {
+		t.Fatal("repeated tampering must raise a policy_lockdown alert")
 	}
 }
 

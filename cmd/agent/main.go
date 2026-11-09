@@ -591,18 +591,6 @@ func runProcess(ctx context.Context) {
 		log.Fatalf("command verify key: %v", err)
 	}
 
-	// Load + re-verify the persisted signed agent policy BEFORE the FIPS gate, so
-	// a policy-mandated FIPS floor is honored fail-closed. A tampered/invalid
-	// stored policy is ignored (logged), never trusted.
-	loadStoredPolicy(cfg.SecureDir)
-
-	// Fail-closed FIPS: if FIPS is required (by AEGIS_REQUIRE_FIPS or the active
-	// policy), refuse to start unless the FIPS 140-3 module is active. A
-	// compliance customer gets no agent rather than a non-FIPS one.
-	if err := enforceFIPS(cfg); err != nil {
-		log.Fatalf("FIPS policy: %v", err)
-	}
-
 	keys := secure.NewKeyProvider(cfg.SecureDir)
 	bufPath := filepath.Join(cfg.SecureDir, "buffer", "patch-buffer.jsonl")
 	buf, err := buffer.NewEncryptedFileBuffer(bufPath, keys)
@@ -708,6 +696,18 @@ func runProcess(ctx context.Context) {
 	// AuditEvent messages; the local buffer is best-effort + offline-
 	// grace.
 	initAuditLogger(cfg)
+
+	// Load + RE-VERIFY the persisted signed policy with tamper detection against
+	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
+	// provider are ready (so a tamper raises a streamed/buffered alert) and before
+	// the FIPS gate (so a policy FIPS floor is enforced fail-closed).
+	loadStoredPolicy(cfg.SecureDir, keys, outbox, cfg.DeviceID)
+
+	// Fail-closed FIPS: if FIPS is required (by AEGIS_REQUIRE_FIPS or the active
+	// policy), refuse to start unless the FIPS 140-3 module is active.
+	if err := enforceFIPS(cfg); err != nil {
+		log.Fatalf("FIPS policy: %v", err)
+	}
 
 	// Security posture: a clear, greppable startup callout of what protections are
 	// in force (transport, command authorization, at-rest, audit, FIPS, client
