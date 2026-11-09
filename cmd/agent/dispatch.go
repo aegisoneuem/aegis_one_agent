@@ -52,6 +52,7 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 		"run_command":              d.handleRunCommandCmd,
 		"file_operation":           d.handleFileOperationCmd,
 		"report_device_state":      d.handleReportDeviceStateCmd,
+		"audit_query":              d.handleAuditQueryCmd,
 	}
 	return d
 }

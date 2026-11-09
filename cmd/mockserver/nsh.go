@@ -238,7 +238,7 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 // for Tab completion. Keep it alphabetical so the candidate list a user sees
 // after `inv<Tab>` is predictable.
 var nshVerbNames = []string{
-	"cat", "cd", "copy", "cp", "delete", "del", "exec", "exit", "fanout",
+	"audit", "cat", "cd", "copy", "cp", "delete", "del", "exec", "exit", "fanout",
 	"grab", "help", "history", "hosts", "inventory", "mkdir", "md", "move",
 	"mv", "pull", "pwd", "quit", "rm", "run", "script", "search", "set",
 	"shell", "source", "touch", "use",
@@ -345,6 +345,8 @@ func (s *nshSession) exec(line string) bool {
 		s.verbPull(rest)
 	case "cat":
 		s.verbCat(rest)
+	case "audit":
+		s.verbAudit(rest)
 	case "fanout":
 		s.verbRun(rest, true)
 	case "shell":

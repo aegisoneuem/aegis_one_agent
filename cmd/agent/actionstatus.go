@@ -18,6 +18,7 @@ const (
 	actionCollectFile    = "collect_file"
 	actionOpenShell      = "open_shell"
 	actionRunCommand     = "run_command"
+	actionAuditQuery     = "audit_query"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.

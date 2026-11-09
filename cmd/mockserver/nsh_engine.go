@@ -262,6 +262,8 @@ func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(n
 		s.verbInventory(c.Text)
 	case "cat":
 		s.verbCat(c.Text)
+	case "audit":
+		s.verbAudit(c.Text)
 	case "help":
 		s.verbHelp(c.Text)
 	case "history":

@@ -227,6 +227,73 @@ Received FULL inventory -> ... system: Dell Inc. Latitude 7440
 
 ---
 
+## 5A. Remote audit query (L3) — `audit_query`
+
+**VM-PASS 2026-11-09.** A new signed command type `audit_query` lets the console
+pull a device's LOCAL audit trace remotely (BigFix-style endpoint forensics
+without a server portal). The agent reads ONLY its own audit dir
+(`<SecureDir>\logs\audit.log` + rotated `audit-*.log`) — there is deliberately no
+path field, so this can never become an arbitrary-file read. It returns matching
+events (metadata only, no secrets) newest-first, size-capped, in
+`ActionStatus.Detail` (a JSON event array). The payload is JSON in `cmd.Payload`
+(no proto change): `{version:1, mode:"tail|search|since", limit, pattern,
+since_ms, until_ms, include_rotated, event_types[], decisions[]}`.
+
+**Two ways to drive it.**
+
+### 5A.1 Standalone env trigger (mockserver `server` mode)
+
+```cmd
+set "AEGIS_TARGET_DEVICE=<DEVICE_UUID>"
+set "AEGIS_AUDIT_QUERY=1"
+set "AEGIS_AUDIT_MODE=tail"       rem tail | search | since
+set "AEGIS_AUDIT_LIMIT=10"
+set "AEGIS_AUDIT_PATTERN="        rem substring (used by search, optional elsewhere)
+set "AEGIS_AUDIT_SINCE_MS="       rem unix-millis lower bound (mode=since)
+set "AEGIS_AUDIT_UNTIL_MS="       rem unix-millis upper bound (optional)
+set "AEGIS_AUDIT_ROTATED="        rem set to 1 to also scan rotated files
+mockserver.exe server
+```
+
+Expected: `Sent command -> id: audit-001, type: audit_query, mode=... (signed)`,
+then a terminal `ACTION_PHASE_SUCCESS` with
+`reason: audit_query: N event(s) returned (scanned M)` followed by N
+pretty-printed rows: `<ts>  <event_type>  <decision>  <command_id>  <actor>  <reason>`.
+
+- **tail** — the N most recent events.
+- **search** (`AEGIS_AUDIT_MODE=search` + `AEGIS_AUDIT_PATTERN=command_received`)
+  — only events whose text matches (case-insensitive).
+- **since** (`AEGIS_AUDIT_MODE=since` + `AEGIS_AUDIT_SINCE_MS=<ms>`) — events
+  at/after the timestamp. 0 matches is correct when the device has no events
+  after the cutoff.
+- **rotated** (`AEGIS_AUDIT_ROTATED=1`) — `scanned M` grows to include rotated files.
+
+### 5A.2 NSH verb (interactive console)
+
+Target a host with `cd \\<host>` (NSH `use` selects the SHELL type, not the
+target), then:
+
+```
+audit tail 10
+audit search deploy
+audit since 1794200000000 rotated
+```
+
+Each prints the matched events for the selected host(s). `audit tail 10 > file`
+redirection works too (reuses the NSH `>` support).
+
+### 5A.3 Server-team contract
+
+The agent already streams every `AuditEvent` to the server (L1/L2) — the
+authoritative record. `audit_query` is an on-demand ENDPOINT read for field
+forensics and to see pre-enrollment events the server never received. Your
+production server issues an `audit_query` signed command (same envelope as
+`file_operation`) and renders `ActionStatus.Detail`. Bounds are enforced
+agent-side (limit ≤ 1000, size ≤ 2 MiB, audit-dir only), so no server-side
+guard is required for safety.
+
+---
+
 ## 6. Record sheet
 
 | Case | Surface | Env / trigger | PASS/FAIL | Notes |
@@ -237,3 +304,4 @@ Received FULL inventory -> ... system: Dell Inc. Latitude 7440
 | SA-4 | no chain fields | CONTRACT (proto e1d3d6b parse) | | |
 | SA-5 | driver inventory | Tier-3 snapshot | | |
 | SA-6 | BIOS + model fields | Tier-3 snapshot | | |
+| SA-7 | audit_query tail/search/since | AEGIS_AUDIT_QUERY / NSH `audit` | VM-PASS 2026-11-09 | L3 remote audit query |

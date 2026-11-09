@@ -980,6 +980,45 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// Optionally push one signed audit_query command (L3 remote audit query).
+		// AEGIS_AUDIT_QUERY=1 enables it; shape it with AEGIS_AUDIT_MODE
+		// (tail|search|since, default tail), AEGIS_AUDIT_PATTERN, AEGIS_AUDIT_LIMIT
+		// (default 20), AEGIS_AUDIT_SINCE_MS, AEGIS_AUDIT_UNTIL_MS, AEGIS_AUDIT_ROTATED
+		// (1 = include rotated files). The agent reads ONLY its own audit dir and
+		// returns matching metadata (no secrets) in ActionStatus.Detail (JSON array).
+		if os.Getenv("AEGIS_AUDIT_QUERY") != "" {
+			p := auditQueryPayload{Version: 1}
+			p.Mode = os.Getenv("AEGIS_AUDIT_MODE")
+			if strings.TrimSpace(p.Mode) == "" {
+				p.Mode = "tail"
+			}
+			p.Pattern = os.Getenv("AEGIS_AUDIT_PATTERN")
+			p.Limit = 20
+			if n, err := strconv.Atoi(os.Getenv("AEGIS_AUDIT_LIMIT")); err == nil && n > 0 {
+				p.Limit = n
+			}
+			if ms, err := strconv.ParseInt(os.Getenv("AEGIS_AUDIT_SINCE_MS"), 10, 64); err == nil {
+				p.SinceMS = ms
+			}
+			if ms, err := strconv.ParseInt(os.Getenv("AEGIS_AUDIT_UNTIL_MS"), 10, 64); err == nil {
+				p.UntilMS = ms
+			}
+			p.IncludeRotated = os.Getenv("AEGIS_AUDIT_ROTATED") != ""
+			payload, err := json.Marshal(p)
+			if err != nil {
+				log.Printf("failed to marshal audit_query: %v", err)
+			} else {
+				auditCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+					CommandId: "audit-001", Type: "audit_query", Payload: payload,
+				})}}
+				if err := connection.send(auditCmd); err != nil {
+					log.Printf("failed to send audit_query command: %v", err)
+					return
+				}
+				mockPrintf("Sent command -> id: audit-001, type: audit_query, mode=%s pattern=%q limit=%d rotated=%v (signed)\n", p.Mode, p.Pattern, p.Limit, p.IncludeRotated)
+			}
+		}
+
 		// Optionally push one or more signed uninstall_patch commands. Set
 		// AEGIS_UNINSTALL_KB (comma-separated for multiple). The agent removes each
 		// installed KB via DISM/CBS (WUA fallback) on the serial worker and reports
@@ -1400,7 +1439,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if st.PackageDirectory != "" {
 				mockPrintf("  package_directory: %s, cleanup: %s\n", st.PackageDirectory, st.PackageCleanup)
 			}
-			if st.Detail != "" {
+			if st.ActionType == "audit_query" {
+				// Pretty-print the returned audit events one per line instead of the
+				// raw JSON array, so the standalone (non-NSH) audit test is readable.
+				printAuditEvents(st.Detail)
+			} else if st.Detail != "" {
 				mockPrintf("  detail: %s\n", st.Detail)
 			}
 		}
