@@ -40,12 +40,18 @@ func certRenewalDue(certPath string) (bool, time.Time) {
 // renewIfDue renews the client cert over the existing mTLS channel (authenticated
 // by the current cert — no token) when it nears expiry, writing the new cert+key.
 // Returns true if a renewal happened (caller should reconnect to use it).
-func renewIfDue(ctx context.Context, client pb.AgentControlPlaneClient, cfg config.Config) (bool, error) {
+func renewIfDue(ctx context.Context, client pb.AgentControlPlaneClient, cfg config.Config) (renewed bool, renewErr error) {
 	due, notAfter := certRenewalDue(cfg.TLSCertFile)
 	if !due {
 		return false, nil
 	}
 	slog.Info("cert renewal: due — requesting a new cert", "device_id", cfg.DeviceID, "expires", notAfter.Format(time.RFC3339))
+	recordLocalAuditEvent(certRenewEvent(cfg.DeviceID, "requested", "cert near expiry "+notAfter.Format(time.RFC3339)))
+	defer func() {
+		if renewErr != nil {
+			recordLocalAuditEvent(certRenewEvent(cfg.DeviceID, "failed", renewErr.Error()))
+		}
+	}()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -86,5 +92,6 @@ func renewIfDue(ctx context.Context, client pb.AgentControlPlaneClient, cfg conf
 		return false, fmt.Errorf("write client cert: %w", err)
 	}
 	slog.Info("cert renewal: success — new cert written; reconnecting to use it")
+	recordLocalAuditEvent(certRenewEvent(cfg.DeviceID, "succeeded", "new client cert written"))
 	return true, nil
 }

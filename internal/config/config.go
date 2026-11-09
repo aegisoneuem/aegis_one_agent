@@ -181,6 +181,12 @@ type Config struct {
 	InstallDiskMultiplier int64         // require free disk >= this * patch size before install
 	InstallMaxAttempts    int           // total DISM attempts on a transient failure
 	InstallRetryBackoff   time.Duration // wait between transient-failure retries
+
+	// Audit flood control (L5). Only high-volume benign command_received events
+	// are throttled; security + outcome events are always audited.
+	AuditRatePerSec  int           // sustained command_received events/sec before shedding (0 = default)
+	AuditBurst       int           // token-bucket capacity (0 = default)
+	AuditDedupWindow time.Duration // coalesce identical command_received seen within this window
 }
 
 // defaultConfigMap returns the config.json defaults (keys = env-var names).
@@ -353,6 +359,9 @@ func Load() Config {
 		InstallDiskMultiplier:  int64FromEnv("AEGIS_INSTALL_DISK_MULTIPLIER", 2),
 		InstallMaxAttempts:     int(int64FromEnv("AEGIS_INSTALL_MAX_ATTEMPTS", 2)),
 		InstallRetryBackoff:    durationFromEnv("AEGIS_INSTALL_RETRY_BACKOFF", 30*time.Second),
+		AuditRatePerSec:        int(int64FromEnv("AEGIS_AUDIT_RATE", 50)),
+		AuditBurst:             int(int64FromEnv("AEGIS_AUDIT_BURST", 100)),
+		AuditDedupWindow:       durationFromEnv("AEGIS_AUDIT_DEDUP_WINDOW", 2*time.Second),
 	}
 	if cfg.Hostname == "" {
 		cfg.Hostname = defaultHostname()

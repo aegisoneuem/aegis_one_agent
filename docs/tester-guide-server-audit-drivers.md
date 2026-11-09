@@ -294,6 +294,40 @@ guard is required for safety.
 
 ---
 
+## 5B. Audit flood control + enrollment audit (L5)
+
+**Flood control.** Only the high-volume benign `command_received` event is
+throttled — a token bucket (`AEGIS_AUDIT_RATE`, default 50/s; `AEGIS_AUDIT_BURST`,
+default 100) plus duplicate-coalescing within `AEGIS_AUDIT_DEDUP_WINDOW`
+(default 2 s, handles reconnect re-delivery storms). **Security + outcome events
+are NEVER suppressed** — `command_rejected`, `command_completed`,
+`audit_degraded`, `enrollment*`, `cert_renew*` always pass, so a flood cannot
+drown out a rejected attempt and the server's completion-driven logic is never
+starved. Suppression is itself audited: an `audit_rate_limited` event records
+`duplicates=N, over_rate=N, window_ms=N`. Fail-open: if the guard is absent,
+every event passes.
+
+Verify with the L3 query (§5A): lower the cap via `config.json`
+(`AEGIS_AUDIT_RATE=1`, restart the service), drive a burst of commands, then
+`audit search audit_rate_limited` — the summary appears, while
+`audit search command_rejected` still shows every rejected event. Revert the
+config afterward.
+
+**Enrollment audit.** `enrollment` (requested/succeeded/failed) and `cert_renew`
+(requested/succeeded/failed) events are now written to the LOCAL trace — these
+occur before the server connection exists, so they are the agent-side forensic
+trail the server (which has the Enroll RPC result) never streamed. To see them:
+on a test VM, remove the client cert and let the agent re-enroll, then
+`audit search enrollment rotated` (§5A) lists the enrollment lifecycle. These
+events are exempt from flood control and are never suppressed.
+
+Server-team note: both are agent-local behaviors; no new server contract. The
+`audit_rate_limited` and `enrollment`/`cert_renew` event types simply appear on
+the existing AuditEvent stream (flood summaries) or in the local trace
+(enrollment, pre-connection).
+
+---
+
 ## 6. Record sheet
 
 | Case | Surface | Env / trigger | PASS/FAIL | Notes |
@@ -305,3 +339,5 @@ guard is required for safety.
 | SA-5 | driver inventory | Tier-3 snapshot | | |
 | SA-6 | BIOS + model fields | Tier-3 snapshot | | |
 | SA-7 | audit_query tail/search/since | AEGIS_AUDIT_QUERY / NSH `audit` | VM-PASS 2026-11-09 | L3 remote audit query |
+| SA-8 | audit flood control (coalesce + rate cap + exempt) | AEGIS_AUDIT_RATE low + burst | | L5 — security events never dropped |
+| SA-9 | enrollment / cert_renew audit | re-enroll on test VM | | L5 — local pre-connection trace |

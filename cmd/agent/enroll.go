@@ -43,7 +43,7 @@ func hasClientCert(cfg config.Config) bool {
 // Enroll RPC over SERVER-AUTH TLS authenticated by the bootstrap token, and writes
 // the signed cert + key so normal mTLS can proceed. The at-rest protection then
 // seals the key on the next load (see secure.ClientCredentials).
-func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, tpmEK, systemUUID, machineGUID string, signals []string) (string, error) {
+func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, tpmEK, systemUUID, machineGUID string, signals []string) (devID string, enrollErr error) {
 	if hasClientCert(cfg) {
 		slog.Info("enrollment: client cert already present, skipping")
 		return deviceID, nil
@@ -58,6 +58,15 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, tpmEK, sys
 		enrollAddr = cfg.ServerAddress
 	}
 	slog.Info("enrollment: no client cert — enrolling", "enroll_address", enrollAddr, "device_id", deviceID)
+	// Audit the enrollment attempt LOCALLY (no server connection exists yet). A
+	// failed return anywhere below is recorded by the defer; success is recorded
+	// explicitly at the end with the reconciled id.
+	recordLocalAuditEvent(enrollEvent(deviceID, "requested", "enrolling via "+enrollAddr))
+	defer func() {
+		if enrollErr != nil {
+			recordLocalAuditEvent(enrollEvent(deviceID, "failed", enrollErr.Error()))
+		}
+	}()
 
 	// 1. Generate keypair + CSR (CN = device_id). The private key stays on-device.
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -154,6 +163,7 @@ func ensureEnrolled(ctx context.Context, cfg config.Config, deviceID, tpmEK, sys
 	}
 	slog.Info("enrollment: success — client cert provisioned",
 		"device_id", effectiveID, "cert", cfg.TLSCertFile)
+	recordLocalAuditEvent(enrollEvent(effectiveID, "succeeded", "client cert provisioned at "+cfg.TLSCertFile))
 
 	// The enroll token is a single-use bootstrap credential: now that we hold a
 	// per-device cert it is no longer needed. Erase it from the registry so it

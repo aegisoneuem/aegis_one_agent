@@ -19,12 +19,22 @@ import (
 // AuditEvent so the authoritative server-side record stays intact.
 var auditLogger *auditlog.Logger
 
+// auditGuard throttles the audit channel against flooding (duplicate coalescing
+// + a token-bucket rate cap on command_received), while ALWAYS admitting
+// security and outcome events. nil disables flood control (fail-open — never
+// block legitimate auditing because the guard is absent).
+var auditGuard *auditlog.Guard
+
 // initAuditLogger opens or creates <SKVC>/logs/audit.log as an
 // append-only local trace for on-endpoint L1 forensics. Called once
 // from main() before runAgent. A failure here is logged as a warning —
 // the server-side audit stream is authoritative and still works even
 // without a local file.
 func initAuditLogger(cfg config.Config) {
+	// Flood control is always on (defaults are generous enough that normal
+	// operation never trips it). Admins can tune via the AEGIS_AUDIT_* env.
+	auditGuard = auditlog.NewGuard(float64(cfg.AuditRatePerSec), float64(cfg.AuditBurst), cfg.AuditDedupWindow)
+
 	dir := filepath.Join(cfg.SecureDir, "logs")
 	l, err := auditlog.New(dir)
 	if err != nil {
@@ -160,11 +170,52 @@ func recordAuditEvent(ctx context.Context, outbox chan<- *pb.AgentMessage, ev au
 	writeAuditEvent(ctx, outbox, ev)
 }
 
-// writeAuditEvent is the common implementation shared by recordAudit and
-// recordAuditEvent: local append (if the logger is up), then push a
-// pb.AuditEvent onto the outbox. A local write failure emits an
-// additional audit_degraded event so the server knows.
+// recordLocalAuditEvent writes an audit event to the LOCAL trace only (no server
+// outbox). It is for events generated BEFORE the server connection exists —
+// notably enrollment and certificate renewal. The server has its own record of
+// these (the Enroll RPC result), so this captures the agent-side forensic trail
+// the auditlog comment calls out ("pre-enrollment events the server never saw").
+// Flood control still runs, but enrollment/cert_renew events are exempt and are
+// therefore always written.
+func recordLocalAuditEvent(ev auditlog.Event) {
+	if ev.TS == 0 {
+		ev.TS = time.Now().UnixMilli()
+	}
+	writeAuditEvent(context.Background(), nil, ev)
+}
+
+// enrollEvent builds an "enrollment" audit record (decision: requested |
+// succeeded | failed). cert_renew records use certRenewEvent.
+func enrollEvent(deviceID, decision, reason string) auditlog.Event {
+	return auditlog.Event{DeviceID: deviceID, EventType: "enrollment", Decision: decision, Reason: reason}
+}
+
+// certRenewEvent builds a "cert_renew" audit record (decision: succeeded | failed).
+func certRenewEvent(deviceID, decision, reason string) auditlog.Event {
+	return auditlog.Event{DeviceID: deviceID, EventType: "cert_renew", Decision: decision, Reason: reason}
+}
+
+// writeAuditEvent applies flood control, then writes/emits the event. Suppressed
+// events are dropped; when suppression occurred, the first event that gets
+// through carries an audit_rate_limited summary written alongside it, so a flood
+// is always recorded honestly. Security + outcome events are never suppressed.
 func writeAuditEvent(ctx context.Context, outbox chan<- *pb.AgentMessage, ev auditlog.Event) {
+	if auditGuard != nil {
+		write, summary := auditGuard.Admit(ev)
+		if summary != nil {
+			writeAuditEventRaw(ctx, outbox, *summary) // the suppression note itself is exempt
+		}
+		if !write {
+			return // shed by flood control (counted into the summary above)
+		}
+	}
+	writeAuditEventRaw(ctx, outbox, ev)
+}
+
+// writeAuditEventRaw is the unguarded sink: local append (if the logger is up),
+// then push a pb.AuditEvent onto the outbox. A local write failure emits an
+// additional audit_degraded event so the server knows.
+func writeAuditEventRaw(ctx context.Context, outbox chan<- *pb.AgentMessage, ev auditlog.Event) {
 	written := ev
 	if auditLogger != nil {
 		stamped, err := auditLogger.Append(ev)
@@ -192,6 +243,12 @@ func writeAuditEvent(ctx context.Context, outbox chan<- *pb.AgentMessage, ev aud
 // local Event struct into pb.AuditEvent and uses the same best-effort
 // non-blocking send pattern the rest of the agent uses.
 func sendAuditEvent(ctx context.Context, outbox chan<- *pb.AgentMessage, ev auditlog.Event) {
+	if outbox == nil {
+		// Local-only event (e.g. a pre-connection enrollment record): there is no
+		// server stream yet, so writing to the (nil) outbox is skipped. The event
+		// is already in the local trace and is readable via audit_query/auditcheck.
+		return
+	}
 	msg := &pb.AgentMessage{Payload: &pb.AgentMessage_AuditEvent{AuditEvent: &pb.AuditEvent{
 		DeviceId:    ev.DeviceID,
 		Ts:          ev.TS,
