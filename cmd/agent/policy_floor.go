@@ -2,8 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 )
@@ -22,24 +20,31 @@ func setPolicyLockdownThreshold(n int) {
 	}
 }
 
-// policyFloor is the persisted anti-rollback + tamper state. It is sealed at rest
-// with the DPAPI-protected master key (machine-bound), so a casual local admin
-// cannot read or reset it; a TPM NV monotonic counter is the roadmap upgrade for
-// a truly tamper-proof floor an administrator cannot roll back either.
+// policyFloor is the persisted anti-rollback + tamper state. It is SEALED with
+// the DPAPI-protected master key (machine-bound) and, on Windows, stored in the
+// HKLM\SOFTWARE\AegisOne registry tree (NOT a file next to policy.json), so a
+// local admin cannot easily find + delete it alongside the policy and cannot read
+// or forge it. A TPM NV monotonic counter is the roadmap upgrade for a floor an
+// administrator cannot reset at all. readFloorBlob/writeFloorBlob are the
+// platform-specific storage (registry on Windows, a file elsewhere).
 type policyFloor struct {
 	MinIssuedAt int64 `json:"min_issued_at"` // highest policy issued_at ever applied (anti-rollback)
 	TamperCount int   `json:"tamper_count"`  // consecutive tamper events since the last good policy
 	LastTamper  int64 `json:"last_tamper_ts,omitempty"`
 }
 
-func policyFloorPath(secureDir string) string {
-	return filepath.Join(secureDir, "policy.floor")
-}
+// readFloorBlob/writeFloorBlob are the platform storage for the sealed floor
+// (registry on Windows, a file elsewhere). They are function vars so tests can
+// substitute an in-memory store and never touch the real registry.
+var (
+	readFloorBlob  = platformReadFloorBlob
+	writeFloorBlob = platformWriteFloorBlob
+)
 
 // loadPolicyFloor returns the sealed floor, or a zero floor when absent/unreadable.
 func loadPolicyFloor(keys secure.KeyProvider, secureDir string) policyFloor {
-	data, err := os.ReadFile(policyFloorPath(secureDir))
-	if err != nil || keys == nil {
+	data, err := readFloorBlob(secureDir)
+	if err != nil || len(data) == 0 || keys == nil {
 		return policyFloor{}
 	}
 	key, err := keys.Key()
@@ -48,7 +53,7 @@ func loadPolicyFloor(keys secure.KeyProvider, secureDir string) policyFloor {
 	}
 	plain, err := secure.Open(key, data)
 	if err != nil {
-		return policyFloor{} // corrupt/tampered seal → treated as reset (a deletion is itself detected via the policy file)
+		return policyFloor{} // corrupt/tampered seal → treated as reset (deletion is detected via the policy file)
 	}
 	var f policyFloor
 	if err := json.Unmarshal(plain, &f); err != nil {
@@ -57,7 +62,7 @@ func loadPolicyFloor(keys secure.KeyProvider, secureDir string) policyFloor {
 	return f
 }
 
-// savePolicyFloor seals and atomically writes the floor (0600).
+// savePolicyFloor seals and persists the floor to the platform store.
 func savePolicyFloor(keys secure.KeyProvider, secureDir string, f policyFloor) error {
 	if keys == nil {
 		return nil // best-effort; no key provider in some test paths
@@ -74,17 +79,5 @@ func savePolicyFloor(keys secure.KeyProvider, secureDir string, f policyFloor) e
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(secureDir, 0o700); err != nil {
-		return err
-	}
-	path := policyFloorPath(secureDir)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return writeFloorBlob(secureDir, blob)
 }

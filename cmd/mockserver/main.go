@@ -1003,7 +1003,13 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if a := strings.TrimSpace(os.Getenv("AEGIS_POLICY_ALLOW")); a != "" {
 				pol.Modules.Allow = strings.Split(a, ",")
 			}
-			pol.Behavior.RebootPolicy = os.Getenv("AEGIS_POLICY_REBOOT")
+			pol.Patch.RebootPolicy = os.Getenv("AEGIS_POLICY_REBOOT")
+			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_FETCH_MAX_BPS"), 10, 64); err == nil && v > 0 {
+				pol.Transfer.FetchMaxBPS = v
+			}
+			if lvl := os.Getenv("AEGIS_POLICY_LOG_LEVEL"); lvl != "" {
+				pol.Logging.Level = lvl
+			}
 			payload, err := json.Marshal(pol)
 			if err != nil {
 				log.Printf("failed to marshal policy: %v", err)

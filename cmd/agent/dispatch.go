@@ -219,6 +219,14 @@ func (d *dispatcher) handleStagePatchCmd(ctx context.Context, client pb.AgentCon
 
 // reboot: server-driven (signed) system reboot.
 func (d *dispatcher) handleRebootCmd(ctx context.Context, _ pb.AgentControlPlaneClient, cmd *pb.Command) {
+	// Policy reboot_policy=never forbids reboots on this endpoint (maintenance /
+	// always-on servers). "always"/"if_required" shape auto-reboot in the install
+	// path; blocking an explicit reboot here is the clean, concrete enforcement.
+	if getActivePolicy().RebootPolicy() == "never" {
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionReboot, d.cfg.DeviceID, "",
+			pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "reboot blocked by agent policy (reboot_policy=never)"))
+		return
+	}
 	var spec pb.RebootSpec
 	if err := proto.Unmarshal(cmd.Payload, &spec); err != nil {
 		send(ctx, d.outbox, buildCommandResultMessage(cmd.CommandId, "failed", "invalid reboot payload"))

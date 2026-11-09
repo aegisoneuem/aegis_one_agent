@@ -25,7 +25,33 @@ var (
 	activePolicy *policy.Policy
 	// policyKeys is the sealer for the anti-rollback floor, set once at startup.
 	policyKeys secure.KeyProvider
+	// policySafeMode is set when the floor shows a policy WAS applied but none is
+	// now valid (deleted/modified/rolled-back/corrupt). Rather than run wide-open
+	// defaults — which would REWARD an offline attacker for deleting the policy —
+	// the agent fails CLOSED: high-risk command types are refused until the server
+	// re-asserts a valid policy. set_policy stays allowed so recovery is possible.
+	policySafeMode bool
 )
+
+// safeModeDeny is the high-blast-radius command set refused while in fail-closed
+// safe mode (an interactive/arbitrary-execution surface an attacker would want).
+// Patch/inventory/scan stay allowed so the endpoint keeps getting secured.
+var safeModeDeny = []string{"run_command", "open_shell", "file_operation", "remote_control"}
+
+func inSafeMode() bool {
+	policyMu.RLock()
+	defer policyMu.RUnlock()
+	return policySafeMode
+}
+
+func isSafeModeDenied(cmdType string) bool {
+	for _, d := range safeModeDeny {
+		if d == cmdType {
+			return true
+		}
+	}
+	return false
+}
 
 // storedPolicy is the signed set_policy envelope persisted to disk so the policy
 // can be RE-VERIFIED against the server's public key at startup — a tampered
@@ -60,7 +86,10 @@ func policyRequiresFIPS() bool {
 // module allow/deny lists (deny wins; a non-empty allow is a strict allow-list).
 func policyAllowsCommand(cmdType string) bool {
 	if cmdType == actionSetPolicy {
-		return true
+		return true // never lock the endpoint out of a recovery policy
+	}
+	if inSafeMode() && isSafeModeDenied(cmdType) {
+		return false // fail-closed: high-risk surface disabled until a valid policy returns
 	}
 	return getActivePolicy().CommandAllowed(cmdType)
 }
@@ -109,9 +138,11 @@ func loadStoredPolicy(secureDir string, keys secure.KeyProvider, outbox chan<- *
 		return
 	}
 
-	// Valid and not a rollback: apply, raise the floor, clear the tamper streak.
+	// Valid and not a rollback: apply, raise the floor, clear the tamper streak,
+	// and leave safe mode.
 	policyMu.Lock()
 	activePolicy = p
+	policySafeMode = false
 	policyMu.Unlock()
 	floor.MinIssuedAt = p.IssuedAt
 	floor.TamperCount = 0
@@ -128,6 +159,21 @@ func recordPolicyTamper(secureDir string, keys secure.KeyProvider, outbox chan<-
 	floor.TamperCount++
 	floor.LastTamper = time.Now().Unix()
 	_ = savePolicyFloor(keys, secureDir, *floor)
+
+	// Fail CLOSED: a policy was expected (floor known) but none is valid now, so
+	// disable the high-risk command surface until the server re-asserts a policy.
+	policyMu.Lock()
+	wasSafe := policySafeMode
+	policySafeMode = true
+	policyMu.Unlock()
+	if !wasSafe {
+		slog.Warn("policy: entering FAIL-CLOSED safe mode — high-risk commands disabled until a valid policy is re-asserted", "denied", safeModeDeny)
+		recordAuditEvent(context.Background(), outbox, auditlog.Event{
+			DeviceID: deviceID, EventType: "policy_safe_mode", Decision: "engaged",
+			Reason:  "policy expected but missing/invalid — high-risk commands disabled until server re-asserts",
+			Details: fmt.Sprintf("denied=%v", safeModeDeny),
+		})
+	}
 
 	slog.Error("policy: TAMPER detected", "kind", kind, "reason", reason, "tamper_count", floor.TamperCount)
 	recordAuditEvent(context.Background(), outbox, auditlog.Event{
@@ -189,6 +235,7 @@ func (d *dispatcher) handleSetPolicyCmd(ctx context.Context, _ pb.AgentControlPl
 	}
 	policyMu.Lock()
 	activePolicy = p
+	policySafeMode = false
 	policyMu.Unlock()
 	// Raise the floor + clear the tamper streak — a legit newer policy is a
 	// healthy signal that overrides prior tamper counts.

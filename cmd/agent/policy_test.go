@@ -29,6 +29,7 @@ func resetPolicy(t *testing.T) {
 	})
 	policyMu.Lock()
 	activePolicy = nil
+	policySafeMode = false
 	policyMu.Unlock()
 	policyKeys = nil
 }
@@ -194,9 +195,21 @@ func TestLoadStoredPolicy_MissingIsNoop(t *testing.T) {
 	}
 }
 
+// useInMemoryFloor swaps the sealed-floor storage for an in-memory blob so tests
+// never touch the real Windows registry.
+func useInMemoryFloor(t *testing.T) {
+	t.Helper()
+	savedR, savedW := readFloorBlob, writeFloorBlob
+	var blob []byte
+	readFloorBlob = func(string) ([]byte, error) { return blob, nil }
+	writeFloorBlob = func(_ string, b []byte) error { blob = append([]byte(nil), b...); return nil }
+	t.Cleanup(func() { readFloorBlob, writeFloorBlob = savedR, savedW })
+}
+
 // A2.5 — anti-rollback floor + tamper alerts, sealed with a real key provider.
 func TestPolicyTamper_RollbackAndDeleteAndLockdown(t *testing.T) {
 	resetPolicy(t)
+	useInMemoryFloor(t)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	savedKey := cmdVerifyKey
 	t.Cleanup(func() { cmdVerifyKey = savedKey })
@@ -286,6 +299,81 @@ func TestPolicyGate_DeniedCommandBlocked(t *testing.T) {
 	}
 	if !blocked {
 		t.Fatal("a policy-denied command type must be blocked by the dispatch gate")
+	}
+}
+
+// A2.6 — fail-closed safe mode: after a tamper (policy expected but gone), the
+// high-risk surface is disabled; set_policy + patch stay allowed; a valid policy
+// clears safe mode.
+func TestPolicySafeMode_FailClosedOnTamper(t *testing.T) {
+	resetPolicy(t)
+	useInMemoryFloor(t)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	savedKey := cmdVerifyKey
+	t.Cleanup(func() { cmdVerifyKey = savedKey })
+	cmdVerifyKey = pub
+
+	dir := t.TempDir()
+	keys := secure.NewKeyProvider(dir)
+	out := make(chan *pb.AgentMessage, 32)
+	writeStore := func(id string, issuedAt int64) {
+		payload, _ := json.Marshal(policy.Policy{Version: 1, PolicyID: id, IssuedAt: issuedAt})
+		sig := commandsign.Sign(priv, "set_policy", "c", payload)
+		sp := storedPolicy{Type: "set_policy", CommandID: "c", Payload: payload, Signature: sig}
+		raw, _ := json.Marshal(sp)
+		_ = os.WriteFile(filepath.Join(dir, "policy.json"), raw, 0o600)
+	}
+
+	// Apply a policy (raises the floor, no safe mode).
+	writeStore("cur", 500)
+	loadStoredPolicy(dir, keys, out, "dev")
+	if inSafeMode() {
+		t.Fatal("a valid policy must not be in safe mode")
+	}
+
+	// Delete the policy → tamper → fail-closed safe mode.
+	_ = os.Remove(filepath.Join(dir, "policy.json"))
+	loadStoredPolicy(dir, keys, out, "dev")
+	if !inSafeMode() {
+		t.Fatal("a deleted-but-expected policy must engage safe mode")
+	}
+	if policyAllowsCommand("run_command") || policyAllowsCommand("open_shell") {
+		t.Fatal("safe mode must DENY high-risk command types")
+	}
+	if !policyAllowsCommand("set_policy") || !policyAllowsCommand("install_patch") {
+		t.Fatal("safe mode must still ALLOW set_policy (recovery) and patching")
+	}
+	if countEvents(out, "policy_safe_mode") == 0 {
+		t.Fatal("entering safe mode must raise a policy_safe_mode audit event")
+	}
+
+	// A valid newer policy clears safe mode.
+	writeStore("new", 600)
+	loadStoredPolicy(dir, keys, out, "dev")
+	if inSafeMode() {
+		t.Fatal("a valid re-asserted policy must clear safe mode")
+	}
+	if !policyAllowsCommand("run_command") {
+		t.Fatal("after recovery, run_command should be allowed again")
+	}
+}
+
+// A3 — reboot_policy=never blocks an explicit reboot command.
+func TestPolicyReboot_NeverBlocks(t *testing.T) {
+	resetPolicy(t)
+	policyMu.Lock()
+	activePolicy = &policy.Policy{Version: 1, PolicyID: "p", IssuedAt: 1, Patch: policy.Patch{RebootPolicy: "never"}}
+	policyMu.Unlock()
+	d, out, _ := policyDispatcher(t)
+	d.handleRebootCmd(context.Background(), nil, &pb.Command{CommandId: "rb-1", Type: "reboot", Payload: []byte{}})
+	var blocked bool
+	for len(out) > 0 {
+		if st := (<-out).GetActionStatus(); st != nil && st.Phase == pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE && strings.Contains(st.Reason, "reboot_policy=never") {
+			blocked = true
+		}
+	}
+	if !blocked {
+		t.Fatal("reboot_policy=never must block an explicit reboot command")
 	}
 }
 

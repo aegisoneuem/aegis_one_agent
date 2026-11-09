@@ -15,7 +15,7 @@ func mustJSON(t *testing.T, p Policy) []byte {
 }
 
 func TestParseValidate(t *testing.T) {
-	good := Policy{Version: 1, PolicyID: "p1", IssuedAt: 1000, Behavior: Behavior{RebootPolicy: "if_required"}}
+	good := Policy{Version: 1, PolicyID: "p1", IssuedAt: 1000, Patch: Patch{RebootPolicy: "if_required"}, Logging: Logging{Level: "warn"}, Maintenance: Maintenance{StartHour: 1, EndHour: 5}}
 	if _, err := Parse(mustJSON(t, good)); err != nil {
 		t.Fatalf("good policy rejected: %v", err)
 	}
@@ -23,8 +23,10 @@ func TestParseValidate(t *testing.T) {
 		{Version: 2, PolicyID: "p", IssuedAt: 1},                              // version
 		{Version: 1, PolicyID: "", IssuedAt: 1},                              // no id
 		{Version: 1, PolicyID: "p", IssuedAt: 0},                             // no issued_at
-		{Version: 1, PolicyID: "p", IssuedAt: 1, Behavior: Behavior{RebootPolicy: "bogus"}},
-		{Version: 1, PolicyID: "p", IssuedAt: 1, Behavior: Behavior{FetchMaxBPS: -5}},
+		{Version: 1, PolicyID: "p", IssuedAt: 1, Patch: Patch{RebootPolicy: "bogus"}},
+		{Version: 1, PolicyID: "p", IssuedAt: 1, Transfer: Transfer{FetchMaxBPS: -5}},
+		{Version: 1, PolicyID: "p", IssuedAt: 1, Logging: Logging{Level: "verbose"}},
+		{Version: 1, PolicyID: "p", IssuedAt: 1, Maintenance: Maintenance{StartHour: 25}},
 	}
 	for i, p := range bad {
 		if _, err := Parse(mustJSON(t, p)); err == nil {
