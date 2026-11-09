@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/policy"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_agent/internal/softdist"
 	"github.com/aegisoneuem/aegis_one_proto/commandsign"
@@ -977,6 +978,44 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					return
 				}
 				mockPrintf("Sent command -> id: %s, type: install_patch, kb=%s, file=%s (signed)\n", cmdID, spec.Kb, f)
+			}
+		}
+
+		// Optionally push one signed set_policy command (Signed Agent Policy A1).
+		// AEGIS_SET_POLICY=1 enables it; AEGIS_POLICY_ID, AEGIS_POLICY_ISSUED_AT
+		// (default now), AEGIS_POLICY_REQUIRE_FIPS (1), AEGIS_POLICY_DENY /
+		// AEGIS_POLICY_ALLOW (comma-separated command types), AEGIS_POLICY_REBOOT
+		// (never|if_required|always) shape it.
+		if os.Getenv("AEGIS_SET_POLICY") != "" {
+			pol := policy.Policy{Version: 1}
+			pol.PolicyID = os.Getenv("AEGIS_POLICY_ID")
+			if pol.PolicyID == "" {
+				pol.PolicyID = fmt.Sprintf("pol-%d", time.Now().Unix())
+			}
+			pol.IssuedAt = time.Now().Unix()
+			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_ISSUED_AT"), 10, 64); err == nil && v > 0 {
+				pol.IssuedAt = v
+			}
+			pol.SecurityFloor.RequireFIPS = os.Getenv("AEGIS_POLICY_REQUIRE_FIPS") != ""
+			if d := strings.TrimSpace(os.Getenv("AEGIS_POLICY_DENY")); d != "" {
+				pol.Modules.Deny = strings.Split(d, ",")
+			}
+			if a := strings.TrimSpace(os.Getenv("AEGIS_POLICY_ALLOW")); a != "" {
+				pol.Modules.Allow = strings.Split(a, ",")
+			}
+			pol.Behavior.RebootPolicy = os.Getenv("AEGIS_POLICY_REBOOT")
+			payload, err := json.Marshal(pol)
+			if err != nil {
+				log.Printf("failed to marshal policy: %v", err)
+			} else {
+				polCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+					CommandId: "policy-001", Type: "set_policy", Payload: payload,
+				})}}
+				if err := connection.send(polCmd); err != nil {
+					log.Printf("failed to send set_policy command: %v", err)
+					return
+				}
+				mockPrintf("Sent command -> id: policy-001, type: set_policy, policy_id=%s issued_at=%d require_fips=%v deny=%v (signed)\n", pol.PolicyID, pol.IssuedAt, pol.SecurityFloor.RequireFIPS, pol.Modules.Deny)
 			}
 		}
 

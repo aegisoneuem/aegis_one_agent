@@ -591,9 +591,14 @@ func runProcess(ctx context.Context) {
 		log.Fatalf("command verify key: %v", err)
 	}
 
-	// Fail-closed FIPS: if AEGIS_REQUIRE_FIPS is set, refuse to start unless the
-	// FIPS 140-3 module is active. A compliance customer gets no agent rather than
-	// a non-FIPS one.
+	// Load + re-verify the persisted signed agent policy BEFORE the FIPS gate, so
+	// a policy-mandated FIPS floor is honored fail-closed. A tampered/invalid
+	// stored policy is ignored (logged), never trusted.
+	loadStoredPolicy(cfg.SecureDir)
+
+	// Fail-closed FIPS: if FIPS is required (by AEGIS_REQUIRE_FIPS or the active
+	// policy), refuse to start unless the FIPS 140-3 module is active. A
+	// compliance customer gets no agent rather than a non-FIPS one.
 	if err := enforceFIPS(cfg); err != nil {
 		log.Fatalf("FIPS policy: %v", err)
 	}

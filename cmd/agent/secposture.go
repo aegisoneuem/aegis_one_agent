@@ -30,8 +30,9 @@ type securityPosture struct {
 	AtRest           string // at-rest protection summary
 	AuditTrail       string // audit coverage summary
 	FIPSMode         bool   // live Go FIPS 140-3 module state (crypto/fips140.Enabled)
-	FIPSRequired     bool   // AEGIS_REQUIRE_FIPS — agent refuses to run without FIPS
+	FIPSRequired     bool   // AEGIS_REQUIRE_FIPS or policy — agent refuses to run without FIPS
 	ClientCert       string // client cert serial + expiry summary
+	Policy           string // active signed-policy summary ("none" when unset)
 	AgentVersion     string
 }
 
@@ -43,9 +44,10 @@ func collectSecurityPosture(cfg config.Config) securityPosture {
 		AtRest:       "DPAPI-sealed device identity + client key; AES-GCM encrypted content cache",
 		AuditTrail:   auditTrailSummary(),
 		FIPSMode:     fips140.Enabled(),
-		FIPSRequired: cfg.RequireFIPS,
+		FIPSRequired: cfg.RequireFIPS || policyRequiresFIPS(),
 		AgentVersion: cfg.AgentVersion,
 		ClientCert:   clientCertSummary(cfg.TLSCertFile),
+		Policy:       getActivePolicy().Summary(),
 	}
 	switch {
 	case len(cmdVerifyKey) != ed25519.PublicKeySize:
@@ -58,6 +60,9 @@ func collectSecurityPosture(cfg config.Config) securityPosture {
 	}
 	return p
 }
+
+// fipsActive reports whether the Go FIPS 140-3 module is active in this process.
+func fipsActive() bool { return fips140.Enabled() }
 
 // auditTrailSummary describes the live audit coverage.
 func auditTrailSummary() string {
@@ -91,8 +96,8 @@ func clientCertSummary(certPath string) string {
 
 // details renders the posture as a compact key=value string for the audit event.
 func (p securityPosture) details() string {
-	return fmt.Sprintf("tls=%q; command_authz=%q; at_rest=%q; audit=%q; fips_mode=%t; fips_required=%t; client_cert=%q; agent_version=%q",
-		p.TransportTLS, p.CommandAuthz, p.AtRest, p.AuditTrail, p.FIPSMode, p.FIPSRequired, p.ClientCert, p.AgentVersion)
+	return fmt.Sprintf("tls=%q; command_authz=%q; at_rest=%q; audit=%q; fips_mode=%t; fips_required=%t; policy=%q; client_cert=%q; agent_version=%q",
+		p.TransportTLS, p.CommandAuthz, p.AtRest, p.AuditTrail, p.FIPSMode, p.FIPSRequired, p.Policy, p.ClientCert, p.AgentVersion)
 }
 
 // enforceFIPS implements fail-closed FIPS: when AEGIS_REQUIRE_FIPS is set, the
@@ -101,11 +106,12 @@ func (p securityPosture) details() string {
 // returns an error so startup aborts — a compliance customer gets no agent at
 // all rather than a non-FIPS one. When FIPS is not required this is a no-op.
 func enforceFIPS(cfg config.Config) error {
-	if !cfg.RequireFIPS {
+	required := cfg.RequireFIPS || policyRequiresFIPS()
+	if !required {
 		return nil
 	}
 	if !fips140.Enabled() {
-		return fmt.Errorf("AEGIS_REQUIRE_FIPS is set but the FIPS 140-3 module is NOT active — build with GOFIPS140=latest and run with GODEBUG=fips140=on; refusing to start")
+		return fmt.Errorf("FIPS is required (AEGIS_REQUIRE_FIPS or signed policy) but the FIPS 140-3 module is NOT active — install --fips (or GODEBUG=fips140=on); refusing to start")
 	}
 	slog.Info("FIPS 140-3 mode is ACTIVE and required — proceeding")
 	return nil
@@ -125,6 +131,7 @@ func reportSecurityPosture(cfg config.Config, outbox chan<- *pb.AgentMessage, de
 	slog.Info("SECURITY POSTURE — audit trail", "value", p.AuditTrail)
 	slog.Info("SECURITY POSTURE — FIPS 140-3 mode", "enabled", p.FIPSMode, "required", p.FIPSRequired)
 	slog.Info("SECURITY POSTURE — client certificate", "value", p.ClientCert)
+	slog.Info("SECURITY POSTURE — active policy", "value", p.Policy)
 	if !p.CommandAuthzOK {
 		slog.Warn("SECURITY POSTURE — command authorization is NOT production-ready", "reason", p.CommandAuthz)
 	}

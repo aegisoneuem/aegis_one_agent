@@ -19,6 +19,7 @@ const (
 	actionOpenShell      = "open_shell"
 	actionRunCommand     = "run_command"
 	actionAuditQuery     = "audit_query"
+	actionSetPolicy      = "set_policy"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.
