@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -80,7 +81,13 @@ func runControlCommand(cmd string) bool {
 	var err error
 	switch cmd {
 	case "install":
-		err = installService()
+		fips := false
+		for _, a := range os.Args[2:] {
+			if a == "--fips" || a == "-fips" || a == "/fips" {
+				fips = true
+			}
+		}
+		err = installService(fips)
 	case "uninstall":
 		err = uninstallService()
 	case "start":
@@ -97,7 +104,11 @@ func runControlCommand(cmd string) bool {
 	return true
 }
 
-func installService() error {
+// installService installs the LocalSystem auto-start service. When fips is true
+// it writes GODEBUG=fips140=on into the service's own environment block so the
+// service starts with the Go FIPS 140-3 module active — a single binary toggled
+// by an install-time parameter (no separate FIPS binary), BigFix-style.
+func installService(fips bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -133,8 +144,28 @@ func installService() error {
 		fmt.Fprintln(os.Stderr, "warning: could not set recovery actions:", err)
 	}
 
+	if fips {
+		if err := setServiceFIPSEnv(); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not set FIPS service environment:", err)
+		} else {
+			fmt.Printf("FIPS 140-3 mode ENABLED for the service (GODEBUG=fips140=on)\n")
+		}
+	}
+
 	fmt.Printf("installed service %q (LocalSystem, automatic start, restart-on-failure)\n", serviceName)
 	return nil
+}
+
+// setServiceFIPSEnv writes GODEBUG=fips140=on into the service's Environment
+// registry value (REG_MULTI_SZ), so the service process starts in FIPS mode
+// without a separate binary or a machine-wide env var.
+func setServiceFIPSEnv() error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+serviceName, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	return k.SetStringsValue("Environment", []string{"GODEBUG=fips140=on"})
 }
 
 func uninstallService() error {

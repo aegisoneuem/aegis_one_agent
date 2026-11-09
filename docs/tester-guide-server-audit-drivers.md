@@ -343,20 +343,23 @@ key is in use. Production deployment MUST set `AEGIS_CMD_VERIFY_KEY`
 (or `_FILE`) to the server's real Ed25519 public key; until then the agent would
 trust dev-signed commands.
 
-**FIPS 140-3 (optional).** The agent reports the LIVE Go FIPS module state
-(`crypto/fips140.Enabled()`), never a marketing flag.
+**FIPS 140-3 (optional, SINGLE binary — a runtime parameter, BigFix-style).**
+One binary; FIPS is toggled by the Go runtime flag `GODEBUG=fips140=on` — no
+separate FIPS build needed for operational FIPS. The agent reports the LIVE
+module state (`crypto/fips140.Enabled()`), never a marketing flag.
 
-- **Normal build** → `fips_mode=false` (default; runs anywhere).
-- **FIPS build** → `GOFIPS140=latest go build ...` → `fips_mode=true` out of the
-  box (the dist ships `AegisOneClient-fips.exe` for this).
-- **Enforcement:** `AEGIS_REQUIRE_FIPS=1` makes the agent **refuse to start**
-  unless FIPS is active — fail-closed for compliance customers (a normal binary
-  with this set aborts with a clear FIPS error).
+- **Default** → `fips_mode=false` (runs anywhere).
+- **Enable at install:** `AegisOneClient.exe install --fips` writes
+  `GODEBUG=fips140=on` into the service's own environment, so the service starts
+  in FIPS mode. (Equivalently, set `GODEBUG=fips140=on` in the service/machine
+  environment.) → `fips_mode=true`.
+- **Enforce:** `AEGIS_REQUIRE_FIPS=1` makes the agent **refuse to start** unless
+  FIPS is active — fail-closed for compliance customers.
 
 > Honest scope: "FIPS 140-3 **mode** active" is reported from the live module.
-> A formal **CMVP-validated** product claim is a separate compliance step
-> (legal/validation sign-off on the exact build) — do NOT market "FIPS
-> certified" until that is confirmed.
+> For the strictest **CMVP-validated** claim, build with `GOFIPS140=latest`
+> (pins the validated module version) — but that is a separate compliance/legal
+> step; do NOT market "FIPS certified" until that sign-off is confirmed.
 
 ---
 
