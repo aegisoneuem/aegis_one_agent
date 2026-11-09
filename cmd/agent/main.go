@@ -77,6 +77,14 @@ const devPublicKeyB64 = "sluXzV/LHkLeAR+1ldhlAZ+hBofkJWgCrVAkVicYLPg="
 // It is loaded once at startup (loadCommandVerifyKey) and read-only thereafter.
 var cmdVerifyKey ed25519.PublicKey
 
+// cmdVerifyKeySource describes where the verify key came from, and whether it is
+// the built-in DEV key (not for production). Read-only after loadCommandVerifyKey;
+// surfaced in the security posture.
+var (
+	cmdVerifyKeySource = "unloaded"
+	cmdVerifyKeyIsDev  bool
+)
+
 // loadCommandVerifyKey resolves the command-signing public key from config
 // (AEGIS_CMD_VERIFY_KEY base64, or AEGIS_CMD_VERIFY_KEY_FILE), falling back to the
 // built-in dev key with a loud warning. A configured-but-invalid key is fatal
@@ -106,6 +114,8 @@ func loadCommandVerifyKey(cfg config.Config) error {
 		return fmt.Errorf("command verify key must be %d bytes, got %d", ed25519.PublicKeySize, len(pub))
 	}
 	cmdVerifyKey = ed25519.PublicKey(pub)
+	cmdVerifyKeySource = source
+	cmdVerifyKeyIsDev = usingDev
 	if usingDev {
 		slog.Warn("command signatures verified with the BUILT-IN DEV key — set AEGIS_CMD_VERIFY_KEY (or _FILE) for production")
 	} else {
@@ -686,6 +696,12 @@ func runProcess(ctx context.Context) {
 	// AuditEvent messages; the local buffer is best-effort + offline-
 	// grace.
 	initAuditLogger(cfg)
+
+	// Security posture: a clear, greppable startup callout of what protections are
+	// in force (transport, command authorization, at-rest, audit, FIPS, client
+	// cert) PLUS a streamed security_posture attestation so the console shows a
+	// per-device "prove it" record and an operator can pull it via audit_query.
+	reportSecurityPosture(cfg, outbox, cfg.DeviceID)
 
 	// Detection runs independently and only writes to the buffer; the sender
 	// drains it and sends. This keeps the two off each other's stream.
