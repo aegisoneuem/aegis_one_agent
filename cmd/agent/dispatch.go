@@ -61,7 +61,19 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 // dispatch routes one verified command. Unknown types fall through to the generic
 // command path (executeCommand) rather than failing — preserving prior behavior.
 func (d *dispatcher) dispatch(ctx context.Context, client pb.AgentControlPlaneClient, cmd *pb.Command) {
-	if h := d.handlers[strings.ToLower(strings.TrimSpace(cmd.Type))]; h != nil {
+	// Policy module gate: a signed command whose type is disabled by the active
+	// agent policy is REFUSED before any handler runs — the command was
+	// signature-valid, but the operator's own policy forbids it (high-security
+	// profile / Ivanti-style module toggle). The refusal is a terminal status, so
+	// it is audited as a command_completed with the blocking reason.
+	ctype := strings.ToLower(strings.TrimSpace(cmd.Type))
+	if !policyAllowsCommand(ctype) {
+		reason := "blocked by agent policy: command type '" + ctype + "' is disabled on this endpoint"
+		slog.Warn("policy: command blocked", "type", ctype, "command_id", cmd.CommandId)
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, ctype, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, reason))
+		return
+	}
+	if h := d.handlers[ctype]; h != nil {
 		h(ctx, client, cmd)
 		return
 	}

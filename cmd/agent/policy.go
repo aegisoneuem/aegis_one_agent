@@ -49,6 +49,17 @@ func policyRequiresFIPS() bool {
 	return p != nil && p.SecurityFloor.RequireFIPS
 }
 
+// policyAllowsCommand reports whether a signed command type may run under the
+// active policy. set_policy is ALWAYS allowed — a policy can never lock the
+// endpoint out of receiving a newer policy. Everything else obeys the policy's
+// module allow/deny lists (deny wins; a non-empty allow is a strict allow-list).
+func policyAllowsCommand(cmdType string) bool {
+	if cmdType == actionSetPolicy {
+		return true
+	}
+	return getActivePolicy().CommandAllowed(cmdType)
+}
+
 // loadStoredPolicy reads and RE-VERIFIES the persisted policy at startup. It must
 // run AFTER loadCommandVerifyKey (needs the key) and BEFORE enforceFIPS (so a
 // policy-mandated FIPS floor is honored fail-closed). A missing file is normal;

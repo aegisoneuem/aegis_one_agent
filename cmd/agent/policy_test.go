@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
@@ -173,5 +174,41 @@ func TestLoadStoredPolicy_MissingIsNoop(t *testing.T) {
 func drain(out chan *pb.AgentMessage) {
 	for len(out) > 0 {
 		<-out
+	}
+}
+
+// A2 — the dispatch module gate blocks a command type the active policy denies.
+func TestPolicyGate_DeniedCommandBlocked(t *testing.T) {
+	resetPolicy(t)
+	policyMu.Lock()
+	activePolicy = &policy.Policy{Version: 1, PolicyID: "p", IssuedAt: 1, Modules: policy.Modules{Deny: []string{"run_command"}}}
+	policyMu.Unlock()
+	d, out, _ := policyDispatcher(t)
+	d.dispatch(context.Background(), nil, &pb.Command{CommandId: "rc-1", Type: "run_command", Payload: []byte("{}")})
+	var blocked bool
+	for len(out) > 0 {
+		if st := (<-out).GetActionStatus(); st != nil && st.Phase == pb.ActionPhase_ACTION_PHASE_FAILED && strings.Contains(st.Reason, "blocked by agent policy") {
+			blocked = true
+		}
+	}
+	if !blocked {
+		t.Fatal("a policy-denied command type must be blocked by the dispatch gate")
+	}
+}
+
+// set_policy is always allowed (no lock-out); a strict allow-list blocks the rest.
+func TestPolicyGate_SetPolicyAlwaysAllowed(t *testing.T) {
+	resetPolicy(t)
+	policyMu.Lock()
+	activePolicy = &policy.Policy{Version: 1, PolicyID: "p", IssuedAt: 1, Modules: policy.Modules{Allow: []string{"scan_now"}, Deny: []string{"set_policy"}}}
+	policyMu.Unlock()
+	if !policyAllowsCommand("set_policy") {
+		t.Fatal("set_policy must ALWAYS be allowed — cannot lock out policy updates")
+	}
+	if !policyAllowsCommand("scan_now") {
+		t.Fatal("allow-listed command must pass")
+	}
+	if policyAllowsCommand("run_command") {
+		t.Fatal("non-allow-listed command must be blocked")
 	}
 }
