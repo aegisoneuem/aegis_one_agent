@@ -25,6 +25,23 @@ Server: `set AEGIS_POLICY_FETCH_MAX_BPS=200000` (issued_at +1), then push a cont
 
 ---
 
+> ⚠️⚠️ **B-4 / B-5 are DESTRUCTIVE — run them LAST.** The DPAPI master key also
+> protects the client cert's private key (`client.key.enc`). Destroying the master
+> key makes the client key undecryptable, so after the alert fires the agent
+> **cannot do mTLS and will not reconnect** until you RE-ENROLL it. This is
+> expected (the key destruction resets at-rest state, which includes the client
+> key). **Recovery after B-4/B-5:**
+> ```cmd
+> sc stop AegisOneClient
+> del "C:\Program Files\AegisOne\Client\SKVC\certs\client.crt"
+> del "C:\Program Files\AegisOne\Client\SKVC\certs\client.key.enc"
+> reg add "HKLM\SOFTWARE\AegisOne\Client\Enrollment" /v AEGIS_ENROLL_TOKEN /t REG_SZ /d <enroll-token> /f
+> sc start AegisOneClient
+> ```
+> (mockserver running with the same `AEGIS_ENROLL_TOKEN`.) The agent re-enrolls,
+> seals a fresh client key with the new master key, and reconnects as the same
+> device. The `key_tampered corrupt`/`deleted` audit events are the PASS signal.
+
 ## B-4 — key_tampered alert (corrupt)  ⚠️ admin
 1. `sc stop AegisOneClient`
 2. Overwrite the key blob with garbage: `echo garbage > "C:\Program Files\AegisOne\Client\SKVC\dpapi.key"`
