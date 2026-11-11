@@ -69,10 +69,13 @@ func ClientCredentials(caPath, certPath, keyPath, serverName string, keys KeyPro
 	}), nil
 }
 
-// protectKeyAtRest encrypts a plaintext client key under the master key and
-// removes the plaintext, leaving keyPath+".enc". It is idempotent: a no-op once
-// the encrypted copy exists, or if no plaintext key is present.
-func protectKeyAtRest(keys KeyProvider, keyPath string) error {
+// protectKeyAtRest encrypts a plaintext client key at machine DPAPI scope
+// (INDEPENDENT of the AES master key, so it survives deletion/tamper of dpapi.key
+// and the agent stays connected) and removes the plaintext, leaving keyPath+".enc".
+// It is idempotent: a no-op once the encrypted copy exists, or if no plaintext
+// key is present. The KeyProvider is unused now (kept for the migration path in
+// loadClientKeyPEM) — direct DPAPI needs no app-held key.
+func protectKeyAtRest(_ KeyProvider, keyPath string) error {
 	encPath := keyPath + ".enc"
 	if _, err := os.Stat(encPath); err == nil {
 		return nil // already protected
@@ -84,17 +87,13 @@ func protectKeyAtRest(keys KeyProvider, keyPath string) error {
 		}
 		return fmt.Errorf("read client key %q: %w", keyPath, err)
 	}
-	mk, err := keys.Key()
+	blob, err := SealMachine(plain)
 	if err != nil {
-		return fmt.Errorf("get master key to protect client key: %w", err)
-	}
-	blob, err := Seal(mk, plain)
-	if err != nil {
-		return fmt.Errorf("seal client key: %w", err)
+		return fmt.Errorf("seal client key (DPAPI): %w", err)
 	}
 	// Self-check the round-trip BEFORE deleting the plaintext — never destroy the
 	// only copy unless we can read it back.
-	if back, oerr := Open(mk, blob); oerr != nil || !bytes.Equal(back, plain) {
+	if back, oerr := OpenMachine(blob); oerr != nil || !bytes.Equal(back, plain) {
 		return fmt.Errorf("client key encryption self-check failed; left plaintext in place")
 	}
 	tmp := encPath + ".tmp"
@@ -118,18 +117,30 @@ func protectKeyAtRest(keys KeyProvider, keyPath string) error {
 func loadClientKeyPEM(keys KeyProvider, keyPath string) ([]byte, error) {
 	encPath := keyPath + ".enc"
 	if blob, err := os.ReadFile(encPath); err == nil {
-		if keys == nil {
-			return nil, fmt.Errorf("encrypted client key present but no key provider to decrypt it")
+		// Current format: machine-DPAPI-sealed, independent of the master key.
+		if pem, oerr := OpenMachine(blob); oerr == nil {
+			return pem, nil
 		}
-		mk, kerr := keys.Key()
-		if kerr != nil {
-			return nil, fmt.Errorf("get master key to decrypt client key: %w", kerr)
+		// Migration: a blob sealed with the OLD AES master key. If the master key is
+		// still intact, decrypt it and RE-SEAL with DPAPI so it survives master-key
+		// loss from here on. (If the master key is gone too, neither opens — the
+		// caller re-enrolls.)
+		if keys != nil {
+			if mk, kerr := keys.Key(); kerr == nil {
+				if pem, oerr := Open(mk, blob); oerr == nil {
+					if nblob, serr := SealMachine(pem); serr == nil {
+						tmp := encPath + ".tmp"
+						if os.WriteFile(tmp, nblob, 0o600) == nil && os.Rename(tmp, encPath) == nil {
+							slog.Info("client key migrated to machine-DPAPI sealing (now survives master-key loss)", "enc", encPath)
+						} else {
+							_ = os.Remove(tmp)
+						}
+					}
+					return pem, nil
+				}
+			}
 		}
-		pem, oerr := Open(mk, blob)
-		if oerr != nil {
-			return nil, fmt.Errorf("decrypt client key %q: %w", encPath, oerr)
-		}
-		return pem, nil
+		return nil, fmt.Errorf("decrypt client key %q: not DPAPI-sealed and master-key decrypt failed (re-enrollment required)", encPath)
 	}
 	pem, err := os.ReadFile(keyPath)
 	if err != nil {

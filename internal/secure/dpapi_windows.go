@@ -72,6 +72,19 @@ func dpapiProtect(data, entropy []byte) ([]byte, error) {
 	return out.toBytes(), nil
 }
 
+// clientKeyEntropy binds the DPAPI-sealed mTLS client key blob to this use.
+var clientKeyEntropy = []byte("AegisOne.client.SKVC.mtls-client-key.v1")
+
+// SealMachine protects data at machine DPAPI scope, INDEPENDENT of the AES master
+// key (dpapi.key). It is for the few critical secrets that must survive loss or
+// tamper of the master key — above all the mTLS client key, so the agent stays
+// connected even if a local admin deletes dpapi.key. Resettable at-rest data
+// (content cache, buffer, policy floor) stays under the master key.
+func SealMachine(data []byte) ([]byte, error) { return dpapiProtect(data, clientKeyEntropy) }
+
+// OpenMachine reverses SealMachine.
+func OpenMachine(blob []byte) ([]byte, error) { return dpapiUnprotect(blob, clientKeyEntropy) }
+
 // dpapiUnprotect reverses dpapiProtect using the same entropy.
 func dpapiUnprotect(data, entropy []byte) ([]byte, error) {
 	in := newBlob(data)
