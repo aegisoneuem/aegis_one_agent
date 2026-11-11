@@ -48,7 +48,7 @@ knob is accepted and reported, with runtime enforcement landing per release.
 ## transfer (bandwidth)
 | Setting | Status |
 |---|---|
-| `fetch_max_bytes_per_second` | ◻️ (agent already supports fetch throttle; policy override wiring incremental) |
+| `fetch_max_bytes_per_second` | ✅ (enforced live at every download — cab/softdist/stage/file_operation — lower-wins against the agent cap) |
 | `upload_max_bytes_per_second` | ◻️ |
 | `peer_cache_enabled` | ◻️ |
 
@@ -60,12 +60,12 @@ knob is accepted and reported, with runtime enforcement landing per release.
 ## audit (flood control)
 | Setting | Status |
 |---|---|
-| `rate_per_sec` / `burst` / `dedup_window_seconds` | ◻️ (agent tunes these via config today; policy override incremental) |
+| `rate_per_sec` / `burst` / `dedup_window_seconds` | ✅ (signed policy retunes the audit flood-control guard live) |
 
 ## logging
 | Setting | Status |
 |---|---|
-| `level` (debug\|info\|warn\|error) | ◻️ |
+| `level` (debug\|info\|warn\|error) | ✅ (applied live; unknown value falls back to info) |
 
 ## checkin
 | Setting | Status |

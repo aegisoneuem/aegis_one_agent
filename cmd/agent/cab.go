@@ -169,6 +169,10 @@ var errFetchResetPartial = errors.New("resume offset rejected; restarting from z
 // signed_command) so BigFix "lower wins" between admin cap and per-task rate
 // is applied before this function sees a number.
 func fetchContent(ctx context.Context, client pb.AgentControlPlaneClient, req *pb.ContentRequest, destPath string, bytesPerSecond int64) error {
+	// A signed agent policy may impose a transfer fetch cap (A3). Fold it in
+	// lower-wins against the already-resolved rate so a live set_policy throttles
+	// every download — cab, softdist, stage, file_operation — immediately.
+	bytesPerSecond = throttle.EffectiveRate(bytesPerSecond, policyFetchMaxBPS())
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("prepare dest dir: %w", err)
 	}

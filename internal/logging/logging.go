@@ -25,6 +25,19 @@ const (
 	LevelCritical = slog.Level(12) // above ERROR: agent-down / unrecoverable
 )
 
+// levelVar is the process-wide, runtime-adjustable minimum level. The handler
+// holds a pointer to it, so SetLevel takes effect immediately and concurrently
+// (a signed agent policy's logging.level override uses this).
+var levelVar slog.LevelVar
+
+// SetLevel changes the process-wide log level at runtime. An unrecognized name
+// resolves to info (ParseLevel's default), so a bad policy value never silences
+// or over-verboses the agent unexpectedly.
+func SetLevel(level string) { levelVar.Set(ParseLevel(level)) }
+
+// CurrentLevel returns the active minimum level.
+func CurrentLevel() slog.Level { return levelVar.Level() }
+
 // Rotation holds log-file rotation settings (used only when a log file is set).
 // The agent rotates DAILY: a new date-stamped file per calendar day, keeping
 // MaxAgeDays of history.
@@ -58,8 +71,9 @@ func Init(level, file string, rot Rotation) (io.Closer, error) {
 		w = io.MultiWriter(dw, tolerant{os.Stdout})
 	}
 
+	levelVar.Set(ParseLevel(level))
 	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
-		Level:       ParseLevel(level),
+		Level:       &levelVar,
 		ReplaceAttr: renameLevels,
 	})
 	slog.SetDefault(slog.New(handler))

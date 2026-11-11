@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/auditlog"
+	"github.com/aegisoneuem/aegis_one_agent/internal/logging"
 	"github.com/aegisoneuem/aegis_one_agent/internal/policy"
 	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	"github.com/aegisoneuem/aegis_one_proto/commandsign"
@@ -207,6 +209,34 @@ func applyPolicy(p *policy.Policy) {
 	if p.SecurityFloor.RequireFIPS && !fipsActive() {
 		slog.Warn("policy: FIPS is REQUIRED by policy but the agent is not in FIPS mode — install --fips (or GODEBUG=fips140=on) and restart; it is enforced fail-closed at next startup")
 	}
+
+	// A3 runtime overrides — a signed policy retunes these live knobs immediately
+	// (and again at startup via loadStoredPolicy). Unset sections keep the agent's
+	// own config (env/config.json/registry) value.
+	if lvl := strings.TrimSpace(p.Logging.Level); lvl != "" {
+		logging.SetLevel(lvl)
+		slog.Info("policy: log level applied", "level", lvl)
+	}
+	if auditGuard != nil && (p.Audit.RatePerSec > 0 || p.Audit.Burst > 0 || p.Audit.DedupWindowSeconds > 0) {
+		auditGuard.Reconfigure(float64(p.Audit.RatePerSec), float64(p.Audit.Burst), time.Duration(p.Audit.DedupWindowSeconds)*time.Second)
+		slog.Info("policy: audit flood-control retuned", "rate_per_sec", p.Audit.RatePerSec, "burst", p.Audit.Burst, "dedup_seconds", p.Audit.DedupWindowSeconds)
+	}
+	// transfer.fetch_max_bytes_per_second is enforced live at each download via
+	// policyFetchMaxBPS() (pull-based, lower-wins against the agent cap), so there
+	// is nothing to push here — just log when a cap is in force.
+	if v := policyFetchMaxBPS(); v > 0 {
+		slog.Info("policy: fetch bandwidth cap in force", "bytes_per_second", v)
+	}
+}
+
+// policyFetchMaxBPS returns the active policy's transfer fetch cap in bytes/sec
+// (0 = no policy cap). fetchContent consults it live so a signed set_policy
+// throttles downloads immediately, lower-wins against the agent's own cap.
+func policyFetchMaxBPS() int64 {
+	if p := getActivePolicy(); p != nil && p.Transfer.FetchMaxBPS > 0 {
+		return p.Transfer.FetchMaxBPS
+	}
+	return 0
 }
 
 // handleSetPolicyCmd applies a signed set_policy command: parse + validate the

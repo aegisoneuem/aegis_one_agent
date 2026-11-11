@@ -68,6 +68,27 @@ func NewGuard(rate, burst float64, dupWindow time.Duration) *Guard {
 	}
 }
 
+// Reconfigure updates the guard's rate/burst/dedup window at runtime (a signed
+// agent policy's audit override). A non-positive value leaves that parameter
+// unchanged. Safe for concurrent Admit calls; the live token count is clamped to
+// a reduced burst so a lowered cap takes effect immediately.
+func (g *Guard) Reconfigure(rate, burst float64, dupWindow time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if rate > 0 {
+		g.rate = rate
+	}
+	if burst > 0 {
+		g.burst = burst
+		if g.tokens > g.burst {
+			g.tokens = g.burst
+		}
+	}
+	if dupWindow > 0 {
+		g.dupWindow = dupWindow
+	}
+}
+
 // guarded reports whether an event type is subject to flood control. ONLY the
 // high-volume benign command_received is; everything else is always admitted.
 func guarded(eventType string) bool {
