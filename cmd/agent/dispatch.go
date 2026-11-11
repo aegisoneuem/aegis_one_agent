@@ -54,6 +54,7 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 		"report_device_state":      d.handleReportDeviceStateCmd,
 		"audit_query":              d.handleAuditQueryCmd,
 		"set_policy":               d.handleSetPolicyCmd,
+		"remote_control":           d.handleRemoteControlCmd,
 	}
 	return d
 }

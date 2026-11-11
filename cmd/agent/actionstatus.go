@@ -20,6 +20,7 @@ const (
 	actionRunCommand     = "run_command"
 	actionAuditQuery     = "audit_query"
 	actionSetPolicy      = "set_policy"
+	actionRemoteControl  = "remote_control"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.

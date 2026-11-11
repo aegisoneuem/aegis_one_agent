@@ -1051,6 +1051,45 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// Optionally push one signed remote_control command (RC-0 session plumbing).
+		// AEGIS_RC=1 enables it; shape with AEGIS_RC_ACTION (start|stop|status|join|
+		// pass_control, default start), AEGIS_RC_SESSION (default rc-sess-001),
+		// AEGIS_RC_OPERATOR (default admin-x), AEGIS_RC_MODE (unattended|attended),
+		// AEGIS_RC_TOKEN (default = a fresh 15-min v1 token), AEGIS_RC_ELEVATE (1),
+		// AEGIS_RC_TARGET (operator for pass_control).
+		if os.Getenv("AEGIS_RC") != "" {
+			pick := func(k, def string) string {
+				if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+					return v
+				}
+				return def
+			}
+			token := pick("AEGIS_RC_TOKEN", fmt.Sprintf("v1.%d.mocknonce", time.Now().Add(15*time.Minute).Unix()))
+			rc := map[string]interface{}{
+				"version":     1,
+				"action":      pick("AEGIS_RC_ACTION", "start"),
+				"session_id":  pick("AEGIS_RC_SESSION", "rc-sess-001"),
+				"operator":    pick("AEGIS_RC_OPERATOR", "admin-x"),
+				"mode":        pick("AEGIS_RC_MODE", "unattended"),
+				"maint_token": token,
+				"elevate":     os.Getenv("AEGIS_RC_ELEVATE") != "",
+				"target":      strings.TrimSpace(os.Getenv("AEGIS_RC_TARGET")),
+			}
+			rcPayload, err := json.Marshal(rc)
+			if err != nil {
+				log.Printf("failed to marshal remote_control: %v", err)
+			} else {
+				rcCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+					CommandId: "rc-001", Type: "remote_control", Payload: rcPayload,
+				})}}
+				if err := connection.send(rcCmd); err != nil {
+					log.Printf("failed to send remote_control command: %v", err)
+					return
+				}
+				mockPrintf("Sent command -> id: rc-001, type: remote_control, action=%s session=%s operator=%s (signed)\n", rc["action"], rc["session_id"], rc["operator"])
+			}
+		}
+
 		// Optionally push one signed audit_query command (L3 remote audit query).
 		// AEGIS_AUDIT_QUERY=1 enables it; shape it with AEGIS_AUDIT_MODE
 		// (tail|search|since, default tail), AEGIS_AUDIT_PATTERN, AEGIS_AUDIT_LIMIT
