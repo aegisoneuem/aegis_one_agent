@@ -49,7 +49,7 @@ knob is accepted and reported, with runtime enforcement landing per release.
 | Setting | Status |
 |---|---|
 | `fetch_max_bytes_per_second` | ✅ (enforced live at every download — cab/softdist/stage/file_operation — lower-wins against the agent cap) |
-| `upload_max_bytes_per_second` | ◻️ |
+| `upload_max_bytes_per_second` | ✅ (enforced on collect_file uploads, lower-wins) |
 | `peer_cache_enabled` | ◻️ |
 
 ## maintenance (operating window)

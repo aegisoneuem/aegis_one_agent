@@ -131,7 +131,8 @@ func (d *dispatcher) runCollect(ctx context.Context, client pb.AgentControlPlane
 		// Upload throttle: BigFix "lower wins" between agent-config upload cap
 		// and the signed per-task rate on CollectFileSpec. Admin cap is a
 		// policy ceiling; signed command can only go lower.
-		effectiveRate := throttle.EffectiveRate(d.cfg.UploadBytesPerSecond, spec.MaxUploadBytesPerSecond)
+		// A signed agent policy may cap upload bandwidth (A3); fold it in lower-wins.
+		effectiveRate := throttle.EffectiveRate(throttle.EffectiveRate(d.cfg.UploadBytesPerSecond, spec.MaxUploadBytesPerSecond), policyUploadMaxBPS())
 		n, stored, err := uploadFile(ctx, client, cmdID, name, path, spec.TailBytes, maxEach, effectiveRate)
 		if err != nil {
 			failed++

@@ -56,6 +56,21 @@ func TestPolicyFetchMaxBPS_LowerWins(t *testing.T) {
 	}
 }
 
+// transfer.upload_max_bytes_per_second is enforced live, lower-wins.
+func TestPolicyUploadMaxBPS_LowerWins(t *testing.T) {
+	setActivePolicyForTest(t, nil)
+	if policyUploadMaxBPS() != 0 {
+		t.Fatalf("no policy must yield 0 upload cap")
+	}
+	setActivePolicyForTest(t, &policy.Policy{Version: 1, PolicyID: "p", IssuedAt: 1, Transfer: policy.Transfer{UploadMaxBPS: 2048}})
+	if policyUploadMaxBPS() != 2048 {
+		t.Fatalf("policy upload cap not returned: %d", policyUploadMaxBPS())
+	}
+	if got := throttle.EffectiveRate(4096, policyUploadMaxBPS()); got != 2048 {
+		t.Fatalf("policy upload cap must win over a higher cap: %d", got)
+	}
+}
+
 // applyPolicy retunes the audit flood-control guard; a burst of 1 means only the
 // first of several distinct command_received events is admitted.
 func TestApplyPolicy_AuditOverrideTakesEffect(t *testing.T) {

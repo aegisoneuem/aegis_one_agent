@@ -239,6 +239,15 @@ func policyFetchMaxBPS() int64 {
 	return 0
 }
 
+// policyUploadMaxBPS returns the active policy's transfer upload cap in bytes/sec
+// (0 = no policy cap). The collect_file upload path folds it in lower-wins.
+func policyUploadMaxBPS() int64 {
+	if p := getActivePolicy(); p != nil && p.Transfer.UploadMaxBPS > 0 {
+		return p.Transfer.UploadMaxBPS
+	}
+	return 0
+}
+
 // handleSetPolicyCmd applies a signed set_policy command: parse + validate the
 // policy, reject a non-newer one (anti-rollback), persist the signed envelope,
 // make it active, apply it, and record a policy_applied audit event. The command
