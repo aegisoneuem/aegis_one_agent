@@ -283,6 +283,24 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 			}
 		}()
 
+		// Maintenance window: run any commands deferred to the window. Once on
+		// connect (catch up) then every minute; drainDeferred is a no-op outside
+		// the window, so this costs a cheap check when no window is configured.
+		go func() {
+			defer recoverLog("maintenance-drain")
+			disp.drainDeferred(ctx, client)
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					disp.drainDeferred(ctx, client)
+				}
+			}
+		}()
+
 		// Sender: the ONLY goroutine that writes to the stream (gRPC Send is not
 		// safe for concurrent use). It drains the outbox (command results, install
 		// status), beats the heartbeat, and flushes buffered patch scan results.

@@ -55,7 +55,7 @@ knob is accepted and reported, with runtime enforcement landing per release.
 ## maintenance (operating window)
 | Setting | Status |
 |---|---|
-| `days` + `start_hour`/`end_hour` (when installs/reboots run) | ◻️ |
+| `days` + `start_hour`/`end_hour` (when installs/reboots run) | ✅ (installs/uninstalls/stage/softdist/reboot outside the window are DEFERRED to a persistent, restart-safe queue and run when it opens; midnight-spanning supported) |
 
 ## audit (flood control)
 | Setting | Status |

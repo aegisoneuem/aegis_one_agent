@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/aegisoneuem/aegis_one_agent/internal/auditlog"
 	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 	"github.com/aegisoneuem/aegis_one_agent/internal/deployspec"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
@@ -74,11 +76,75 @@ func (d *dispatcher) dispatch(ctx context.Context, client pb.AgentControlPlaneCl
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, ctype, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, reason))
 		return
 	}
+	// Maintenance window (A3): a state-changing command (install/reboot/softdist)
+	// that arrives OUTSIDE the active policy's window is DEFERRED — persisted and
+	// run when the window opens. Read-only/control commands are never deferred.
+	if gatedByMaintenance[ctype] && !policyInMaintenanceWindow(time.Now()) {
+		d.deferCommand(ctx, cmd, ctype)
+		return
+	}
+	d.routeCommand(ctx, client, cmd, ctype)
+}
+
+// routeCommand sends a command to its per-type handler (or the generic path). It
+// is the post-gate routing step, shared by dispatch() and the deferred-queue drain.
+func (d *dispatcher) routeCommand(ctx context.Context, client pb.AgentControlPlaneClient, cmd *pb.Command, ctype string) {
 	if h := d.handlers[ctype]; h != nil {
 		h(ctx, client, cmd)
 		return
 	}
 	d.handleGenericCmd(ctx, client, cmd)
+}
+
+// deferCommand persists a command to the maintenance-window queue and reports it
+// QUEUED. If persistence fails it reports FAILED rather than running outside the
+// window (fail-closed — a maintenance window is a customer guarantee).
+func (d *dispatcher) deferCommand(ctx context.Context, cmd *pb.Command, ctype string) {
+	if err := persistDeferredCommand(d.cfg.SecureDir, cmd); err != nil {
+		slog.Error("maintenance: could not persist deferred command", "command_id", cmd.CommandId, "type", ctype, "error", err.Error())
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, ctype, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "deferred to maintenance window but persistence failed: "+err.Error()))
+		return
+	}
+	slog.Info("maintenance: command deferred to window", "command_id", cmd.CommandId, "type", ctype)
+	sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, ctype, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_QUEUED, "deferred to maintenance window"))
+	recordAuditEvent(ctx, d.outbox, auditlog.Event{
+		DeviceID: d.cfg.DeviceID, EventType: "command_deferred", Decision: "deferred",
+		CommandID: cmd.CommandId, CommandType: ctype, SignatureOK: true,
+		Reason: "outside maintenance window — will run when the window opens",
+	})
+}
+
+// verifyDeferredCommand re-checks a deferred command's signature before it runs
+// (defense in depth). A function var so tests can substitute it.
+var verifyDeferredCommand = verifyCommand
+
+// drainDeferred runs any queued commands once the maintenance window is open. It
+// re-verifies each command's signature (defense in depth) and re-checks the
+// policy gate (both may have changed while it was deferred). Called on connect
+// and periodically; a no-op outside the window.
+func (d *dispatcher) drainDeferred(ctx context.Context, client pb.AgentControlPlaneClient) {
+	if !policyInMaintenanceWindow(time.Now()) {
+		return
+	}
+	for _, cmd := range loadDeferredCommands(d.cfg.SecureDir) {
+		if ctx.Err() != nil {
+			return
+		}
+		ctype := strings.ToLower(strings.TrimSpace(cmd.Type))
+		// Remove BEFORE running (at-most-once): a crashing command must not loop,
+		// and installs have their own journal for crash recovery.
+		removeDeferredCommand(d.cfg.SecureDir, cmd.CommandId)
+		if !verifyDeferredCommand(cmd) {
+			slog.Warn("maintenance: deferred command failed re-verification — dropping", "command_id", cmd.CommandId)
+			continue
+		}
+		if !policyAllowsCommand(ctype) {
+			slog.Info("maintenance: deferred command now blocked by policy — dropping", "command_id", cmd.CommandId, "type", ctype)
+			continue
+		}
+		slog.Info("maintenance: window open — running deferred command", "command_id", cmd.CommandId, "type", ctype)
+		d.routeCommand(ctx, client, cmd, ctype)
+	}
 }
 
 // install_patch runs on the serial patch worker and reports phased ActionStatus;
