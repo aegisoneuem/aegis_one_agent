@@ -1589,6 +1589,10 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				hw.GetSystemVendor(), hw.GetSystemProduct())
 			mockPrintf("  BIOS: %s %s (%s) | drivers: %d | appx: %d\n",
 				hw.GetBiosVendor(), hw.GetBiosVersion(), hw.GetBiosReleaseDate(), len(fi.GetDrivers()), len(fi.GetInstalledAppx()))
+			if id := fi.GetIdentity(); id != nil {
+				mockPrintf("  identity: user=%q domain=%q joined=%v uptime=%ds\n",
+					id.GetLoggedOnUser(), id.GetMachineDomain(), id.GetDomainJoined(), id.GetUptimeSeconds())
+			}
 			shownAppx := fi.GetInstalledAppx()
 			for i, a := range shownAppx {
 				if i >= 12 {

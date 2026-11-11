@@ -109,6 +109,9 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 			Trigger:     trigger,
 			Hardware:    toProtoHardware(hw),
 		}
+		// Identity/session OOB attributes (logged-on user, domain, uptime) for
+		// console device-search + user-targeting. Best-effort; never drops the snapshot.
+		rep.Identity = collectIdentityInfo(rep.CollectedAt)
 		rep.InstalledApps = make([]*pb.InstalledApp, 0, len(apps))
 		for _, a := range apps {
 			rep.InstalledApps = append(rep.InstalledApps, &pb.InstalledApp{
