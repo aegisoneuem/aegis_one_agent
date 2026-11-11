@@ -11,8 +11,9 @@ import (
 )
 
 // keyFileName is the DPAPI-protected master key blob, stored under the agent's
-// secure directory (e.g. C:\Program Files\AegisOne\client\SKVC).
-const keyFileName = "dpapi.key"
+// secure directory (e.g. C:\Program Files\AegisOne\client\SKVC). Defined once in
+// key.go (KeyFileName) so the agent's startup integrity check uses the same name.
+const keyFileName = KeyFileName
 
 // appEntropy binds the DPAPI blob to this application. It is not a secret (it
 // ships in the binary) — it is a salt so the protected key cannot be

@@ -697,6 +697,11 @@ func runProcess(ctx context.Context) {
 	// grace.
 	initAuditLogger(cfg)
 
+	// Detect tampering with the DPAPI-protected master key (corrupt/deleted) and
+	// raise a key_tampered alert, then self-heal — BEFORE the policy floor is read
+	// (the floor is sealed with this key, so a key reset resets the floor).
+	checkKeyIntegrity(cfg.SecureDir, keys, outbox, cfg.DeviceID)
+
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
 	// provider are ready (so a tamper raises a streamed/buffered alert) and before
