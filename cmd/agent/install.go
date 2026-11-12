@@ -129,6 +129,10 @@ func cacheID(spec *pb.InstallPatchSpec) string {
 }
 
 func (p *patchInstaller) runInstall(job installJob) {
+	// DEX resource-governor: mark the agent busy so background DEX sampling steps
+	// aside for the duration of this install (no telemetry contention, clean numbers).
+	heavyWork.Enter()
+	defer heavyWork.Leave()
 	// One installer at a time across the whole machine (patch + softdist). Acquired
 	// first so it is released last (see machineInstallGate).
 	machineInstallGate.Lock()
@@ -239,6 +243,9 @@ func (p *patchInstaller) runInstall(job installJob) {
 // installed, it reports NOT_APPLICABLE without running wusa). Runs on the same
 // serial worker as installs (the servicing stack is single-operation).
 func (p *patchInstaller) runUninstall(job installJob) {
+	// DEX resource-governor: pause background DEX sampling while we mutate the machine.
+	heavyWork.Enter()
+	defer heavyWork.Leave()
 	// One installer at a time across the whole machine (patch + softdist).
 	machineInstallGate.Lock()
 	defer machineInstallGate.Unlock()

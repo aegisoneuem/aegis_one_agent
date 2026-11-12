@@ -403,6 +403,10 @@ func (s *softdistInstaller) worker() {
 // (server-delivered, encrypted) installer is decrypted to a transient temp that is
 // always secure-deleted; a local file_path is run in place.
 func (s *softdistInstaller) run(job softdistJob) {
+	// DEX resource-governor: mark the agent busy for the whole deploy (fetch +
+	// install) so background DEX sampling steps aside and adds no contention.
+	heavyWork.Enter()
+	defer heavyWork.Leave()
 	spec := job.spec
 	cmdID := job.commandID
 	started := time.Now().Unix()

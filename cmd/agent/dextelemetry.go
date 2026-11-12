@@ -74,12 +74,25 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 	defer windowTick.Stop()
 
 	var agg dexAgg
+	busySkipped := 0 // sample ticks dropped this window because the agent was busy
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-sampleTick.C:
+			// Always sample so the CPU-delta baseline stays current; otherwise the
+			// first reading AFTER a patch/deploy would span the busy period and be
+			// inflated. We advance the baseline either way, and only aggregate when
+			// the agent is idle.
 			cpu, cpuOK, mem, memOK := sampler.sample()
+			if heavyWork.Busy() {
+				// Resource-governor: the agent is mid patch-install / software-deploy.
+				// Drop this reading so DEX reflects the user's device experience, not
+				// the agent's own install load — and so we add no contention while the
+				// real work runs.
+				busySkipped++
+				continue
+			}
 			if cpuOK {
 				agg.addCPU(cpu)
 			}
@@ -87,7 +100,12 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				agg.addMem(mem)
 			}
 		case <-windowTick.C:
+			skipped := busySkipped
+			busySkipped = 0
 			if agg.empty() {
+				if skipped > 0 {
+					slog.Info("dex-telemetry: window skipped — agent busy the whole window", "busy_ticks", skipped)
+				}
 				continue
 			}
 			rep := agg.report(cfg.DeviceID, int(cfg.DexWindow.Seconds()))
@@ -101,7 +119,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				continue
 			}
 			slog.Info("dex-telemetry: window buffered", "samples", rep.SampleCount,
-				"cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg)
+				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg)
 			signalDrain(drainSignal)
 		}
 	}
