@@ -536,8 +536,9 @@ func runProcess(ctx context.Context) {
 		defer logSink.Close()
 	}
 
-	applyTuning(cfg) // push configurable tuning knobs into the patch package
-	tuneMemory()     // keep idle RSS low (soft mem limit + periodic return-to-OS)
+	applyTuning(cfg)    // push configurable tuning knobs into the patch package
+	tuneMemory()        // keep idle RSS low (soft mem limit + periodic return-to-OS)
+	ensureAgentDirs(cfg) // pre-create the standard directory layout for a clean install
 
 	// Make config visibility explicit (a service has no console to debug from).
 	if path, loaded, keys, cerr := config.LoadedFrom(); loaded {
