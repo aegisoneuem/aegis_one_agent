@@ -102,21 +102,25 @@
                         Remove="uninstall"
                         Wait="yes" />
 
-        <!-- Installer-written config. The agent reads these natively from
-             HKLM\SOFTWARE\AegisOne\Client (env > file > registry > default), so no
-             config file or custom action is needed. Written before the service
-             starts (same component), so the token is available at first run. -->
-        <RegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client" ForceDeleteOnUninstall="yes">
-          <!-- Restrict to SYSTEM (the service account) + Administrators (subkeys
-               inherit), so the enroll token is not readable by standard users in
-               the brief window before the agent erases it after enrollment. -->
-          <util:PermissionEx User="[WIX_ACCOUNT_LOCALSYSTEM]" GenericAll="yes" />
-          <util:PermissionEx User="[WIX_ACCOUNT_ADMINISTRATORS]" GenericAll="yes" />
+        <!-- On uninstall, recursively delete the whole install tree
+             (C:\Program Files\AegisOne), including runtime-created data under SKVC
+             (identity, certs, cache, logs) that the MSI did not itself install. -->
+        <util:RemoveFolderEx On="uninstall" Property="AEGISINSTALLFOLDER" />
+      </Component>
 
-          <!-- Organized hierarchy (BigFix-style). The agent reads values by name
-               across these sections; value names are the env-var keys. -->
+      <!-- Installer-written config in its OWN component (a registry keypath), so
+           the registry is a standalone, reliably-versioned resource rather than a
+           side-effect of the exe/service component. The agent reads these natively
+           from HKLM\SOFTWARE\AegisOne\Client (env > file > registry > default).
+           Written at WriteRegistryValues (seq 5000), BEFORE InstallServices/
+           StartServices (5800/5900), so the token + server address are available
+           at first run. (No util:PermissionEx here — it needs a deferred custom
+           action that made the registry unreliable; HKLM is admin/SYSTEM-scoped
+           already and the agent erases the single-use token after enrollment.) -->
+      <Component Id="ConfigRegistryComponent" Directory="SKVCDir" Guid="*">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client">
           <RegistryKey Key="Install">
-            <RegistryValue Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
+            <RegistryValue Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
             <RegistryValue Name="Version" Type="string" Value="1.0.0.0" />
           </RegistryKey>
           <RegistryKey Key="Connection">
@@ -140,11 +144,8 @@
             <RegistryValue Name="AEGIS_HEALTH_ADDR" Type="string" Value="127.0.0.1:50080" />
           </RegistryKey>
         </RegistryKey>
-
-        <!-- On uninstall, recursively delete the whole install tree
-             (C:\Program Files\AegisOne), including runtime-created data under SKVC
-             (identity, certs, cache, logs) that the MSI did not itself install. -->
-        <util:RemoveFolderEx On="uninstall" Property="AEGISINSTALLFOLDER" />
+        <!-- Remove the whole config key on uninstall (replaces ForceDeleteOnUninstall). -->
+        <RemoveRegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client" Action="removeOnUninstall" />
       </Component>
     </ComponentGroup>
 
