@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Set once at startup, before any RPC or terminal goroutine starts. Server
@@ -24,11 +25,13 @@ func mockFatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
+// configureMockLogging sets up the server log file. In NSH mode the file is the
+// sole sink (NSH owns the terminal). In normal server mode it TEES: everything
+// still prints to the console AND is saved to a dated file under logs/ (or
+// AEGIS_MOCK_LOG_FILE), so a tester can review what happened after the fact — and
+// so a crash/reboot of the box does not lose the scrollback.
 func configureMockLogging(nshMode bool) (*os.File, error) {
-	if !nshMode {
-		return nil, nil
-	}
-	path := getenv("AEGIS_MOCK_LOG_FILE", filepath.Join("logs", "mockserver.log"))
+	path := getenv("AEGIS_MOCK_LOG_FILE", filepath.Join("logs", fmt.Sprintf("mockserver-%s.log", time.Now().Format("2006-01-02"))))
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
@@ -36,7 +39,13 @@ func configureMockLogging(nshMode bool) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	mockOutput = f
-	log.SetOutput(f)
+	if nshMode {
+		mockOutput = f
+		log.SetOutput(f)
+	} else {
+		mockOutput = io.MultiWriter(os.Stdout, f)
+		log.SetOutput(io.MultiWriter(os.Stderr, f))
+		fmt.Fprintf(os.Stdout, "server log also saved to %s\n", path)
+	}
 	return f, nil
 }
