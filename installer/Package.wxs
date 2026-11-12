@@ -2,8 +2,15 @@
 <!--
   AegisOne Client — WiX v4/v5 installer.
 
-  Build:   wix build Package.wxs ConfigDlg.wxs -ext WixToolset.Util.wixext -ext WixToolset.UI.wixext -o AegisOneClient.msi
+  Build:   wix build Package.wxs -arch x64 -ext WixToolset.Util.wixext -ext WixToolset.UI.wixext -o AegisOneClient.msi
   (see installer/README.md for the full build + sign + silent-install runbook)
+
+  IMPORTANT: -arch x64 is REQUIRED. Without it the package builds as x86, every
+  component defaults to 32-bit, and HKLM registry writes are redirected to
+  HKLM\SOFTWARE\WOW6432Node\AegisOne — where the 64-bit agent (and `reg query
+  HKLM\SOFTWARE\AegisOne`) never looks, so the agent silently falls back to its
+  built-in defaults (localhost:50051). Files still land correctly because the
+  tree is pinned to ProgramFiles64Folder; only the registry view is wrong.
 
   Interactive install shows: Welcome -> License -> Install Location -> Settings
   (server address / enroll token / CA cert) -> Ready -> Progress -> Finish.

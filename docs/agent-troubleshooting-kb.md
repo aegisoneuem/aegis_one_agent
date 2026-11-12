@@ -107,14 +107,46 @@ The MSI embeds `..\build\AegisOneClient.exe`, so rebuild it after any agent chan
 ```
 # from installer/ , build the agent to build/ first (stripped):
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o build/AegisOneClient.exe ./cmd/agent/
-wix build installer/Package.wxs -ext WixToolset.Util.wixext -ext WixToolset.UI.wixext -o installer/AegisOneClient.msi
+wix build installer/Package.wxs -arch x64 -ext WixToolset.Util.wixext -ext WixToolset.UI.wixext -o installer/AegisOneClient.msi
 ```
+**`-arch x64` is mandatory** — see 3.4.
 (WiX toolset required: `dotnet tool install --global wix`, plus the Util/UI
 extensions.) A stale MSI = stale exe = the lazy-folder behavior of 3.1.
 
 ### 3.3 Reinstall leaves a duplicate in Add/Remove Programs
 **Cause:** ProductCode auto-generated per build. **Status:** handled —
 `MajorUpgrade AllowSameVersionUpgrades="yes"` removes the prior install in place.
+
+### 3.4 MSI installs the files but NO config registry appears (agent uses defaults / `localhost:50051`)
+**Symptom:** a clean install with all params succeeds, `C:\Program Files\AegisOne`
+exists, the service runs — but `reg query "HKLM\SOFTWARE\AegisOne\Client" /s` says
+*"unable to find the specified registry key"*, and the agent connects to
+`localhost:50051` (its built-in default) instead of the server you passed.
+**Cause:** the MSI was built **without `-arch x64`**, so it is a 32-bit package and
+every component is 32-bit. Windows **redirects** a 32-bit component's HKLM registry
+writes to `HKLM\SOFTWARE\WOW6432Node\AegisOne\Client`. The 64-bit agent reads the
+**native** `HKLM\SOFTWARE\AegisOne\Client`, finds nothing, and falls back to
+defaults. Files look fine because the tree is pinned to `ProgramFiles64Folder`;
+only the registry view is wrong. Confirm with
+`reg query "HKLM\SOFTWARE\WOW6432Node\AegisOne\Client" /s` — the config will be
+sitting there.
+**Fix:** rebuild with `-arch x64` (see 3.2). Verify the MSI's components are 64-bit
+(the `Component` table `Attributes` must have bit `256` set: `256` for the exe
+component, `260` for the registry component). Then clean-install the new MSI.
+
+### 3.5 Verifying an MSI install actually finished (don't check too early)
+`msiexec /i … /qn` run from `cmd` can return before the install is fully committed.
+Use `start /wait` and check the exit code before querying the registry:
+```
+start /wait msiexec /i AegisOneClient.msi /qn /l*v C:\aegisinstall.log ^
+  SERVERADDRESS=<host:port> SERVERNAME=<cert-name> ^
+  ENROLLTOKEN=<token> CACERTFILE=<ca path>
+echo EXIT=%errorlevel%     &rem 0 = success; 1603/1638/etc = failure (read the log)
+reg query "HKLM\SOFTWARE\AegisOne\Client" /s
+```
+In the verbose log, `Return value 3` on an action = that action failed and the
+install rolled back; search for it plus the action name (e.g. `WriteRegistryValues`,
+`StartServices`).
 
 ---
 
