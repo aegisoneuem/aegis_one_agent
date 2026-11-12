@@ -986,54 +986,59 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// (default now), AEGIS_POLICY_REQUIRE_FIPS (1), AEGIS_POLICY_DENY /
 		// AEGIS_POLICY_ALLOW (comma-separated command types), AEGIS_POLICY_REBOOT
 		// (never|if_required|always) shape it.
-		if os.Getenv("AEGIS_SET_POLICY") != "" {
+		if strings.TrimSpace(os.Getenv("AEGIS_SET_POLICY")) != "" {
+			// env trims trailing whitespace so `set A=1 & set B=2` chaining in cmd.exe
+			// (which captures the space before `&` into the value) still parses — a
+			// trailing space otherwise broke every numeric field (e.g. issued_at fell
+			// back to time.Now() and the policy was rejected as a rollback).
+			env := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
 			pol := policy.Policy{Version: 1}
-			pol.PolicyID = os.Getenv("AEGIS_POLICY_ID")
+			pol.PolicyID = env("AEGIS_POLICY_ID")
 			if pol.PolicyID == "" {
 				pol.PolicyID = fmt.Sprintf("pol-%d", time.Now().Unix())
 			}
 			pol.IssuedAt = time.Now().Unix()
-			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_ISSUED_AT"), 10, 64); err == nil && v > 0 {
+			if v, err := strconv.ParseInt(env("AEGIS_POLICY_ISSUED_AT"), 10, 64); err == nil && v > 0 {
 				pol.IssuedAt = v
 			}
-			pol.SecurityFloor.RequireFIPS = os.Getenv("AEGIS_POLICY_REQUIRE_FIPS") != ""
-			if d := strings.TrimSpace(os.Getenv("AEGIS_POLICY_DENY")); d != "" {
+			pol.SecurityFloor.RequireFIPS = env("AEGIS_POLICY_REQUIRE_FIPS") != ""
+			if d := env("AEGIS_POLICY_DENY"); d != "" {
 				pol.Modules.Deny = strings.Split(d, ",")
 			}
-			if a := strings.TrimSpace(os.Getenv("AEGIS_POLICY_ALLOW")); a != "" {
+			if a := env("AEGIS_POLICY_ALLOW"); a != "" {
 				pol.Modules.Allow = strings.Split(a, ",")
 			}
-			pol.Patch.RebootPolicy = os.Getenv("AEGIS_POLICY_REBOOT")
-			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_FETCH_MAX_BPS"), 10, 64); err == nil && v > 0 {
+			pol.Patch.RebootPolicy = env("AEGIS_POLICY_REBOOT")
+			if v, err := strconv.ParseInt(env("AEGIS_POLICY_FETCH_MAX_BPS"), 10, 64); err == nil && v > 0 {
 				pol.Transfer.FetchMaxBPS = v
 			}
-			if lvl := os.Getenv("AEGIS_POLICY_LOG_LEVEL"); lvl != "" {
+			if lvl := env("AEGIS_POLICY_LOG_LEVEL"); lvl != "" {
 				pol.Logging.Level = lvl
 			}
 			// Declared (◻️) fields — accepted + reported today, enforcement wiring
 			// incremental. Present here so a tester can round-trip them end to end.
-			if v := strings.TrimSpace(os.Getenv("AEGIS_POLICY_MIN_TLS")); v != "" {
+			if v := env("AEGIS_POLICY_MIN_TLS"); v != "" {
 				pol.SecurityFloor.MinTLS = v
 			}
-			if d := strings.TrimSpace(os.Getenv("AEGIS_POLICY_MAINT_DAYS")); d != "" {
+			if d := env("AEGIS_POLICY_MAINT_DAYS"); d != "" {
 				pol.Maintenance.Days = strings.Split(d, ",")
 			}
-			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_MAINT_START")); err == nil {
+			if n, err := strconv.Atoi(env("AEGIS_POLICY_MAINT_START")); err == nil {
 				pol.Maintenance.StartHour = n
 			}
-			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_MAINT_END")); err == nil {
+			if n, err := strconv.Atoi(env("AEGIS_POLICY_MAINT_END")); err == nil {
 				pol.Maintenance.EndHour = n
 			}
-			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_AUDIT_RATE")); err == nil && n > 0 {
+			if n, err := strconv.Atoi(env("AEGIS_POLICY_AUDIT_RATE")); err == nil && n > 0 {
 				pol.Audit.RatePerSec = n
 			}
-			if n, err := strconv.Atoi(os.Getenv("AEGIS_POLICY_AUDIT_BURST")); err == nil && n > 0 {
+			if n, err := strconv.Atoi(env("AEGIS_POLICY_AUDIT_BURST")); err == nil && n > 0 {
 				pol.Audit.Burst = n
 			}
-			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_AUDIT_DEDUP"), 10, 64); err == nil && v > 0 {
+			if v, err := strconv.ParseInt(env("AEGIS_POLICY_AUDIT_DEDUP"), 10, 64); err == nil && v > 0 {
 				pol.Audit.DedupWindowSeconds = v
 			}
-			if v, err := strconv.ParseInt(os.Getenv("AEGIS_POLICY_INV_FULL_INTERVAL"), 10, 64); err == nil && v > 0 {
+			if v, err := strconv.ParseInt(env("AEGIS_POLICY_INV_FULL_INTERVAL"), 10, 64); err == nil && v > 0 {
 				pol.Inventory.FullIntervalSeconds = v
 			}
 			payload, err := json.Marshal(pol)
