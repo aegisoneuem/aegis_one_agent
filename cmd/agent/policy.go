@@ -227,6 +227,9 @@ func applyPolicy(p *policy.Policy) {
 	if v := policyFetchMaxBPS(); v > 0 {
 		slog.Info("policy: fetch bandwidth cap in force", "bytes_per_second", v)
 	}
+	if v := policyUploadMaxBPS(); v > 0 {
+		slog.Info("policy: upload bandwidth cap in force", "bytes_per_second", v)
+	}
 }
 
 // policyFetchMaxBPS returns the active policy's transfer fetch cap in bytes/sec

@@ -1012,6 +1012,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if v, err := strconv.ParseInt(env("AEGIS_POLICY_FETCH_MAX_BPS"), 10, 64); err == nil && v > 0 {
 				pol.Transfer.FetchMaxBPS = v
 			}
+			if v, err := strconv.ParseInt(env("AEGIS_POLICY_UPLOAD_MAX_BPS"), 10, 64); err == nil && v > 0 {
+				pol.Transfer.UploadMaxBPS = v
+			}
 			if lvl := env("AEGIS_POLICY_LOG_LEVEL"); lvl != "" {
 				pol.Logging.Level = lvl
 			}
