@@ -9,27 +9,65 @@ import (
 )
 
 // wtsapi32 is resolved lazily so the agent still loads where the DLL is absent;
-// WTSQuerySessionInformationW / WTSFreeMemory are not exported by the vendored
-// x/sys/windows, so we bind them directly.
+// these entry points are not exported by the vendored x/sys/windows.
 var (
 	wtsapi32                        = windows.NewLazySystemDLL("wtsapi32.dll")
 	procWTSQuerySessionInformationW = wtsapi32.NewProc("WTSQuerySessionInformationW")
+	procWTSEnumerateSessionsW       = wtsapi32.NewProc("WTSEnumerateSessionsW")
 	procWTSFreeMemory               = wtsapi32.NewProc("WTSFreeMemory")
 )
 
-// WTSUserName info class; WTS_CURRENT_SERVER_HANDLE == 0.
-const wtsUserNameClass = 5
+const (
+	wtsUserNameClass = 5 // WTSUserName info class; WTS_CURRENT_SERVER_HANDLE == 0
+	wtsActiveState   = 0 // WTSActive (a logged-in, connected session)
+)
 
-// detectInteractiveUser returns the user logged into the active physical console
-// session and whether an interactive user is present. It is best-effort: any
-// failure yields ("", false) rather than an error — RC-0 uses it only for the
-// visible indicator and the session snapshot, and RC-2 will use the session for
-// input-injection context (addendum #1: run as the interactive user, not SYSTEM).
+// wtsSessionInfoW mirrors WTS_SESSION_INFOW { DWORD SessionId; LPWSTR
+// pWinStationName; WTS_CONNECTSTATE_CLASS State }. Go aligns the pointer to 8
+// bytes on amd64, matching the C padding, so the struct size is correct.
+type wtsSessionInfoW struct {
+	SessionID      uint32
+	WinStationName *uint16
+	State          uint32
+}
+
+// detectInteractiveUser returns the interactive logged-in user and whether one is
+// present. It prefers the physical console session, then falls back to ANY active
+// session (RDP, Fast User Switching) — a server reached over RDP, or a console
+// with no one at the physical screen, would otherwise report an empty user.
+// Best-effort: any failure yields ("", false).
 func detectInteractiveUser() (string, bool) {
-	sid := windows.WTSGetActiveConsoleSessionId()
-	if sid == 0xFFFFFFFF { // no active console session (e.g. headless server)
+	if sid := windows.WTSGetActiveConsoleSessionId(); sid != 0xFFFFFFFF {
+		if u := wtsSessionUser(sid); u != "" {
+			return u, true
+		}
+	}
+	// Enumerate all sessions; return the first ACTIVE one that has a username.
+	var p *wtsSessionInfoW
+	var count uint32
+	r, _, _ := procWTSEnumerateSessionsW.Call(
+		0, // WTS_CURRENT_SERVER_HANDLE
+		0, // Reserved
+		1, // Version
+		uintptr(unsafe.Pointer(&p)),
+		uintptr(unsafe.Pointer(&count)),
+	)
+	if r == 0 || p == nil {
 		return "", false
 	}
+	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(p)))
+	for _, s := range unsafe.Slice(p, count) {
+		if s.State == wtsActiveState {
+			if u := wtsSessionUser(s.SessionID); u != "" {
+				return u, true
+			}
+		}
+	}
+	return "", false
+}
+
+// wtsSessionUser returns the username for a session id, or "" on any failure.
+func wtsSessionUser(sid uint32) string {
 	var buf *uint16
 	var n uint32
 	r1, _, _ := procWTSQuerySessionInformationW.Call(
@@ -40,9 +78,8 @@ func detectInteractiveUser() (string, bool) {
 		uintptr(unsafe.Pointer(&n)),
 	)
 	if r1 == 0 || buf == nil {
-		return "", false
+		return ""
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
-	user := windows.UTF16PtrToString(buf)
-	return user, user != ""
+	return windows.UTF16PtrToString(buf)
 }

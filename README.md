@@ -36,7 +36,7 @@ internet), and reports a unified per-action status back to the server.
 
 ```sh
 # product agent (Windows)
-GOOS=windows GOARCH=amd64 go build -o build/AegisOneClient.exe ./cmd/agent/
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o build/AegisOneClient.exe ./cmd/agent/
 ```
 
 Prebuilt artifacts for the server team live in [dist/](dist/). The gRPC/protobuf
