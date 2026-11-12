@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+// ============================ SECURITY HARD-RULE ============================
+// Hardware fingerprint / SMBIOS-serial / TPM / machineguid signals are IDENTITY
+// signals ONLY. They MUST NEVER be used to decide command-authorization or
+// data-delivery. Those trust decisions are ALWAYS and ONLY made cryptographically
+// — mTLS client certificate (transport) + Ed25519 command signature
+// (authorization) — exactly like BigFix.
+//
+// The single permitted use of a signal match beyond id-resolution is
+// "history-record linking" (associating a re-imaged / changed machine with its
+// prior record), and even that only AFTER explicit admin approval on the server.
+// A signal match is a HINT for a human/record, never a grant of trust. Do not add
+// any code path that lets a matching fingerprint accept a command, unlock data, or
+// bypass a cert/signature check. See [[feedback-fingerprint-not-authz]].
+// ===========================================================================
+
 // identity is the persisted device identity record (SKVC\identity.json). It binds
 // the stable device id to the hardware signals it was created under, so a
 // clone/reimage (ALL signals changed) can be detected and a fresh id issued, while
