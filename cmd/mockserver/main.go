@@ -1582,6 +1582,13 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			s.lastInventory[ds.DeviceId] = ds
 			s.inventoryMu.Unlock()
 		}
+		if dt := msg.GetDexTelemetry(); dt != nil {
+			mockPrintf("DEX telemetry -> %s | window=%ds samples=%d | cpu avg/min/max=%.1f/%.1f/%.1f%% | mem_used avg/min/max=%.1f/%.1f/%.1f%%\n",
+				s.identify(dt.DeviceId), dt.WindowSeconds, dt.SampleCount,
+				dt.CpuAvg, dt.CpuMin, dt.CpuMax, dt.MemUsedAvg, dt.MemUsedMin, dt.MemUsedMax)
+			continue
+		}
+
 		if fi := msg.GetFullInventory(); fi != nil {
 			hw := fi.GetHardware()
 			mockPrintf("Received FULL inventory -> %s | trigger: %s, cpu: %s %s %dMHz (%d/%d cores, %d thr/core, %s), ram: %d MB, disks: %d, nics: %d, apps: %d, OS: %q %q build=%q, virt: %s, system: %s %s\n",

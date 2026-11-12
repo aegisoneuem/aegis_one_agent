@@ -749,6 +749,11 @@ func runProcess(ctx context.Context) {
 	// (flap-floored). Collector cost is a few ms; no WMI, no COM, no cgo.
 	go runFullInventoryReport(cfg, buf, fullInventoryReconnectTrigger, drainSignal)
 
+	// DEX telemetry: sample live CPU + memory and buffer an aggregated report every
+	// DexWindow (default 5m). Separate from change-gated inventory (CPU/mem change
+	// every tick). Native sampling only; a no-op off-Windows.
+	go runDexTelemetry(ctx, cfg, buf, drainSignal)
+
 	// Watch the servicing store (CBS) and debounce-trigger a re-scan on any local
 	// install/uninstall — instant auto-detect without running the heavy scan on a
 	// timer (event-driven; no-op on non-Windows).

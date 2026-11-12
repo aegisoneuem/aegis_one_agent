@@ -144,6 +144,14 @@ type Config struct {
 	// DoS'ing the server with repeated full snapshots. Default 1 h.
 	ReconnectSnapshotMinInterval time.Duration
 
+	// DexSampleInterval is how often the DEX telemetry sampler reads live CPU +
+	// memory (default 15s, matching BigFix DEX's endpoint sampling). DexWindow is
+	// the aggregation window over which samples are averaged into one DexTelemetry
+	// report (default 5m, BigFix's ATI). A short sample + a windowed send keeps the
+	// bandwidth low while giving the server a smooth avg/min/max time series.
+	DexSampleInterval time.Duration
+	DexWindow         time.Duration
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -331,6 +339,8 @@ func Load() Config {
 		FullInventoryInterval:          durationFromEnv("AEGIS_FULL_INVENTORY_INTERVAL", 6*time.Hour),
 		FullInventorySafetyNetInterval: durationFromEnv("AEGIS_FULL_INVENTORY_SAFETY_NET_INTERVAL", 24*time.Hour),
 		ReconnectSnapshotMinInterval:   durationFromEnv("AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL", time.Hour),
+		DexSampleInterval:              durationFromEnv("AEGIS_DEX_SAMPLE_INTERVAL", 15*time.Second),
+		DexWindow:                      durationFromEnv("AEGIS_DEX_WINDOW", 5*time.Minute),
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

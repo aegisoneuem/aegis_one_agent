@@ -13,6 +13,7 @@ const (
 	kindDeviceState     = "device_state"      // Layer 1 (frequent): installed-KBs + build
 	kindActionStatus    = "action_status"     // per-action status (e.g. a compliance-scan run's outcome)
 	kindFullInventory   = "full_inventory"    // Tier 3 (6-12h + reconnect): full HW + SW snapshot
+	kindDexTelemetry    = "dex_telemetry"     // periodic aggregated CPU/memory for the DEX score
 )
 
 // signalDrain wakes the sender to flush the buffer promptly (non-blocking +
@@ -86,6 +87,19 @@ func drainReports(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) 
 				"trigger", rep.Trigger, "apps", len(rep.InstalledApps),
 				"disks", len(rep.GetHardware().GetDisks()),
 				"nics", len(rep.GetHardware().GetNics()))
+			return nil
+
+		case kindDexTelemetry:
+			var rep pb.DexTelemetry
+			if err := proto.Unmarshal(payload, &rep); err != nil {
+				slog.Warn("drain: skipping corrupt dex-telemetry report", "error", err.Error())
+				return nil
+			}
+			msg := &pb.AgentMessage{Payload: &pb.AgentMessage_DexTelemetry{DexTelemetry: &rep}}
+			if err := stream.Send(msg); err != nil {
+				return err
+			}
+			slog.Info("sent dex-telemetry to server", "samples", rep.SampleCount, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg)
 			return nil
 
 		default:
