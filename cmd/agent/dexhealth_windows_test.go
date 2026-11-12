@@ -17,12 +17,15 @@ func TestCollectDexHealth(t *testing.T) {
 	}
 	t.Logf("dex-health: unexpected_shutdowns=%d bugchecks=%d dirty_power=%d app_crashes=%d app_hangs=%d boot_ms=%d",
 		dh.UnexpectedShutdowns, dh.Bugchecks, dh.DirtyPowerEvents, dh.AppCrashes, dh.AppHangs, dh.BootDurationMs)
+	for _, f := range dh.AppFaults {
+		t.Logf("  fault: %s crashes=%d hangs=%d", f.Name, f.Crashes, f.Hangs)
+	}
 }
 
 // countSystemEvents must return a non-negative count without hanging on a real
 // System channel. Event 6005 ("event log service started") fires on every boot.
 func TestCountSystemEvents_RealChannel(t *testing.T) {
-	n := countChannelEvents("System", 6005, int64(365)*86400*1000)
+	n := countWinEvents("System", "", 6005, int64(365)*86400*1000)
 	if n < 0 {
 		t.Fatalf("negative count: %d", n)
 	}

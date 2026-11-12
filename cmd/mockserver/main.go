@@ -1611,6 +1611,13 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if dh := fi.GetDexHealth(); dh != nil {
 				mockPrintf("  dex-health: unexpected_shutdowns=%d bugchecks=%d dirty_power=%d app_crashes=%d app_hangs=%d boot_ms=%d (last %dd)\n",
 					dh.GetUnexpectedShutdowns(), dh.GetBugchecks(), dh.GetDirtyPowerEvents(), dh.GetAppCrashes(), dh.GetAppHangs(), dh.GetBootDurationMs(), dh.GetWindowDays())
+				for i, f := range dh.GetAppFaults() {
+					if i >= 10 {
+						mockPrintf("    ... and %d more faulting app(s)\n", len(dh.GetAppFaults())-10)
+						break
+					}
+					mockPrintf("    fault: %-32s crashes=%d hangs=%d\n", f.GetName(), f.GetCrashes(), f.GetHangs())
+				}
 			}
 			shownAppx := fi.GetInstalledAppx()
 			for i, a := range shownAppx {

@@ -5,7 +5,9 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -41,13 +43,109 @@ var bootTimeRe = regexp.MustCompile(`Name="BootTime">(\d+)<`)
 func collectDexHealth() *pb.DexHealth {
 	windowMs := int64(dexWindowDays) * 86400 * 1000
 	return &pb.DexHealth{
-		UnexpectedShutdowns: int32(countChannelEvents("System", 6008, windowMs)),
-		Bugchecks:           int32(countChannelEvents("System", 1001, windowMs)),
-		DirtyPowerEvents:    int32(countChannelEvents("System", 41, windowMs)),
-		AppCrashes:          int32(countChannelEvents("Application", 1000, windowMs)),
-		AppHangs:            int32(countChannelEvents("Application", 1002, windowMs)),
+		UnexpectedShutdowns: int32(countWinEvents("System", "EventLog", 6008, windowMs)),
+		Bugchecks:           int32(countWinEvents("System", "Microsoft-Windows-WER-SystemErrorReporting", 1001, windowMs)),
+		DirtyPowerEvents:    int32(countWinEvents("System", "Microsoft-Windows-Kernel-Power", 41, windowMs)),
+		AppCrashes:          int32(countWinEvents("Application", "Application Error", 1000, windowMs)),
+		AppHangs:            int32(countWinEvents("Application", "Application Hang", 1002, windowMs)),
+		AppFaults:           collectAppFaults(windowMs),
 		WindowDays:          dexWindowDays,
 		BootDurationMs:      bootDurationMs(),
+	}
+}
+
+// eventXPath builds a channel XPath filtering on provider (optional), EventID,
+// and the time window. Provider filtering matters because EventIDs like 1000/1002
+// are reused by many providers — only "Application Error"/"Application Hang" are
+// real app crashes/hangs.
+func eventXPath(provider string, eventID int, windowMs int64) string {
+	cond := fmt.Sprintf("(EventID=%d) and TimeCreated[timediff(@SystemTime) <= %d]", eventID, windowMs)
+	if provider != "" {
+		cond = fmt.Sprintf("Provider[@Name='%s'] and %s", provider, cond)
+	}
+	return "*[System[" + cond + "]]"
+}
+
+const (
+	dexMaxFaultEvents = 2000 // render at most this many fault events (bound cost)
+	dexMaxFaultApps   = 25   // report at most the top-N unstable apps
+)
+
+// appDataRe extracts the first <Data> value of an Application Error/Hang event —
+// the faulting application name (e.g. "chrome.exe") sits in the first unnamed
+// Data element for events 1000 and 1002.
+var appDataRe = regexp.MustCompile(`<Data[^>]*>([^<]+)</Data>`)
+
+// collectAppFaults returns the per-application crash/hang breakdown (top apps by
+// total faults), so the console can show WHICH apps are unstable.
+func collectAppFaults(windowMs int64) []*pb.AppFault {
+	agg := map[string]*pb.AppFault{}
+	get := func(name string) *pb.AppFault {
+		f := agg[name]
+		if f == nil {
+			f = &pb.AppFault{Name: name}
+			agg[name] = f
+		}
+		return f
+	}
+	forEachFaultEvent("Application", "Application Error", 1000, windowMs, func(app string) { get(app).Crashes++ })
+	forEachFaultEvent("Application", "Application Hang", 1002, windowMs, func(app string) { get(app).Hangs++ })
+
+	out := make([]*pb.AppFault, 0, len(agg))
+	for _, f := range agg {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti, tj := out[i].Crashes+out[i].Hangs, out[j].Crashes+out[j].Hangs
+		if ti != tj {
+			return ti > tj
+		}
+		return out[i].Name < out[j].Name
+	})
+	if len(out) > dexMaxFaultApps {
+		out = out[:dexMaxFaultApps]
+	}
+	return out
+}
+
+// forEachFaultEvent renders each matching event and calls fn with the faulting
+// application name (first Data). Bounded by dexMaxFaultEvents.
+func forEachFaultEvent(channel, provider string, eventID int, windowMs int64, fn func(app string)) {
+	query := eventXPath(provider, eventID, windowMs)
+	chPtr, err := syscall.UTF16PtrFromString(channel)
+	if err != nil {
+		return
+	}
+	qPtr, err := syscall.UTF16PtrFromString(query)
+	if err != nil {
+		return
+	}
+	h, _, _ := procEvtQuery.Call(0, uintptr(unsafe.Pointer(chPtr)), uintptr(unsafe.Pointer(qPtr)), uintptr(evtQueryChannelPath|evtQueryReverseDirection))
+	if h == 0 {
+		return
+	}
+	defer procEvtClose.Call(h)
+
+	seen := 0
+	const batch = 32
+	var events [batch]uintptr
+	for seen < dexMaxFaultEvents {
+		var returned uint32
+		r, _, _ := procEvtNext.Call(h, batch, uintptr(unsafe.Pointer(&events[0])), 0, 0, uintptr(unsafe.Pointer(&returned)))
+		if r == 0 || returned == 0 {
+			break
+		}
+		for i := uint32(0); i < returned; i++ {
+			if xml := renderEventXML(events[i]); xml != "" {
+				if m := appDataRe.FindStringSubmatch(xml); len(m) >= 2 {
+					if app := strings.TrimSpace(m[1]); app != "" {
+						fn(app)
+					}
+				}
+			}
+			procEvtClose.Call(events[i])
+			seen++
+		}
 	}
 }
 
@@ -110,11 +208,10 @@ func renderEventXML(evt uintptr) string {
 	return windows.UTF16ToString(buf)
 }
 
-// countChannelEvents counts events with the given EventID in the named channel
-// (e.g. "System", "Application") created within windowMs milliseconds of now,
-// using a server-side XPath filter.
-func countChannelEvents(channel string, eventID int, windowMs int64) int {
-	query := fmt.Sprintf("*[System[(EventID=%d) and TimeCreated[timediff(@SystemTime) <= %d]]]", eventID, windowMs)
+// countWinEvents counts events from provider (optional) with the given EventID in
+// the named channel, within windowMs, using a server-side XPath filter.
+func countWinEvents(channel, provider string, eventID int, windowMs int64) int {
+	query := eventXPath(provider, eventID, windowMs)
 	chPtr, err := syscall.UTF16PtrFromString(channel)
 	if err != nil {
 		return 0
