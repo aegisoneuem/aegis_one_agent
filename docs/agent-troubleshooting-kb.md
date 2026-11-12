@@ -33,8 +33,30 @@ property) or manually. The mock server checks it against its own
 ### 1.2 `no client cert and no enrollment token (set AEGIS_ENROLL_TOKEN)`
 **Cause:** the agent has no client certificate yet AND no enrollment token to get
 one (the token is single-use — the agent deletes it from the registry after a
-successful enroll).
+successful enroll). An MSI install done WITHOUT `ENROLLTOKEN=...` writes an empty
+token.
 **Fix:** re-provide the token (as in 1.1) and restart the service.
+
+### 1.3 `enroll TLS setup: read CA … ca.crt: The system cannot find the file specified` / `enroll_address=localhost:50051`
+**Cause:** a BARE MSI install (no config params) leaves the agent on its defaults
+— server `localhost:50051` and CA path `SKVC\certs\ca.crt` (which does not exist
+unless you put it there). The MSI only RECORDS the CA path in the registry; it
+does not copy the CA file.
+**Fix — install with ALL four params** (enterprise agents are configured at
+deploy time):
+```
+msiexec /i AegisOneClient.msi /qn ^
+  SERVERADDRESS=<host:50051> SERVERNAME=<server-cert-name> ^
+  ENROLLTOKEN=<token> CACERTFILE=<full path to the server CA .crt>
+```
+Or set them by hand and restart:
+```
+reg add "HKLM\SOFTWARE\AegisOne\Client\Connection" /v AEGIS_SERVER_ADDRESS /t REG_SZ /d <host:50051> /f
+reg add "HKLM\SOFTWARE\AegisOne\Client\Connection" /v AEGIS_TLS_SERVER_NAME /t REG_SZ /d <server-cert-name> /f
+reg add "HKLM\SOFTWARE\AegisOne\Client\TLS" /v AEGIS_TLS_CA /t REG_SZ /d <path to ca.crt> /f
+```
+The CA file must actually EXIST at the referenced path, and must be the CA that
+signed the server's TLS cert.
 
 ---
 
