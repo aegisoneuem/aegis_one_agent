@@ -43,9 +43,11 @@ func configureMockLogging(nshMode bool) (*os.File, error) {
 		mockOutput = f
 		log.SetOutput(f)
 	} else {
-		mockOutput = io.MultiWriter(os.Stdout, f)
+		// Tee the existing console sink (os.Stdout by default) AND the file, so the
+		// live console is unchanged but everything is also saved.
+		fmt.Fprintf(mockOutput, "server log also saved to %s\n", path)
+		mockOutput = io.MultiWriter(mockOutput, f)
 		log.SetOutput(io.MultiWriter(os.Stderr, f))
-		fmt.Fprintf(os.Stdout, "server log also saved to %s\n", path)
 	}
 	return f, nil
 }

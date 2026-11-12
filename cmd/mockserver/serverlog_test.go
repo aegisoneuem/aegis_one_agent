@@ -45,19 +45,27 @@ func TestNSHBackgroundEventsUseDedicatedLog(t *testing.T) {
 	}
 }
 
-func TestNormalMockModeRetainsConsoleOutput(t *testing.T) {
-	t.Setenv("AEGIS_NSH", "1")
-	t.Setenv("AEGIS_NSH_SCRIPT", "old-script.nsh")
-	old := mockOutput
-	defer func() { mockOutput = old }()
+func TestNormalMockModeTeesToConsoleAndFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs", "server.log")
+	t.Setenv("AEGIS_MOCK_LOG_FILE", path)
+	oldOutput, oldLog := mockOutput, log.Writer()
+	defer func() { mockOutput = oldOutput; log.SetOutput(oldLog) }()
 	var terminal bytes.Buffer
 	mockOutput = &terminal
+
 	f, err := configureMockLogging(false)
-	if err != nil || f != nil {
-		t.Fatalf("%v %v", f, err)
+	if err != nil || f == nil {
+		t.Fatalf("normal mode must open a log file: f=%v err=%v", f, err)
 	}
+	defer f.Close()
+
 	mockPrintln("normal server event")
+	// Tee: the console sink AND the file both receive the event.
 	if !strings.Contains(terminal.String(), "normal server event") {
-		t.Fatal("console output missing")
+		t.Fatal("console output missing (tee)")
+	}
+	data, rerr := os.ReadFile(path)
+	if rerr != nil || !strings.Contains(string(data), "normal server event") {
+		t.Fatalf("file output missing (tee): %q err=%v", data, rerr)
 	}
 }

@@ -50,6 +50,14 @@ func fullInventoryFingerprint(rep *pb.FullInventoryReport) string {
 			n.Status = ""
 		}
 	}
+	// Identity uptime/boot_time are volatile — uptime_seconds changes EVERY second,
+	// so including them would make every snapshot "drift" and re-send the full
+	// inventory on every cycle (a CPU/RAM churn bug). The stable identity keys are
+	// the logged-on user + domain/join state.
+	if id := snap.GetIdentity(); id != nil {
+		id.UptimeSeconds = 0
+		id.BootTime = 0
+	}
 	bytes, err := proto.Marshal(snap)
 	if err != nil {
 		// Marshal of a proto we just built should never fail. Return a

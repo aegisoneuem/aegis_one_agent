@@ -537,6 +537,7 @@ func runProcess(ctx context.Context) {
 	}
 
 	applyTuning(cfg) // push configurable tuning knobs into the patch package
+	tuneMemory()     // keep idle RSS low (soft mem limit + periodic return-to-OS)
 
 	// Make config visibility explicit (a service has no console to debug from).
 	if path, loaded, keys, cerr := config.LoadedFrom(); loaded {
