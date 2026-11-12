@@ -12,11 +12,11 @@ func TestCollectDexHealth(t *testing.T) {
 	if dh.WindowDays != dexWindowDays {
 		t.Fatalf("window_days=%d want %d", dh.WindowDays, dexWindowDays)
 	}
-	if dh.UnexpectedShutdowns < 0 || dh.Bugchecks < 0 || dh.DirtyPowerEvents < 0 {
-		t.Fatalf("counts must be non-negative: %+v", dh)
+	if dh.UnexpectedShutdowns < 0 || dh.Bugchecks < 0 || dh.DirtyPowerEvents < 0 || dh.BootDurationMs < 0 {
+		t.Fatalf("values must be non-negative: %+v", dh)
 	}
-	t.Logf("dex-health: unexpected_shutdowns=%d bugchecks=%d dirty_power=%d",
-		dh.UnexpectedShutdowns, dh.Bugchecks, dh.DirtyPowerEvents)
+	t.Logf("dex-health: unexpected_shutdowns=%d bugchecks=%d dirty_power=%d boot_ms=%d",
+		dh.UnexpectedShutdowns, dh.Bugchecks, dh.DirtyPowerEvents, dh.BootDurationMs)
 }
 
 // countSystemEvents must return a non-negative count without hanging on a real
