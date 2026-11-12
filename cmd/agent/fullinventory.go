@@ -120,6 +120,10 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 		// Identity/session OOB attributes (logged-on user, domain, uptime) for
 		// console device-search + user-targeting. Best-effort; never drops the snapshot.
 		rep.Identity = collectIdentityInfo(rep.CollectedAt)
+		// DEX health (reliability event counts) — device-stability signals for the
+		// DEX score. Native event-log read; best-effort. A changed count is a
+		// meaningful drift, so it is NOT excluded from the fingerprint.
+		rep.DexHealth = collectDexHealth()
 		rep.InstalledApps = make([]*pb.InstalledApp, 0, len(apps))
 		for _, a := range apps {
 			rep.InstalledApps = append(rep.InstalledApps, &pb.InstalledApp{
