@@ -279,15 +279,20 @@ func pathDir(p string) string {
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
-	value := resolve(key)
+	value := strings.TrimSpace(resolve(key))
 	if value == "" {
 		return fallback
 	}
-	seconds, err := strconv.Atoi(value)
-	if err != nil || seconds <= 0 {
-		return fallback
+	// Prefer a Go duration string ("30s", "5m", "6h", "90s"); fall back to a bare
+	// integer meaning seconds (backward compatible). Either way, non-positive or
+	// unparseable values keep the default rather than silently disabling a timer.
+	if d, err := time.ParseDuration(value); err == nil && d > 0 {
+		return d
 	}
-	return time.Duration(seconds) * time.Second
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return fallback
 }
 
 // defaultHostname returns the real OS hostname (the device's display label), used
