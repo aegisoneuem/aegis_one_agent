@@ -41,9 +41,11 @@ var bootTimeRe = regexp.MustCompile(`Name="BootTime">(\d+)<`)
 func collectDexHealth() *pb.DexHealth {
 	windowMs := int64(dexWindowDays) * 86400 * 1000
 	return &pb.DexHealth{
-		UnexpectedShutdowns: int32(countSystemEvents(6008, windowMs)),
-		Bugchecks:           int32(countSystemEvents(1001, windowMs)),
-		DirtyPowerEvents:    int32(countSystemEvents(41, windowMs)),
+		UnexpectedShutdowns: int32(countChannelEvents("System", 6008, windowMs)),
+		Bugchecks:           int32(countChannelEvents("System", 1001, windowMs)),
+		DirtyPowerEvents:    int32(countChannelEvents("System", 41, windowMs)),
+		AppCrashes:          int32(countChannelEvents("Application", 1000, windowMs)),
+		AppHangs:            int32(countChannelEvents("Application", 1002, windowMs)),
 		WindowDays:          dexWindowDays,
 		BootDurationMs:      bootDurationMs(),
 	}
@@ -108,11 +110,12 @@ func renderEventXML(evt uintptr) string {
 	return windows.UTF16ToString(buf)
 }
 
-// countSystemEvents counts System-log events with the given EventID created
-// within windowMs milliseconds of now, using a server-side XPath filter.
-func countSystemEvents(eventID int, windowMs int64) int {
+// countChannelEvents counts events with the given EventID in the named channel
+// (e.g. "System", "Application") created within windowMs milliseconds of now,
+// using a server-side XPath filter.
+func countChannelEvents(channel string, eventID int, windowMs int64) int {
 	query := fmt.Sprintf("*[System[(EventID=%d) and TimeCreated[timediff(@SystemTime) <= %d]]]", eventID, windowMs)
-	chPtr, err := syscall.UTF16PtrFromString("System")
+	chPtr, err := syscall.UTF16PtrFromString(channel)
 	if err != nil {
 		return 0
 	}

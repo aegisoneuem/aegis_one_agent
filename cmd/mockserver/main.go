@@ -1609,8 +1609,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					id.GetLoggedOnUser(), id.GetMachineDomain(), id.GetDomainJoined(), id.GetUptimeSeconds())
 			}
 			if dh := fi.GetDexHealth(); dh != nil {
-				mockPrintf("  dex-health: unexpected_shutdowns=%d bugchecks=%d dirty_power=%d boot_ms=%d (last %dd)\n",
-					dh.GetUnexpectedShutdowns(), dh.GetBugchecks(), dh.GetDirtyPowerEvents(), dh.GetBootDurationMs(), dh.GetWindowDays())
+				mockPrintf("  dex-health: unexpected_shutdowns=%d bugchecks=%d dirty_power=%d app_crashes=%d app_hangs=%d boot_ms=%d (last %dd)\n",
+					dh.GetUnexpectedShutdowns(), dh.GetBugchecks(), dh.GetDirtyPowerEvents(), dh.GetAppCrashes(), dh.GetAppHangs(), dh.GetBootDurationMs(), dh.GetWindowDays())
 			}
 			shownAppx := fi.GetInstalledAppx()
 			for i, a := range shownAppx {
