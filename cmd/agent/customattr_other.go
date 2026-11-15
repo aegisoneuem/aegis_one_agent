@@ -7,4 +7,5 @@ package main
 // macOS equivalents (e.g. a config/plist provider) land with those agent ports.
 func evalRegistryAttr(root, key, name string) (string, bool) { return "", false }
 func evalAdminTag(name string) (string, bool)                { return "", false }
+func evalServiceState(name string) (string, bool)            { return "", false }
 func evalFileVersion(path string) (string, bool)             { return "", false }

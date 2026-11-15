@@ -37,6 +37,23 @@ func TestEvalRegistryAttr_Integer(t *testing.T) {
 	}
 }
 
+// service_state against a service that is always present + running (Windows Event
+// Log), and a definite "not_installed" for a bogus name.
+func TestEvalServiceState_Real(t *testing.T) {
+	v, ok := evalAttribute(attrDefinition{Provider: "service_state", Args: map[string]string{"name": "EventLog"}})
+	if !ok {
+		t.Skip("could not query the service control manager in this environment")
+	}
+	if v != "running" {
+		t.Logf("EventLog state = %q (expected running on a healthy box)", v)
+	}
+	t.Logf("EventLog service_state = %q", v)
+
+	if v, ok := evalAttribute(attrDefinition{Provider: "service_state", Args: map[string]string{"name": "NoSuchSvc_AegisXYZ"}}); !ok || v != "not_installed" {
+		t.Fatalf("bogus service = %q,%v want not_installed,true", v, ok)
+	}
+}
+
 // Bad root / missing key must be refused, never panic.
 func TestEvalRegistryAttr_BadInputs(t *testing.T) {
 	if _, ok := evalAttribute(attrDefinition{Provider: "registry", Args: map[string]string{"root": "BOGUS", "key": "x", "name": "y"}}); ok {

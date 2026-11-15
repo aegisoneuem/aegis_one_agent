@@ -40,6 +40,8 @@ func evalAttribute(def attrDefinition) (string, bool) {
 		v, ok = evalRegistryAttr(def.Args["root"], def.Args["key"], def.Args["name"])
 	case "admin_tag":
 		v, ok = evalAdminTag(def.Args["name"])
+	case "service_state":
+		v, ok = evalServiceState(def.Args["name"])
 	default:
 		return "", false // unknown provider — refuse (never guess/exec)
 	}

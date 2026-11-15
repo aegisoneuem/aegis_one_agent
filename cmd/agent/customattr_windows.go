@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -53,6 +54,55 @@ func evalAdminTag(name string) (string, bool) {
 		return "", false
 	}
 	return evalRegistryAttr("HKLM", `SOFTWARE\AegisOne\Client\Tags`, name)
+}
+
+// evalServiceState returns a Windows service's current state (running | stopped |
+// not_installed | ...). Least-privilege: SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS
+// only (no admin needed to read a service's state), native SCM — no WMI.
+func evalServiceState(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return "", false
+	}
+	defer windows.CloseServiceHandle(scm)
+	namePtr, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return "", false
+	}
+	svcH, err := windows.OpenService(scm, namePtr, windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return "not_installed", true // a definite answer: the service does not exist
+	}
+	defer windows.CloseServiceHandle(svcH)
+	var st windows.SERVICE_STATUS
+	if err := windows.QueryServiceStatus(svcH, &st); err != nil {
+		return "", false
+	}
+	return serviceStateString(st.CurrentState), true
+}
+
+func serviceStateString(s uint32) string {
+	switch s {
+	case windows.SERVICE_STOPPED:
+		return "stopped"
+	case windows.SERVICE_START_PENDING:
+		return "start_pending"
+	case windows.SERVICE_STOP_PENDING:
+		return "stop_pending"
+	case windows.SERVICE_RUNNING:
+		return "running"
+	case windows.SERVICE_CONTINUE_PENDING:
+		return "continue_pending"
+	case windows.SERVICE_PAUSE_PENDING:
+		return "pause_pending"
+	case windows.SERVICE_PAUSED:
+		return "paused"
+	default:
+		return "unknown"
+	}
 }
 
 // evalFileVersion reads a file's version resource. Deferred (needs version.dll);
