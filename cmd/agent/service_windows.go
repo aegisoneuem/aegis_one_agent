@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,6 +31,38 @@ const (
 // so `sc stop` / services.msc fail — the only legit stop is a token-authorized
 // stop_agent command.
 var serviceSelfProtect bool
+
+// Published status channel so a runtime passcode set/clear can re-report whether the
+// service accepts SCM stop — without waiting for a restart.
+var (
+	svcStatusMu sync.Mutex
+	svcStatusCh chan<- svc.Status
+	svcAccepted svc.Accepted
+)
+
+// refreshServiceStopAcceptance re-reports the service's accepted controls to the SCM
+// so that setting a passcode immediately makes `sc stop` fail, and clearing it
+// immediately makes `sc stop` work again — no restart needed.
+func refreshServiceStopAcceptance(selfProtect bool) {
+	svcStatusMu.Lock()
+	defer svcStatusMu.Unlock()
+	if svcStatusCh == nil {
+		return // console mode, or not yet running as a service
+	}
+	accepted := svc.AcceptShutdown
+	if !selfProtect {
+		accepted |= svc.AcceptStop
+	}
+	if accepted == svcAccepted {
+		return
+	}
+	svcAccepted = accepted
+	select {
+	case svcStatusCh <- svc.Status{State: svc.Running, Accepts: accepted}:
+		serviceSelfProtect = selfProtect
+	case <-time.After(2 * time.Second): // never wedge the caller if the SCM isn't reading
+	}
+}
 
 func runAgentEntry() {
 	if isSvc, err := svc.IsWindowsService(); err == nil && isSvc {
@@ -59,6 +92,12 @@ func (a *agentService) Execute(args []string, r <-chan svc.ChangeRequest, s chan
 	if !serviceSelfProtect {
 		accepted |= svc.AcceptStop
 	}
+	// Publish the status channel so a runtime set/clear of the unprotect passcode can
+	// immediately re-report stop-acceptance (no restart needed).
+	svcStatusMu.Lock()
+	svcStatusCh = s
+	svcAccepted = accepted
+	svcStatusMu.Unlock()
 	s <- svc.Status{State: svc.StartPending}
 
 	ctx, cancel := context.WithCancel(context.Background())
