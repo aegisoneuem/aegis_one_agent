@@ -132,7 +132,8 @@ func reportSecurityPosture(cfg config.Config, outbox chan<- *pb.AgentMessage, de
 	slog.Info("SECURITY POSTURE — FIPS 140-3 mode", "enabled", p.FIPSMode, "required", p.FIPSRequired)
 	slog.Info("SECURITY POSTURE — client certificate", "value", p.ClientCert)
 	slog.Info("SECURITY POSTURE — active policy", "value", p.Policy)
-	slog.Info("SECURITY POSTURE — tamper protection", "enabled", cfg.TamperProtect, "binary_integrity", cfg.BinaryIntegrity)
+	slog.Info("SECURITY POSTURE — tamper protection", "master", cfg.TamperProtect, "binary_integrity", cfg.BinaryIntegrity,
+		"passcode_set", passcodeStoreExists(cfg.SecureDir), "service_self_protect", cfg.TamperProtect || passcodeStoreExists(cfg.SecureDir))
 	if !p.CommandAuthzOK {
 		slog.Warn("SECURITY POSTURE — command authorization is NOT production-ready", "reason", p.CommandAuthz)
 	}

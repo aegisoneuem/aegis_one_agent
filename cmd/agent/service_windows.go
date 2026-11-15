@@ -33,7 +33,10 @@ var serviceSelfProtect bool
 
 func runAgentEntry() {
 	if isSvc, err := svc.IsWindowsService(); err == nil && isSvc {
-		serviceSelfProtect = config.Load().TamperProtect
+		cfg := config.Load()
+		// Self-protect (refuse SCM stop) when the master switch is on OR an unprotect
+		// passcode has been set — setting a passcode is itself a request to gate stop.
+		serviceSelfProtect = cfg.TamperProtect || passcodeStoreExists(cfg.SecureDir)
 		if err := svc.Run(serviceName, &agentService{}); err != nil {
 			os.Exit(1) // no console to print to
 		}

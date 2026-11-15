@@ -54,6 +54,15 @@ var (
 
 func passcodeStorePath(secureDir string) string { return filepath.Join(secureDir, "unprotect.secret") }
 
+// passcodeStoreExists reports whether an unprotect passcode has been set. Setting a
+// passcode implies the service should refuse `sc stop` (you now have a passcode to
+// stop WITH), so the service self-protects whenever this is true — even if the
+// master AEGIS_TAMPER_PROTECT switch is off.
+func passcodeStoreExists(secureDir string) bool {
+	_, err := os.Stat(passcodeStorePath(secureDir))
+	return err == nil
+}
+
 // pbkdf2SHA256 is a stdlib-only PBKDF2-HMAC-SHA256 (avoids an x/crypto dependency).
 func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {
 	prf := hmac.New(sha256.New, password)
