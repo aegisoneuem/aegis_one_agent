@@ -151,6 +151,11 @@ type Config struct {
 	// bandwidth low while giving the server a smooth avg/min/max time series.
 	DexSampleInterval time.Duration
 	DexWindow         time.Duration
+	// DexPingTarget is the host/IP the DEX network sampler pings for latency +
+	// reachability. Empty (default) = auto-detect the default gateway (local-link
+	// health). Set AEGIS_DEX_PING_TARGET to pin a known anchor (e.g. a corp gateway
+	// or 8.8.8.8) when the auto-pick is ambiguous (multiple adapters).
+	DexPingTarget string
 
 	ServerAddress         string
 	LogLevel              string
@@ -346,6 +351,7 @@ func Load() Config {
 		ReconnectSnapshotMinInterval:   durationFromEnv("AEGIS_RECONNECT_SNAPSHOT_MIN_INTERVAL", time.Hour),
 		DexSampleInterval:              durationFromEnv("AEGIS_DEX_SAMPLE_INTERVAL", 15*time.Second),
 		DexWindow:                      durationFromEnv("AEGIS_DEX_WINDOW", 5*time.Minute),
+		DexPingTarget:                  getenv("AEGIS_DEX_PING_TARGET", ""),
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

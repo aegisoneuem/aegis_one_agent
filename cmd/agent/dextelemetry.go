@@ -44,6 +44,11 @@ type dexAgg struct {
 	// Disk performance (PhysicalDisk _Total); aggregated only when a disk sample
 	// reads OK, so it may hold fewer samples than cpu/mem (0 when PDH unavailable).
 	diskQueue, diskIOPS, diskLat stat
+	// Network latency/reachability to the ping target. netRtt holds RTTs of the
+	// probes that got a reply; netAttempts/netLosses yield packet-loss %.
+	netRtt                  stat
+	netAttempts, netLosses  int
+	netTarget               string
 }
 
 func (a *dexAgg) addCPU(v float64) {
@@ -74,6 +79,18 @@ func (a *dexAgg) addDisk(s diskSample) {
 	a.diskLat.add(s.LatencyMs)
 }
 
+func (a *dexAgg) addNet(s netSample) {
+	if !s.OK {
+		return
+	}
+	a.netAttempts++
+	if s.Reachable {
+		a.netRtt.add(s.RttMs)
+	} else {
+		a.netLosses++
+	}
+}
+
 func (a *dexAgg) empty() bool { return a.cpuN == 0 && a.memN == 0 }
 
 func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
@@ -92,6 +109,13 @@ func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
 		r.DiskIopsAvg, r.DiskIopsMin, r.DiskIopsMax = a.diskIOPS.avg(), a.diskIOPS.min, a.diskIOPS.max
 		r.DiskLatencyMsAvg, r.DiskLatencyMsMin, r.DiskLatencyMsMax = a.diskLat.avg(), a.diskLat.min, a.diskLat.max
 	}
+	if a.netAttempts > 0 {
+		if a.netRtt.n > 0 {
+			r.NetRttMsAvg, r.NetRttMsMin, r.NetRttMsMax = a.netRtt.avg(), a.netRtt.min, a.netRtt.max
+		}
+		r.NetLossPct = float64(a.netLosses) / float64(a.netAttempts) * 100
+		r.NetTarget = a.netTarget
+	}
 	return r
 }
 
@@ -107,6 +131,9 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 	sampler.sample() // prime the CPU baseline so the first real sample has a delta
 	disk := newDiskSampler()
 	defer disk.close()
+	netS := newNetSampler(cfg.DexPingTarget)
+	defer netS.close()
+	netTargetIP := netS.TargetIP
 
 	sampleTick := time.NewTicker(cfg.DexSampleInterval)
 	defer sampleTick.Stop()
@@ -126,6 +153,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			// the agent is idle.
 			cpu, cpuOK, mem, memOK := sampler.sample()
 			ds := disk.sample() // advances the PDH rate-counter baseline too
+			ns := netS.sample()
 			if heavyWork.Busy() {
 				// Resource-governor: the agent is mid patch-install / software-deploy.
 				// Drop this reading so DEX reflects the user's device experience, not
@@ -142,6 +170,10 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			}
 			if ds.OK {
 				agg.addDisk(ds)
+			}
+			if ns.OK {
+				agg.addNet(ns)
+				agg.netTarget = netTargetIP
 			}
 		case <-windowTick.C:
 			skipped := busySkipped
@@ -164,7 +196,8 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			}
 			slog.Info("dex-telemetry: window buffered", "samples", rep.SampleCount,
 				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg,
-				"disk_q_avg", rep.DiskQueueAvg, "disk_iops_avg", rep.DiskIopsAvg, "disk_lat_ms_avg", rep.DiskLatencyMsAvg)
+				"disk_q_avg", rep.DiskQueueAvg, "disk_iops_avg", rep.DiskIopsAvg, "disk_lat_ms_avg", rep.DiskLatencyMsAvg,
+				"net_rtt_ms_avg", rep.NetRttMsAvg, "net_loss_pct", rep.NetLossPct, "net_target", rep.NetTarget)
 			signalDrain(drainSignal)
 		}
 	}
