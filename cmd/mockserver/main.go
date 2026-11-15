@@ -1583,12 +1583,13 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			s.inventoryMu.Unlock()
 		}
 		if dt := msg.GetDexTelemetry(); dt != nil {
-			mockPrintf("DEX telemetry -> %s | window=%ds samples=%d | cpu avg/min/max=%.1f/%.1f/%.1f%% | mem_used avg/min/max=%.1f/%.1f/%.1f%% | disk queue avg/max=%.2f/%.2f iops avg/max=%.0f/%.0f lat_ms avg/max=%.2f/%.2f | net %s rtt avg/max=%.1f/%.1fms loss=%.0f%% | batt present=%v ac=%v charge avg/min=%.0f/%.0f%%\n",
+			mockPrintf("DEX telemetry -> %s | window=%ds samples=%d | cpu avg/min/max=%.1f/%.1f/%.1f%% | mem_used avg/min/max=%.1f/%.1f/%.1f%% | disk queue avg/max=%.2f/%.2f iops avg/max=%.0f/%.0f lat_ms avg/max=%.2f/%.2f | net %s rtt avg/max=%.1f/%.1fms loss=%.0f%% | batt present=%v ac=%v charge avg/min=%.0f/%.0f%% | wifi present=%v %q signal avg/min=%.0f/%.0f%%\n",
 				s.identify(dt.DeviceId), dt.WindowSeconds, dt.SampleCount,
 				dt.CpuAvg, dt.CpuMin, dt.CpuMax, dt.MemUsedAvg, dt.MemUsedMin, dt.MemUsedMax,
 				dt.DiskQueueAvg, dt.DiskQueueMax, dt.DiskIopsAvg, dt.DiskIopsMax, dt.DiskLatencyMsAvg, dt.DiskLatencyMsMax,
 				dt.NetTarget, dt.NetRttMsAvg, dt.NetRttMsMax, dt.NetLossPct,
-				dt.BatteryPresent, dt.BatteryAcOnline, dt.BatteryChargePctAvg, dt.BatteryChargePctMin)
+				dt.BatteryPresent, dt.BatteryAcOnline, dt.BatteryChargePctAvg, dt.BatteryChargePctMin,
+				dt.WifiPresent, dt.WifiSsid, dt.WifiSignalPctAvg, dt.WifiSignalPctMin)
 			continue
 		}
 

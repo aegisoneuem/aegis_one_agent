@@ -54,6 +54,12 @@ type dexAgg struct {
 	batterySeen                 bool
 	batteryPresent, batteryACOn bool
 	batteryCharge               stat
+	// Wi-Fi (laptops). present/connected/ssid are last-value; wifiSignal tracks
+	// signal-quality % avg/min/max over the window.
+	wifiSeen                  bool
+	wifiPresent, wifiConnected bool
+	wifiSignal                stat
+	wifiSSID                  string
 }
 
 func (a *dexAgg) addCPU(v float64) {
@@ -108,6 +114,21 @@ func (a *dexAgg) addBattery(b batterySample) {
 	}
 }
 
+func (a *dexAgg) addWifi(w wifiSample) {
+	if !w.OK {
+		return
+	}
+	a.wifiSeen = true
+	a.wifiPresent = w.Present
+	a.wifiConnected = w.Connected
+	if w.SSID != "" {
+		a.wifiSSID = w.SSID
+	}
+	if w.Connected {
+		a.wifiSignal.add(float64(w.SignalPct))
+	}
+}
+
 func (a *dexAgg) empty() bool { return a.cpuN == 0 && a.memN == 0 }
 
 func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
@@ -138,6 +159,14 @@ func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
 		r.BatteryAcOnline = a.batteryACOn
 		if a.batteryCharge.n > 0 {
 			r.BatteryChargePctAvg, r.BatteryChargePctMin, r.BatteryChargePctMax = a.batteryCharge.avg(), a.batteryCharge.min, a.batteryCharge.max
+		}
+	}
+	if a.wifiSeen {
+		r.WifiPresent = a.wifiPresent
+		r.WifiConnected = a.wifiConnected
+		r.WifiSsid = a.wifiSSID
+		if a.wifiSignal.n > 0 {
+			r.WifiSignalPctAvg, r.WifiSignalPctMin, r.WifiSignalPctMax = a.wifiSignal.avg(), a.wifiSignal.min, a.wifiSignal.max
 		}
 	}
 	return r
@@ -179,6 +208,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			ds := disk.sample() // advances the PDH rate-counter baseline too
 			ns := netS.sample()
 			bs := readBattery()
+			ws := readWifi()
 			if heavyWork.Busy() {
 				// Resource-governor: the agent is mid patch-install / software-deploy.
 				// Drop this reading so DEX reflects the user's device experience, not
@@ -201,6 +231,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				agg.netTarget = netTargetIP
 			}
 			agg.addBattery(bs)
+			agg.addWifi(ws)
 		case <-windowTick.C:
 			skipped := busySkipped
 			busySkipped = 0
@@ -224,7 +255,8 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg,
 				"disk_q_avg", rep.DiskQueueAvg, "disk_iops_avg", rep.DiskIopsAvg, "disk_lat_ms_avg", rep.DiskLatencyMsAvg,
 				"net_rtt_ms_avg", rep.NetRttMsAvg, "net_loss_pct", rep.NetLossPct, "net_target", rep.NetTarget,
-				"batt_present", rep.BatteryPresent, "batt_ac", rep.BatteryAcOnline, "batt_charge_avg", rep.BatteryChargePctAvg)
+				"batt_present", rep.BatteryPresent, "batt_ac", rep.BatteryAcOnline, "batt_charge_avg", rep.BatteryChargePctAvg,
+				"wifi_present", rep.WifiPresent, "wifi_signal_avg", rep.WifiSignalPctAvg, "wifi_ssid", rep.WifiSsid)
 			signalDrain(drainSignal)
 		}
 	}
