@@ -108,7 +108,14 @@ func runControlCommand(cmd string) bool {
 	case "start":
 		err = startService()
 	case "stop":
-		err = stopService()
+		// `stop --token <T>` uses the token-gated local control endpoint (works on a
+		// self-protected service); plain `stop` uses the SCM (works only when not
+		// self-protected).
+		if token, wantToken := stopTokenFromArgs(os.Args[2:]); wantToken {
+			err = tokenStop(token)
+		} else {
+			err = stopService()
+		}
 	default:
 		return false
 	}

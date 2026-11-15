@@ -1810,6 +1810,26 @@ func main() {
 		return
 	}
 
+	// mint-token: print a server-signed unprotect token for the agent's local
+	// token-gated stop/uninstall. Usage: mockserver.exe mint-token [device|*] [exp]
+	// (device default "*", exp unix-seconds default 0 = never).
+	if len(os.Args) > 1 && os.Args[1] == "mint-token" {
+		dev := "*"
+		if len(os.Args) > 2 && strings.TrimSpace(os.Args[2]) != "" {
+			dev = os.Args[2]
+		}
+		var exp int64
+		if len(os.Args) > 3 {
+			if v, perr := strconv.ParseInt(strings.TrimSpace(os.Args[3]), 10, 64); perr == nil {
+				exp = v
+			}
+		}
+		payload, _ := json.Marshal(map[string]any{"device": dev, "exp": exp, "nonce": fmt.Sprintf("%d", time.Now().UnixNano())})
+		sig := ed25519.Sign(loadSignKey(), payload)
+		fmt.Println(base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig))
+		return
+	}
+
 	if _, err := readSoftdistTestOptions(os.Getenv); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

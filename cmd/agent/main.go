@@ -603,7 +603,7 @@ func runProcess(parentCtx context.Context) {
 	agentHealth.update(func(h *healthState) {
 		h.version, h.deviceID, h.hostname, h.osName, h.enrolled = cfg.AgentVersion, cfg.DeviceID, cfg.Hostname, cfg.OS, true
 	})
-	startHealthServer(ctx, cfg.HealthAddr)
+	startHealthServer(ctx, cfg.HealthAddr, cfg.DeviceID)
 
 	slog.Info("Aegis One Agent starting up",
 		"server", cfg.ServerAddress,

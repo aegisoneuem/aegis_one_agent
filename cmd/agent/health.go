@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -58,7 +59,7 @@ func (h *healthState) snapshot() map[string]any {
 
 // startHealthServer runs a LOCALHOST-ONLY HTTP server for liveness/status checks
 // (no remote access, no auth needed). GET /health → 200; GET /status → JSON.
-func startHealthServer(ctx context.Context, addr string) {
+func startHealthServer(ctx context.Context, addr, deviceID string) {
 	if strings.TrimSpace(addr) == "" {
 		return // disabled
 	}
@@ -72,6 +73,31 @@ func startHealthServer(ctx context.Context, addr string) {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(agentHealth.snapshot())
+	})
+	// Token-gated local stop: the ONLY local (non-server) stop path when the service
+	// is self-protected. The endpoint is localhost-only, but the AUTHORIZATION is the
+	// server-signed unprotect token in the body — any local user can reach it but
+	// cannot mint a valid token. POST the token; valid → agent shuts down.
+	mux.HandleFunc("/control/stop", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
+		token := strings.TrimSpace(string(body))
+		if ok, reason := verifyUnprotectToken(token, deviceID); !ok {
+			slog.Warn("tamper-protect: LOCAL stop refused — invalid token", "reason", reason)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("refused: " + reason + "\n"))
+			return
+		}
+		slog.Warn("tamper-protect: LOCAL stop AUTHORIZED via control endpoint — shutting down")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("stop authorized — agent shutting down\n"))
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			requestAgentStop()
+		}()
 	})
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
