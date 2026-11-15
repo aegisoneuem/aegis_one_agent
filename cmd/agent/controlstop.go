@@ -45,25 +45,30 @@ func tokenStop(token string) error {
 // stopTokenFromArgs extracts the token for a `stop` control command: --token <V>,
 // --token=<V>, or an empty/-token-prompt which reads one line from stdin. Returns
 // ("", false) when no token mode was requested (caller falls back to SCM stop).
+// Accepts either a short passcode (--passcode/-p) or the long token (--token);
+// both post the same body to /control/stop, which tries passcode then token.
 func stopTokenFromArgs(args []string) (string, bool) {
 	for i, a := range args {
 		switch {
-		case a == "--token-prompt" || a == "-token-prompt" || a == "/token-prompt":
-			return promptToken(), true
-		case strings.HasPrefix(a, "--token=") || strings.HasPrefix(a, "-token="):
+		case a == "--token-prompt" || a == "-token-prompt" || a == "/token-prompt" ||
+			a == "--passcode-prompt" || a == "-passcode-prompt" || a == "/passcode-prompt":
+			return promptSecret(), true
+		case strings.HasPrefix(a, "--token=") || strings.HasPrefix(a, "-token=") ||
+			strings.HasPrefix(a, "--passcode=") || strings.HasPrefix(a, "-passcode=") || strings.HasPrefix(a, "-p="):
 			return strings.SplitN(a, "=", 2)[1], true
-		case a == "--token" || a == "-token" || a == "/token":
+		case a == "--token" || a == "-token" || a == "/token" ||
+			a == "--passcode" || a == "-passcode" || a == "/passcode" || a == "-p":
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				return args[i+1], true
 			}
-			return promptToken(), true // flag with no value → prompt
+			return promptSecret(), true // flag with no value → prompt
 		}
 	}
 	return "", false
 }
 
-func promptToken() string {
-	fmt.Print("Enter unprotect token: ")
+func promptSecret() string {
+	fmt.Print("Enter unprotect passcode/token: ")
 	s, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return strings.TrimSpace(s)
 }

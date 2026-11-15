@@ -1129,6 +1129,25 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			mockPrintf("Sent command -> id: stop-001, type: stop_agent, token_device=%s exp=%d invalid=%v (signed)\n", dev, exp, invalid)
 		}
 
+		// Optionally set a SHORT unprotect passcode (ManageEngine-style). AEGIS_SET_PASSCODE
+		// = the 8-10 char code; AEGIS_PASSCODE_ISSUED_AT overrides issued_at. The agent
+		// stores only a PBKDF2 hash; stop/uninstall then accept this passcode.
+		if pc := strings.TrimSpace(os.Getenv("AEGIS_SET_PASSCODE")); pc != "" {
+			issued := time.Now().Unix()
+			if v, perr := strconv.ParseInt(strings.TrimSpace(os.Getenv("AEGIS_PASSCODE_ISSUED_AT")), 10, 64); perr == nil && v > 0 {
+				issued = v
+			}
+			payload, _ := json.Marshal(map[string]any{"mode": "static", "passcode": pc, "issued_at": issued})
+			setPassCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "setpass-001", Type: "set_unprotect_secret", Payload: payload,
+			})}}
+			if err := connection.send(setPassCmd); err != nil {
+				log.Printf("failed to send set_unprotect_secret command: %v", err)
+				return
+			}
+			mockPrintf("Sent command -> id: setpass-001, type: set_unprotect_secret, passcode=**** issued_at=%d (signed)\n", issued)
+		}
+
 		// Optionally push one signed remote_control command (RC-0 session plumbing).
 		// AEGIS_RC=1 enables it; shape with AEGIS_RC_ACTION (start|stop|status|join|
 		// pass_control, default start), AEGIS_RC_SESSION (default rc-sess-001),

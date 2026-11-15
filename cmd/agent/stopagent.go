@@ -41,8 +41,8 @@ func requestAgentStop() {
 // token (payload = the token string). Always token-gated — this is the authorized
 // stop path regardless of the tamper-protect switch.
 func (d *dispatcher) handleStopAgentCmd(ctx context.Context, _ pb.AgentControlPlaneClient, cmd *pb.Command) {
-	token := strings.TrimSpace(string(cmd.Payload))
-	ok, reason := verifyUnprotectToken(token, d.cfg.DeviceID)
+	secret := strings.TrimSpace(string(cmd.Payload))
+	ok, reason := authorizeUnprotect(secret, d.cfg.DeviceID)
 	if !ok {
 		slog.Warn("tamper-protect: stop_agent REFUSED — invalid token", "command_id", cmd.CommandId, "reason", reason)
 		recordAuditEvent(ctx, d.outbox, auditlog.Event{

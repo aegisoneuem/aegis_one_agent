@@ -23,6 +23,7 @@ const (
 	actionRemoteControl  = "remote_control"
 	actionSetCustomAttr  = "set_custom_attributes"
 	actionStopAgent      = "stop_agent"
+	actionSetUnprotect   = "set_unprotect_secret"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.

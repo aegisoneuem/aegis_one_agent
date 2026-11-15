@@ -84,9 +84,9 @@ func startHealthServer(ctx context.Context, addr, deviceID string) {
 			return
 		}
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
-		token := strings.TrimSpace(string(body))
-		if ok, reason := verifyUnprotectToken(token, deviceID); !ok {
-			slog.Warn("tamper-protect: LOCAL stop refused — invalid token", "reason", reason)
+		secret := strings.TrimSpace(string(body))
+		if ok, reason := authorizeUnprotect(secret, deviceID); !ok {
+			slog.Warn("tamper-protect: LOCAL stop refused", "reason", reason)
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte("refused: " + reason + "\n"))
 			return
