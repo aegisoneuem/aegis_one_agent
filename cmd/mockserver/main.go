@@ -1096,6 +1096,39 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// Optionally push a token-authorized stop_agent command (tamper-protect).
+		// AEGIS_STOP_AGENT=1 enables it; AEGIS_STOP_TOKEN_DEVICE (default "*"),
+		// AEGIS_STOP_TOKEN_EXP (unix, 0=never), AEGIS_STOP_TOKEN_INVALID=1 (mint with
+		// the WRONG key to test refusal).
+		if strings.TrimSpace(os.Getenv("AEGIS_STOP_AGENT")) != "" {
+			dev := strings.TrimSpace(os.Getenv("AEGIS_STOP_TOKEN_DEVICE"))
+			if dev == "" {
+				dev = "*"
+			}
+			var exp int64
+			if v, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("AEGIS_STOP_TOKEN_EXP")), 10, 64); err == nil {
+				exp = v
+			}
+			tokenPayload, _ := json.Marshal(map[string]any{"device": dev, "exp": exp, "nonce": fmt.Sprintf("%d", time.Now().UnixNano())})
+			signKey := loadSignKey()
+			invalid := strings.TrimSpace(os.Getenv("AEGIS_STOP_TOKEN_INVALID")) != ""
+			if invalid {
+				if _, wrong, err := ed25519.GenerateKey(rand.Reader); err == nil {
+					signKey = wrong // sign with a key the agent does NOT trust
+				}
+			}
+			sig := ed25519.Sign(signKey, tokenPayload)
+			token := base64.RawURLEncoding.EncodeToString(tokenPayload) + "." + base64.RawURLEncoding.EncodeToString(sig)
+			stopCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "stop-001", Type: "stop_agent", Payload: []byte(token),
+			})}}
+			if err := connection.send(stopCmd); err != nil {
+				log.Printf("failed to send stop_agent command: %v", err)
+				return
+			}
+			mockPrintf("Sent command -> id: stop-001, type: stop_agent, token_device=%s exp=%d invalid=%v (signed)\n", dev, exp, invalid)
+		}
+
 		// Optionally push one signed remote_control command (RC-0 session plumbing).
 		// AEGIS_RC=1 enables it; shape with AEGIS_RC_ACTION (start|stop|status|join|
 		// pass_control, default start), AEGIS_RC_SESSION (default rc-sess-001),

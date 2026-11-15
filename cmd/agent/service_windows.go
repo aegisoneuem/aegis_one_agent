@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/config"
 )
 
 const (
@@ -23,8 +25,15 @@ const (
 
 // runAgentEntry runs as a Windows service when launched by the SCM, otherwise in
 // the console (dev), stopping gracefully on Ctrl+C.
+// serviceSelfProtect is read once before the service control loop starts. When
+// true (AEGIS_TAMPER_PROTECT), the service does NOT accept the SCM STOP control,
+// so `sc stop` / services.msc fail — the only legit stop is a token-authorized
+// stop_agent command.
+var serviceSelfProtect bool
+
 func runAgentEntry() {
 	if isSvc, err := svc.IsWindowsService(); err == nil && isSvc {
+		serviceSelfProtect = config.Load().TamperProtect
 		if err := svc.Run(serviceName, &agentService{}); err != nil {
 			os.Exit(1) // no console to print to
 		}
@@ -39,7 +48,13 @@ func runAgentEntry() {
 type agentService struct{}
 
 func (a *agentService) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- svc.Status) (bool, uint32) {
-	const accepted = svc.AcceptStop | svc.AcceptShutdown
+	// Self-protected: accept SHUTDOWN (clean OS shutdown) but NOT STOP, so an admin's
+	// `sc stop` / services.msc stop fails — the only stop is a token-authorized
+	// stop_agent command (which cancels the context directly, not via the SCM).
+	accepted := svc.AcceptShutdown
+	if !serviceSelfProtect {
+		accepted |= svc.AcceptStop
+	}
 	s <- svc.Status{State: svc.StartPending}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -517,7 +517,13 @@ func copyFile(src, dst string) error {
 // runProcess is the agent's actual work: set up everything and run the connect
 // loop until ctx is cancelled (graceful shutdown, e.g. a service Stop). Both the
 // console and Windows-service entrypoints call this.
-func runProcess(ctx context.Context) {
+func runProcess(parentCtx context.Context) {
+	// Derive a cancellable context and expose its cancel so a token-authorized
+	// stop_agent command can shut the agent down cleanly (the ONLY internal stop
+	// path when the service is self-protected / does not accept the SCM stop).
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+	setAgentStopFunc(cancel)
 	cfg := config.Load()
 
 	// The agent always logs to a file (a service has no console). Default to
