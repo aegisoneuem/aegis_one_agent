@@ -722,6 +722,13 @@ func runProcess(ctx context.Context) {
 	// (the floor is sealed with this key, so a key reset resets the floor).
 	checkKeyIntegrity(cfg.SecureDir, keys, outbox, cfg.DeviceID)
 
+	// Self-integrity: detect an in-place swap/patch of the agent binary (same
+	// version, different hash) and raise binary_tampered. Opt-in (hardening) so
+	// routine same-version dev rebuilds don't alert.
+	if cfg.BinaryIntegrity {
+		checkBinaryIntegrity(outbox, cfg.DeviceID, cfg.AgentVersion)
+	}
+
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
 	// provider are ready (so a tamper raises a streamed/buffered alert) and before

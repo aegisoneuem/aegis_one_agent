@@ -157,6 +157,12 @@ type Config struct {
 	// or 8.8.8.8) when the auto-pick is ambiguous (multiple adapters).
 	DexPingTarget string
 
+	// BinaryIntegrity enables the startup self-integrity check (a {version, hash}
+	// tripwire that raises binary_tampered when the agent exe changes WITHOUT a
+	// version change). Off by default so routine same-version dev rebuilds don't
+	// alert; production/hardened deployments set AEGIS_BINARY_INTEGRITY=1.
+	BinaryIntegrity bool
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -352,6 +358,7 @@ func Load() Config {
 		DexSampleInterval:              durationFromEnv("AEGIS_DEX_SAMPLE_INTERVAL", 15*time.Second),
 		DexWindow:                      durationFromEnv("AEGIS_DEX_WINDOW", 5*time.Minute),
 		DexPingTarget:                  getenv("AEGIS_DEX_PING_TARGET", ""),
+		BinaryIntegrity:                int64FromEnv("AEGIS_BINARY_INTEGRITY", 0) == 1,
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
