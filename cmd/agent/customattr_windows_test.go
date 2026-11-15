@@ -54,6 +54,19 @@ func TestEvalServiceState_Real(t *testing.T) {
 	}
 }
 
+// file version of a known system DLL (always has a version resource).
+func TestEvalFileVersion_Real(t *testing.T) {
+	v, ok := evalAttribute(attrDefinition{Provider: "file", Args: map[string]string{"path": `C:\Windows\System32\kernel32.dll`, "attr": "version"}})
+	if !ok || v == "" {
+		t.Skip("kernel32.dll version unavailable in this environment")
+	}
+	t.Logf("kernel32.dll version = %q", v)
+	// a file with no version resource → not ok
+	if _, ok := evalAttribute(attrDefinition{Provider: "file", Args: map[string]string{"path": `C:\Windows\System32\drivers\etc\hosts`, "attr": "version"}}); ok {
+		t.Fatal("a file with no version resource must be ok=false")
+	}
+}
+
 // Bad root / missing key must be refused, never panic.
 func TestEvalRegistryAttr_BadInputs(t *testing.T) {
 	if _, ok := evalAttribute(attrDefinition{Provider: "registry", Args: map[string]string{"root": "BOGUS", "key": "x", "name": "y"}}); ok {
