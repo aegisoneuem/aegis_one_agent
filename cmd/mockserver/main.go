@@ -1148,6 +1148,23 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			mockPrintf("Sent command -> id: setpass-001, type: set_unprotect_secret, passcode=**** issued_at=%d (signed)\n", issued)
 		}
 
+		// AEGIS_CLEAR_PASSCODE=1 → server-controlled OFF switch (removes the passcode).
+		if strings.TrimSpace(os.Getenv("AEGIS_CLEAR_PASSCODE")) != "" {
+			issued := time.Now().Unix()
+			if v, perr := strconv.ParseInt(strings.TrimSpace(os.Getenv("AEGIS_PASSCODE_ISSUED_AT")), 10, 64); perr == nil && v > 0 {
+				issued = v
+			}
+			payload, _ := json.Marshal(map[string]any{"mode": "clear", "issued_at": issued})
+			clrCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "clearpass-001", Type: "set_unprotect_secret", Payload: payload,
+			})}}
+			if err := connection.send(clrCmd); err != nil {
+				log.Printf("failed to send clear passcode command: %v", err)
+				return
+			}
+			mockPrintf("Sent command -> id: clearpass-001, type: set_unprotect_secret, mode=clear issued_at=%d (signed)\n", issued)
+		}
+
 		// Optionally push one signed remote_control command (RC-0 session plumbing).
 		// AEGIS_RC=1 enables it; shape with AEGIS_RC_ACTION (start|stop|status|join|
 		// pass_control, default start), AEGIS_RC_SESSION (default rc-sess-001),

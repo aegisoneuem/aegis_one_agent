@@ -751,7 +751,7 @@ func runProcess(parentCtx context.Context) {
 	// survive a restart and stream with inventory.
 	loadStoredCustomAttr(cfg.SecureDir)
 	// Load the persisted unprotect passcode hash (short code for stop/uninstall).
-	loadStoredPasscode(cfg.SecureDir)
+	loadStoredPasscode(cfg.SecureDir, outbox, cfg.DeviceID)
 
 	// Fail-closed FIPS: if FIPS is required (by AEGIS_REQUIRE_FIPS or the active
 	// policy), refuse to start unless the FIPS 140-3 module is active.

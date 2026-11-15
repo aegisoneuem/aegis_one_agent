@@ -133,7 +133,8 @@ func reportSecurityPosture(cfg config.Config, outbox chan<- *pb.AgentMessage, de
 	slog.Info("SECURITY POSTURE — client certificate", "value", p.ClientCert)
 	slog.Info("SECURITY POSTURE — active policy", "value", p.Policy)
 	slog.Info("SECURITY POSTURE — tamper protection", "master", cfg.TamperProtect, "binary_integrity", cfg.BinaryIntegrity,
-		"passcode_set", passcodeStoreExists(cfg.SecureDir), "service_self_protect", cfg.TamperProtect || passcodeStoreExists(cfg.SecureDir))
+		"passcode_set", passcodeStoreExists(cfg.SecureDir), "provisioned_marker", readUnprotectMarker(),
+		"service_self_protect", cfg.TamperProtect || passcodeStoreExists(cfg.SecureDir) || readUnprotectMarker())
 	if !p.CommandAuthzOK {
 		slog.Warn("SECURITY POSTURE — command authorization is NOT production-ready", "reason", p.CommandAuthz)
 	}

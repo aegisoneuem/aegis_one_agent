@@ -118,10 +118,20 @@ func verifyPasscode(input string) bool {
 	return hmac.Equal(h, s.Hash)
 }
 
-// loadStoredPasscode reads the persisted passcode hash at startup.
-func loadStoredPasscode(secureDir string) {
+// loadStoredPasscode reads the persisted passcode hash at startup. FAIL-CLOSED: if
+// the file is gone but the provisioned marker is present, the passcode file was
+// deleted — the service still self-protects (see serviceSelfProtect) and we raise
+// unprotect_secret_tampered, so deleting the file does NOT remove protection.
+func loadStoredPasscode(secureDir string, outbox chan<- *pb.AgentMessage, deviceID string) {
 	data, err := os.ReadFile(passcodeStorePath(secureDir))
 	if err != nil {
+		if readUnprotectMarker() {
+			slog.Error("SECURITY: unprotect passcode file is MISSING but was provisioned — tamper; service stays self-protected (awaiting server re-push)")
+			recordAuditEvent(context.Background(), outbox, auditlog.Event{
+				DeviceID: deviceID, EventType: "unprotect_secret_tampered", Decision: "deleted",
+				Reason: "passcode file deleted but provisioned marker present — fail-closed, still self-protected",
+			})
+		}
 		return
 	}
 	var s storedPasscode
@@ -131,6 +141,7 @@ func loadStoredPasscode(secureDir string) {
 	passcodeMu.Lock()
 	passcodeState = &s
 	passcodeMu.Unlock()
+	_ = writeUnprotectMarker() // ensure the marker exists for any already-provisioned agent
 	slog.Info("tamper-protect: unprotect passcode loaded", "mode", s.Mode, "issued_at", s.IssuedAt)
 }
 
@@ -150,16 +161,34 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 	if spec.Mode == "" {
 		spec.Mode = "static"
 	}
+	// Anti-rollback applies to BOTH set and clear so a replayed old command can't
+	// drop (or re-impose) protection.
+	if spec.IssuedAt <= currentPasscodeIssuedAt() {
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "unprotect secret not newer than the active one (anti-rollback)"))
+		return
+	}
+	// Server-controlled OFF switch: mode=clear removes the passcode (file + marker +
+	// in-memory). The legit way to turn protection off — NOT deleting the file.
+	if spec.Mode == "clear" {
+		_ = os.Remove(passcodeStorePath(d.cfg.SecureDir))
+		_ = deleteUnprotectMarker()
+		passcodeMu.Lock()
+		passcodeState = nil
+		passcodeMu.Unlock()
+		recordAuditEvent(ctx, d.outbox, auditlog.Event{
+			DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_cleared", CommandID: cmd.CommandId,
+			Actor: cmd.Actor, Source: cmd.Source, Decision: "cleared", Reason: "unprotect passcode cleared by server",
+		})
+		slog.Info("tamper-protect: unprotect passcode CLEARED", "command_id", cmd.CommandId)
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_SUCCESS, "unprotect passcode cleared"))
+		return
+	}
 	if spec.Mode != "static" {
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "unsupported unprotect mode: "+spec.Mode))
 		return
 	}
 	if len(spec.Passcode) < 4 {
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "passcode too short"))
-		return
-	}
-	if spec.IssuedAt <= currentPasscodeIssuedAt() {
-		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "unprotect secret not newer than the active one (anti-rollback)"))
 		return
 	}
 	salt := make([]byte, passcodeSaltLen)
@@ -181,6 +210,7 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 	passcodeMu.Lock()
 	passcodeState = &s
 	passcodeMu.Unlock()
+	_ = writeUnprotectMarker() // fail-closed anchor: survives a passcode-file delete
 	recordAuditEvent(ctx, d.outbox, auditlog.Event{
 		DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_set", CommandID: cmd.CommandId,
 		Actor: cmd.Actor, Source: cmd.Source, Decision: "applied", Reason: "unprotect passcode set (mode=static)",
