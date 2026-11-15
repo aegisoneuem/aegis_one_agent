@@ -46,9 +46,14 @@ type dexAgg struct {
 	diskQueue, diskIOPS, diskLat stat
 	// Network latency/reachability to the ping target. netRtt holds RTTs of the
 	// probes that got a reply; netAttempts/netLosses yield packet-loss %.
-	netRtt                  stat
-	netAttempts, netLosses  int
-	netTarget               string
+	netRtt                 stat
+	netAttempts, netLosses int
+	netTarget              string
+	// Battery (laptops). batterySeen gates reporting; present/acOnline hold the last
+	// sampled state; batteryCharge tracks charge % avg/min/max (drain) over the window.
+	batterySeen                 bool
+	batteryPresent, batteryACOn bool
+	batteryCharge               stat
 }
 
 func (a *dexAgg) addCPU(v float64) {
@@ -91,6 +96,18 @@ func (a *dexAgg) addNet(s netSample) {
 	}
 }
 
+func (a *dexAgg) addBattery(b batterySample) {
+	if !b.OK {
+		return
+	}
+	a.batterySeen = true
+	a.batteryPresent = b.Present
+	a.batteryACOn = b.ACOnline
+	if b.Present && b.ChargePct >= 0 {
+		a.batteryCharge.add(float64(b.ChargePct))
+	}
+}
+
 func (a *dexAgg) empty() bool { return a.cpuN == 0 && a.memN == 0 }
 
 func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
@@ -115,6 +132,13 @@ func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
 		}
 		r.NetLossPct = float64(a.netLosses) / float64(a.netAttempts) * 100
 		r.NetTarget = a.netTarget
+	}
+	if a.batterySeen {
+		r.BatteryPresent = a.batteryPresent
+		r.BatteryAcOnline = a.batteryACOn
+		if a.batteryCharge.n > 0 {
+			r.BatteryChargePctAvg, r.BatteryChargePctMin, r.BatteryChargePctMax = a.batteryCharge.avg(), a.batteryCharge.min, a.batteryCharge.max
+		}
 	}
 	return r
 }
@@ -154,6 +178,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			cpu, cpuOK, mem, memOK := sampler.sample()
 			ds := disk.sample() // advances the PDH rate-counter baseline too
 			ns := netS.sample()
+			bs := readBattery()
 			if heavyWork.Busy() {
 				// Resource-governor: the agent is mid patch-install / software-deploy.
 				// Drop this reading so DEX reflects the user's device experience, not
@@ -175,6 +200,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				agg.addNet(ns)
 				agg.netTarget = netTargetIP
 			}
+			agg.addBattery(bs)
 		case <-windowTick.C:
 			skipped := busySkipped
 			busySkipped = 0
@@ -197,7 +223,8 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			slog.Info("dex-telemetry: window buffered", "samples", rep.SampleCount,
 				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg,
 				"disk_q_avg", rep.DiskQueueAvg, "disk_iops_avg", rep.DiskIopsAvg, "disk_lat_ms_avg", rep.DiskLatencyMsAvg,
-				"net_rtt_ms_avg", rep.NetRttMsAvg, "net_loss_pct", rep.NetLossPct, "net_target", rep.NetTarget)
+				"net_rtt_ms_avg", rep.NetRttMsAvg, "net_loss_pct", rep.NetLossPct, "net_target", rep.NetTarget,
+				"batt_present", rep.BatteryPresent, "batt_ac", rep.BatteryAcOnline, "batt_charge_avg", rep.BatteryChargePctAvg)
 			signalDrain(drainSignal)
 		}
 	}
