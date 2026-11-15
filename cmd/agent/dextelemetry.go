@@ -11,12 +11,39 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// dexAgg accumulates CPU and memory samples over a window into avg/min/max.
+// stat accumulates samples of one metric into avg/min/max over a window.
+type stat struct {
+	n             int
+	sum, min, max float64
+}
+
+func (s *stat) add(v float64) {
+	if s.n == 0 || v < s.min {
+		s.min = v
+	}
+	if s.n == 0 || v > s.max {
+		s.max = v
+	}
+	s.sum += v
+	s.n++
+}
+
+func (s *stat) avg() float64 {
+	if s.n == 0 {
+		return 0
+	}
+	return s.sum / float64(s.n)
+}
+
+// dexAgg accumulates CPU, memory, and disk samples over a window into avg/min/max.
 type dexAgg struct {
-	cpuN               int
+	cpuN                   int
 	cpuSum, cpuMin, cpuMax float64
-	memN               int
+	memN                   int
 	memSum, memMin, memMax float64
+	// Disk performance (PhysicalDisk _Total); aggregated only when a disk sample
+	// reads OK, so it may hold fewer samples than cpu/mem (0 when PDH unavailable).
+	diskQueue, diskIOPS, diskLat stat
 }
 
 func (a *dexAgg) addCPU(v float64) {
@@ -41,6 +68,12 @@ func (a *dexAgg) addMem(v float64) {
 	a.memN++
 }
 
+func (a *dexAgg) addDisk(s diskSample) {
+	a.diskQueue.add(s.QueueLength)
+	a.diskIOPS.add(s.IOPS)
+	a.diskLat.add(s.LatencyMs)
+}
+
 func (a *dexAgg) empty() bool { return a.cpuN == 0 && a.memN == 0 }
 
 func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
@@ -53,6 +86,11 @@ func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
 	}
 	if a.memN > 0 {
 		r.MemUsedAvg, r.MemUsedMin, r.MemUsedMax = a.memSum/float64(a.memN), a.memMin, a.memMax
+	}
+	if a.diskQueue.n > 0 {
+		r.DiskQueueAvg, r.DiskQueueMin, r.DiskQueueMax = a.diskQueue.avg(), a.diskQueue.min, a.diskQueue.max
+		r.DiskIopsAvg, r.DiskIopsMin, r.DiskIopsMax = a.diskIOPS.avg(), a.diskIOPS.min, a.diskIOPS.max
+		r.DiskLatencyMsAvg, r.DiskLatencyMsMin, r.DiskLatencyMsMax = a.diskLat.avg(), a.diskLat.min, a.diskLat.max
 	}
 	return r
 }
@@ -67,6 +105,8 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 	defer recoverLog("dex-telemetry")
 	sampler := newResourceSampler()
 	sampler.sample() // prime the CPU baseline so the first real sample has a delta
+	disk := newDiskSampler()
+	defer disk.close()
 
 	sampleTick := time.NewTicker(cfg.DexSampleInterval)
 	defer sampleTick.Stop()
@@ -85,6 +125,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			// inflated. We advance the baseline either way, and only aggregate when
 			// the agent is idle.
 			cpu, cpuOK, mem, memOK := sampler.sample()
+			ds := disk.sample() // advances the PDH rate-counter baseline too
 			if heavyWork.Busy() {
 				// Resource-governor: the agent is mid patch-install / software-deploy.
 				// Drop this reading so DEX reflects the user's device experience, not
@@ -98,6 +139,9 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 			}
 			if memOK {
 				agg.addMem(mem)
+			}
+			if ds.OK {
+				agg.addDisk(ds)
 			}
 		case <-windowTick.C:
 			skipped := busySkipped
@@ -119,7 +163,8 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				continue
 			}
 			slog.Info("dex-telemetry: window buffered", "samples", rep.SampleCount,
-				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg)
+				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg,
+				"disk_q_avg", rep.DiskQueueAvg, "disk_iops_avg", rep.DiskIopsAvg, "disk_lat_ms_avg", rep.DiskLatencyMsAvg)
 			signalDrain(drainSignal)
 		}
 	}
