@@ -58,7 +58,11 @@ func fullInventoryFingerprint(rep *pb.FullInventoryReport) string {
 		id.UptimeSeconds = 0
 		id.BootTime = 0
 	}
-	bytes, err := proto.Marshal(snap)
+	// Deterministic marshal: custom_properties (and provider args) are proto maps,
+	// whose default marshal order is RANDOMIZED — without this, an unchanged report
+	// would hash differently every cycle and re-send the full inventory forever
+	// (drift storm). Deterministic sorts map keys for a stable fingerprint.
+	bytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(snap)
 	if err != nil {
 		// Marshal of a proto we just built should never fail. Return a
 		// unique value so the "unchanged" path cannot accidentally match.
@@ -124,6 +128,9 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 		// DEX score. Native event-log read; best-effort. A changed count is a
 		// meaningful drift, so it is NOT excluded from the fingerprint.
 		rep.DexHealth = collectDexHealth()
+		// Server-defined custom properties (signed definitions, evaluated locally).
+		// nil when none are active; a changed value is meaningful drift.
+		rep.CustomProperties = currentCustomProperties()
 		rep.InstalledApps = make([]*pb.InstalledApp, 0, len(apps))
 		for _, a := range apps {
 			rep.InstalledApps = append(rep.InstalledApps, &pb.InstalledApp{

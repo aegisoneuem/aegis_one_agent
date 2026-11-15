@@ -21,6 +21,7 @@ const (
 	actionAuditQuery     = "audit_query"
 	actionSetPolicy      = "set_policy"
 	actionRemoteControl  = "remote_control"
+	actionSetCustomAttr  = "set_custom_attributes"
 )
 
 // actionStatusMsg wraps an ActionStatus in an AgentMessage for the outbox/stream.

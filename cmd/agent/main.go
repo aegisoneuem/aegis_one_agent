@@ -728,6 +728,9 @@ func runProcess(ctx context.Context) {
 	// the FIPS gate (so a policy FIPS floor is enforced fail-closed).
 	setPolicyLockdownThreshold(cfg.PolicyLockdownThreshold)
 	loadStoredPolicy(cfg.SecureDir, keys, outbox, cfg.DeviceID)
+	// Re-verify + load any persisted custom-attribute definitions (signed) so they
+	// survive a restart and stream with inventory.
+	loadStoredCustomAttr(cfg.SecureDir)
 
 	// Fail-closed FIPS: if FIPS is required (by AEGIS_REQUIRE_FIPS or the active
 	// policy), refuse to start unless the FIPS 140-3 module is active.

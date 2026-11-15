@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1059,6 +1060,42 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 		}
 
+		// Optionally push one signed set_custom_attributes command (Custom Attributes
+		// engine). AEGIS_CUSTOM_ATTR = a JSON array of {name, provider, args};
+		// AEGIS_CUSTOM_ATTR_ISSUED_AT overrides the issued_at (default = now).
+		// e.g. AEGIS_CUSTOM_ATTR=[{"name":"os_product","provider":"registry","args":{"root":"HKLM","key":"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion","name":"ProductName"}}]
+		if caEnv := strings.TrimSpace(os.Getenv("AEGIS_CUSTOM_ATTR")); caEnv != "" {
+			var defs []struct {
+				Name     string            `json:"name"`
+				Provider string            `json:"provider"`
+				Args     map[string]string `json:"args"`
+			}
+			if err := json.Unmarshal([]byte(caEnv), &defs); err != nil {
+				mockPrintf("AEGIS_CUSTOM_ATTR parse error: %v\n", err)
+			} else {
+				issued := time.Now().Unix()
+				if v, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("AEGIS_CUSTOM_ATTR_ISSUED_AT")), 10, 64); err == nil && v > 0 {
+					issued = v
+				}
+				spec := &pb.CustomAttributeSpec{IssuedAt: issued}
+				for _, d := range defs {
+					spec.Definitions = append(spec.Definitions, &pb.CustomAttributeDefinition{Name: d.Name, Provider: d.Provider, Args: d.Args})
+				}
+				if payload, err := proto.Marshal(spec); err != nil {
+					log.Printf("failed to marshal custom-attr spec: %v", err)
+				} else {
+					caCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+						CommandId: "custattr-001", Type: "set_custom_attributes", Payload: payload,
+					})}}
+					if err := connection.send(caCmd); err != nil {
+						log.Printf("failed to send set_custom_attributes command: %v", err)
+						return
+					}
+					mockPrintf("Sent command -> id: custattr-001, type: set_custom_attributes, defs=%d issued_at=%d (signed)\n", len(spec.Definitions), issued)
+				}
+			}
+		}
+
 		// Optionally push one signed remote_control command (RC-0 session plumbing).
 		// AEGIS_RC=1 enables it; shape with AEGIS_RC_ACTION (start|stop|status|join|
 		// pass_control, default start), AEGIS_RC_SESSION (default rc-sess-001),
@@ -1621,6 +1658,16 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 						break
 					}
 					mockPrintf("    fault: %-32s crashes=%d hangs=%d\n", f.GetName(), f.GetCrashes(), f.GetHangs())
+				}
+			}
+			if cp := fi.GetCustomProperties(); len(cp) > 0 {
+				keys := make([]string, 0, len(cp))
+				for k := range cp {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					mockPrintf("  custom-attr: %-24s = %q\n", k, cp[k])
 				}
 			}
 			shownAppx := fi.GetInstalledAppx()
