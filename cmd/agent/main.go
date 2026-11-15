@@ -728,6 +728,12 @@ func runProcess(ctx context.Context) {
 	if cfg.BinaryIntegrity {
 		checkBinaryIntegrity(outbox, cfg.DeviceID, cfg.AgentVersion)
 	}
+	// Tamper-protection suite (master switch). Step 1: re-apply the install-dir ACL
+	// (SYSTEM+Admins full, Users read-only) so a non-admin cannot modify agent files,
+	// and a loosened ACL self-heals on restart.
+	if cfg.TamperProtect {
+		hardenInstallTree()
+	}
 
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key

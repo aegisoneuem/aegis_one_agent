@@ -163,6 +163,12 @@ type Config struct {
 	// alert; production/hardened deployments set AEGIS_BINARY_INTEGRITY=1.
 	BinaryIntegrity bool
 
+	// TamperProtect is the master switch for the tamper-protection suite (install-
+	// dir ACL hardening, service self-protection / no-accept-stop, token-gated
+	// stop/uninstall, watchdog self-heal). OFF by default so dev `sc stop` + rebuilds
+	// work; production/hardened deployments set AEGIS_TAMPER_PROTECT=1.
+	TamperProtect bool
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -359,6 +365,7 @@ func Load() Config {
 		DexWindow:                      durationFromEnv("AEGIS_DEX_WINDOW", 5*time.Minute),
 		DexPingTarget:                  getenv("AEGIS_DEX_PING_TARGET", ""),
 		BinaryIntegrity:                int64FromEnv("AEGIS_BINARY_INTEGRITY", 0) == 1,
+		TamperProtect:                  int64FromEnv("AEGIS_TAMPER_PROTECT", 0) == 1,
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),
