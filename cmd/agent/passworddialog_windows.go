@@ -3,6 +3,7 @@
 package main
 
 import (
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -31,7 +32,16 @@ var (
 	procGetSystemMetric = pwUser32.NewProc("GetSystemMetrics")
 	procSetForeground   = pwUser32.NewProc("SetForegroundWindow")
 	procGetModuleHandle = pwKernel32.NewProc("GetModuleHandleW")
+	procGetConsoleWin   = pwKernel32.NewProc("GetConsoleWindow")
 )
+
+// hideConsoleWindow hides this process's console window (the MSI launches the
+// uninstall-check exe as a console app; its log window is ugly during the prompt).
+func hideConsoleWindow() {
+	if h, _, _ := procGetConsoleWin.Call(); h != 0 {
+		procShowWindow.Call(h, 0) // SW_HIDE
+	}
+}
 
 const (
 	wsOverlapped   = 0x00000000
@@ -86,6 +96,10 @@ var (
 )
 
 func promptPasswordDialog(title, prompt string) (string, bool) {
+	// A Win32 window + its message loop MUST live on one OS thread; without this Go
+	// may migrate the goroutine and messages stop pumping → "Not Responding"/hang.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pwResult, pwOK, pwEditHwnd = "", false, 0
 	hInst, _, _ := procGetModuleHandle.Call(0)
 	className, _ := syscall.UTF16PtrFromString("AegisPwDlg")

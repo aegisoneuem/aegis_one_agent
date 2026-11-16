@@ -122,17 +122,24 @@ func uninstallCheck(args []string) error {
 	// Interactive uninstall (Add/Remove Programs) with no/invalid passcode: pop a
 	// native passcode prompt, up to 3 tries. Silent (/qn, uiLevel=2) never prompts —
 	// it uses the UNINSTALLPASSCODE property. uiLevel: full=5 reduced=4 basic=3 none=2.
+	const maxPromptTries = 3
 	if !authorized && ui >= 3 {
+		hideConsoleWindow() // suppress the ugly console log window during the prompt
 		uninstallDebugf("interactive (ui=%d), no valid passcode -> prompting", ui)
-		for i := 0; i < 3 && !authorized; i++ {
-			code, ok := promptPasswordDialog("AegisOne Client — Uninstall",
-				"This agent is tamper-protected. Enter the unprotect passcode to uninstall:")
+		msg := "This agent is tamper-protected. Enter the unprotect passcode to uninstall:"
+		for i := 0; i < maxPromptTries && !authorized; i++ {
+			code, ok := promptPasswordDialog("AegisOne Client — Uninstall", msg)
 			uninstallDebugf("prompt attempt %d: shown=%v", i+1, ok)
 			if !ok {
 				return fmt.Errorf("uninstall cancelled")
 			}
 			if ok2, _ := authorizeUnprotect(code, cfg.DeviceID); ok2 {
 				secret, authorized = code, true
+				break
+			}
+			left := maxPromptTries - i - 1
+			if left > 0 {
+				msg = fmt.Sprintf("Incorrect passcode — %d attempt(s) left.\nEnter the unprotect passcode to uninstall:", left)
 			}
 		}
 	}
