@@ -26,14 +26,19 @@ func runTamperWatchdog(ctx context.Context, cfg config.Config, outbox chan<- *pb
 	if !runningAsService {
 		return
 	}
-	ensureBinaryBackup(cfg.SecureDir) // one-time "last known good" copy of the exe
+	ensureBinaryBackup(cfg.SecureDir, cfg.AgentVersion) // "last known good" copy of the exe
 	t := time.NewTicker(tamperWatchdogInterval)
 	defer t.Stop()
+	// Hash-based replace check is heavier (reads the 15 MB exe + backup), so run it
+	// only every Nth tick (~5 min), not every 30 s.
+	const replaceCheckEvery = 10
+	tick := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			tick++
 			if !(cfg.TamperProtect || passcodeStoreExists(cfg.SecureDir) || readUnprotectMarker()) {
 				continue // not self-protected — nothing to guard
 			}
@@ -48,11 +53,18 @@ func runTamperWatchdog(ctx context.Context, cfg config.Config, outbox chan<- *pb
 					Reason: "service start-type was set to disabled; watchdog restored auto-start",
 				})
 			}
-			if restoreBinaryIfMissing(cfg.SecureDir) { // undo a deleted exe (last known good)
+			ensureBinaryBackup(cfg.SecureDir, cfg.AgentVersion) // refresh backup on a legit version change
+			if restoreBinaryIfMissing(cfg.SecureDir) {          // undo a DELETED exe (cheap)
 				slog.Error("SECURITY: agent binary was MISSING — restored from backup (tamper)")
 				recordAuditEvent(ctx, outbox, auditlog.Event{
 					DeviceID: deviceID, EventType: "binary_tampered", Decision: "restored",
 					Reason: "agent executable was deleted; watchdog restored it from the last-known-good backup",
+				})
+			} else if tick%replaceCheckEvery == 0 && restoreBinaryIfTampered(cfg.SecureDir, cfg.AgentVersion) { // undo a REPLACED exe (~5 min)
+				slog.Error("SECURITY: agent binary was REPLACED (same version, different bytes) — restored from backup (tamper)")
+				recordAuditEvent(ctx, outbox, auditlog.Event{
+					DeviceID: deviceID, EventType: "binary_tampered", Decision: "restored",
+					Reason: "agent executable was replaced; watchdog restored the last-known-good binary",
 				})
 			}
 		}
