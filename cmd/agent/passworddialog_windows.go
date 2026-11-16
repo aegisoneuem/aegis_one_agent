@@ -31,8 +31,19 @@ var (
 	procShowWindow      = pwUser32.NewProc("ShowWindow")
 	procGetSystemMetric = pwUser32.NewProc("GetSystemMetrics")
 	procSetForeground   = pwUser32.NewProc("SetForegroundWindow")
-	procGetModuleHandle = pwKernel32.NewProc("GetModuleHandleW")
-	procGetConsoleWin   = pwKernel32.NewProc("GetConsoleWindow")
+	procGetModuleHandle  = pwKernel32.NewProc("GetModuleHandleW")
+	procGetConsoleWin    = pwKernel32.NewProc("GetConsoleWindow")
+	procGetSysColorBrush = pwUser32.NewProc("GetSysColorBrush")
+	pwGdi32              = windows.NewLazySystemDLL("gdi32.dll")
+	procSetTextColor     = pwGdi32.NewProc("SetTextColor")
+	procSetBkMode        = pwGdi32.NewProc("SetBkMode")
+)
+
+const (
+	wmCtlColorStatic = 0x0138
+	colorRed         = 0x000000FF // COLORREF 0x00BBGGRR → red
+	bkTransparent    = 1
+	colorBtnFace     = 15
 )
 
 // hideConsoleWindow hides this process's console window (the MSI launches the
@@ -90,17 +101,19 @@ type msgStruct struct {
 
 // state for the single modal invocation (uninstall-check is single-threaded).
 var (
-	pwEditHwnd windows.Handle
-	pwResult   string
-	pwOK       bool
+	pwEditHwnd  windows.Handle
+	pwLabelHwnd windows.Handle
+	pwLabelRed  bool
+	pwResult    string
+	pwOK        bool
 )
 
-func promptPasswordDialog(title, prompt string) (string, bool) {
+func promptPasswordDialog(title, prompt string, red bool) (string, bool) {
 	// A Win32 window + its message loop MUST live on one OS thread; without this Go
 	// may migrate the goroutine and messages stop pumping → "Not Responding"/hang.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	pwResult, pwOK, pwEditHwnd = "", false, 0
+	pwResult, pwOK, pwEditHwnd, pwLabelHwnd, pwLabelRed = "", false, 0, 0, red
 	hInst, _, _ := procGetModuleHandle.Call(0)
 	className, _ := syscall.UTF16PtrFromString("AegisPwDlg")
 
@@ -118,6 +131,13 @@ func promptPasswordDialog(title, prompt string) (string, bool) {
 				procDestroyWindow.Call(uintptr(hwnd))
 			}
 			return 0
+		case wmCtlColorStatic:
+			if pwLabelRed && windows.Handle(lparam) == pwLabelHwnd {
+				procSetTextColor.Call(wparam, colorRed)
+				procSetBkMode.Call(wparam, bkTransparent)
+				br, _, _ := procGetSysColorBrush.Call(colorBtnFace)
+				return br
+			}
 		case wmClose:
 			procDestroyWindow.Call(uintptr(hwnd))
 			return 0
@@ -158,7 +178,7 @@ func promptPasswordDialog(title, prompt string) (string, bool) {
 			uintptr(hwnd), uintptr(id), hInst, 0)
 		return windows.Handle(ch2)
 	}
-	mkChild("STATIC", prompt, 0, 15, 15, 360, 40, 0)
+	pwLabelHwnd = mkChild("STATIC", prompt, 0, 15, 15, 360, 40, 102)
 	pwEditHwnd = mkChild("EDIT", "", wsBorder|wsTabStop|esPassword|esAutoHScroll, 15, 65, 360, 24, idEdit)
 	mkChild("BUTTON", "OK", wsTabStop|bsDefPush, 200, 110, 80, 28, idOK)
 	mkChild("BUTTON", "Cancel", wsTabStop, 290, 110, 80, 28, idCancel)

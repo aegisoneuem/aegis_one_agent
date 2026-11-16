@@ -43,8 +43,22 @@ type storedPasscode struct {
 	Mode     string `json:"mode"` // "static" (future: "totp")
 	Salt     []byte `json:"salt"`
 	Iter     int    `json:"iter"`
-	Hash     []byte `json:"hash"` // pbkdf2(passcode, salt, iter)
+	Hash     []byte `json:"hash"`      // pbkdf2(passcode, salt, iter)
 	IssuedAt int64  `json:"issued_at"`
+	MaxTries int    `json:"max_tries"` // interactive uninstall prompt attempts (server-set; default 3)
+}
+
+const defaultMaxTries = 3
+
+// currentMaxTries is the interactive-prompt attempt limit the server configured
+// (defaults to 3 when unset or no passcode).
+func currentMaxTries() int {
+	passcodeMu.RLock()
+	defer passcodeMu.RUnlock()
+	if passcodeState == nil || passcodeState.MaxTries <= 0 {
+		return defaultMaxTries
+	}
+	return passcodeState.MaxTries
 }
 
 var (
@@ -155,6 +169,7 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 		Mode     string `json:"mode"`
 		Passcode string `json:"passcode"`
 		IssuedAt int64  `json:"issued_at"`
+		MaxTries int    `json:"max_tries"`
 	}
 	if err := json.Unmarshal(cmd.Payload, &spec); err != nil {
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "invalid unprotect-secret payload"))
@@ -202,12 +217,17 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "salt generation failed"))
 		return
 	}
+	maxTries := spec.MaxTries
+	if maxTries <= 0 {
+		maxTries = defaultMaxTries
+	}
 	s := storedPasscode{
 		Mode:     "static",
 		Salt:     salt,
 		Iter:     passcodeIterations,
 		Hash:     pbkdf2SHA256([]byte(spec.Passcode), salt, passcodeIterations, passcodeKeyLen),
 		IssuedAt: spec.IssuedAt,
+		MaxTries: maxTries,
 	}
 	if err := writePasscodeStore(d.cfg.SecureDir, s); err != nil {
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_FAILED, "persist passcode failed: "+err.Error()))

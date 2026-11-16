@@ -1137,7 +1137,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if v, perr := strconv.ParseInt(strings.TrimSpace(os.Getenv("AEGIS_PASSCODE_ISSUED_AT")), 10, 64); perr == nil && v > 0 {
 				issued = v
 			}
-			payload, _ := json.Marshal(map[string]any{"mode": "static", "passcode": pc, "issued_at": issued})
+			maxTries := 0
+			if v, perr := strconv.Atoi(strings.TrimSpace(os.Getenv("AEGIS_PASSCODE_MAX_TRIES"))); perr == nil {
+				maxTries = v
+			}
+			payload, _ := json.Marshal(map[string]any{"mode": "static", "passcode": pc, "issued_at": issued, "max_tries": maxTries})
 			setPassCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 				CommandId: "setpass-001", Type: "set_unprotect_secret", Payload: payload,
 			})}}
