@@ -5,6 +5,10 @@ import (
 	"path/filepath"
 )
 
+// runningAsService is true when launched by the SCM (set in runAgentEntry). The
+// service-DACL hardening only runs in that case, never from a console/CLI call.
+var runningAsService bool
+
 // Tamper-protection Phase A, Step 1: install-directory ACL hardening.
 //
 // hardenInstallTree locks down the agent's install tree so a NON-admin user can

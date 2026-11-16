@@ -66,6 +66,7 @@ func refreshServiceStopAcceptance(selfProtect bool) {
 
 func runAgentEntry() {
 	if isSvc, err := svc.IsWindowsService(); err == nil && isSvc {
+		runningAsService = true
 		cfg := config.Load()
 		// Self-protect (refuse SCM stop) when the master switch is on, an unprotect
 		// passcode is set, OR the provisioned marker is present (fail-closed: a deleted

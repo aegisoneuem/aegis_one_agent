@@ -10,6 +10,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// The service DACL SDDL strings must be valid (catches a typo in the rights codes).
+func TestServiceDACLs_Parse(t *testing.T) {
+	for _, sddl := range []string{serviceDACLLocked, serviceDACLOpen} {
+		sd, err := windows.SecurityDescriptorFromString(sddl)
+		if err != nil {
+			t.Fatalf("invalid service SDDL %q: %v", sddl, err)
+		}
+		if _, _, err := sd.DACL(); err != nil {
+			t.Fatalf("DACL extract failed for %q: %v", sddl, err)
+		}
+	}
+}
+
 func TestHardenDirACL_AppliesProtectedDACL(t *testing.T) {
 	dir, err := os.MkdirTemp("", "aegistamper")
 	if err != nil {

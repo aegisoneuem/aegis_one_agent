@@ -175,9 +175,10 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 		passcodeMu.Lock()
 		passcodeState = nil
 		passcodeMu.Unlock()
-		// Runtime: re-enable SCM stop immediately (no restart) unless the master
-		// switch still demands self-protection.
+		// Runtime: re-enable SCM stop + restore the service DACL immediately (no
+		// restart) unless the master switch still demands self-protection.
 		refreshServiceStopAcceptance(d.cfg.TamperProtect)
+		applyServiceDACLForState(d.cfg.TamperProtect)
 		recordAuditEvent(ctx, d.outbox, auditlog.Event{
 			DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_cleared", CommandID: cmd.CommandId,
 			Actor: cmd.Actor, Source: cmd.Source, Decision: "cleared", Reason: "unprotect passcode cleared by server",
@@ -213,8 +214,9 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 	passcodeMu.Lock()
 	passcodeState = &s
 	passcodeMu.Unlock()
-	_ = writeUnprotectMarker() // fail-closed anchor: survives a passcode-file delete
+	_ = writeUnprotectMarker()         // fail-closed anchor: survives a passcode-file delete
 	refreshServiceStopAcceptance(true) // runtime: `sc stop` now fails immediately (no restart)
+	applyServiceDACLForState(true)     // runtime: block sc disable/delete too
 	recordAuditEvent(ctx, d.outbox, auditlog.Event{
 		DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_set", CommandID: cmd.CommandId,
 		Actor: cmd.Actor, Source: cmd.Source, Decision: "applied", Reason: "unprotect passcode set (mode=static)",
