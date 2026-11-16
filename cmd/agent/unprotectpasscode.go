@@ -127,10 +127,12 @@ func loadStoredPasscode(secureDir string, outbox chan<- *pb.AgentMessage, device
 	if err != nil {
 		if readUnprotectMarker() {
 			slog.Error("SECURITY: unprotect passcode file is MISSING but was provisioned — tamper; service stays self-protected (awaiting server re-push)")
-			recordAuditEvent(context.Background(), outbox, auditlog.Event{
-				DeviceID: deviceID, EventType: "unprotect_secret_tampered", Decision: "deleted",
-				Reason: "passcode file deleted but provisioned marker present — fail-closed, still self-protected",
-			})
+			if outbox != nil { // nil in the short-lived CLI (uninstall-check) — no server to alert
+				recordAuditEvent(context.Background(), outbox, auditlog.Event{
+					DeviceID: deviceID, EventType: "unprotect_secret_tampered", Decision: "deleted",
+					Reason: "passcode file deleted but provisioned marker present — fail-closed, still self-protected",
+				})
+			}
 		}
 		return
 	}

@@ -60,6 +60,9 @@
     <Property Id="SERVERNAME" Value="aegis-server" Secure="yes" />
     <Property Id="ENROLLTOKEN" Secure="yes" />
     <Property Id="CACERTFILE" Secure="yes" />
+    <!-- Tamper-protection: the unprotect passcode required to UNINSTALL when the agent
+         is self-protected. msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>. -->
+    <Property Id="UNINSTALLPASSCODE" Secure="yes" />
 
     <!-- Branding bitmaps + license (swap the files in assets/ to rebrand). -->
     <WixVariable Id="WixUIBannerBmp" Value="assets/banner.bmp" />
@@ -155,6 +158,24 @@
         <RemoveRegistryKey Root="HKLM" Key="SOFTWARE\AegisOne\Client" Action="removeOnUninstall" />
       </Component>
     </ComponentGroup>
+
+    <!-- UNINSTALL GATE: on a user-initiated uninstall (NOT a major-upgrade removal),
+         run the agent's uninstall-check, which verifies UNINSTALLPASSCODE against the
+         stored passcode and aborts (non-zero) if the agent is self-protected and no
+         valid passcode was given. Immediate + Return=check so a failure aborts the
+         uninstall; scheduled after CostFinalize (REMOVE is known) and before any
+         files/service are removed. The NOT UPGRADINGPRODUCTCODE condition lets agent
+         upgrades through. -->
+    <CustomAction Id="CheckUninstallAuth"
+                  FileRef="AgentExeFile"
+                  ExeCommand="uninstall-check --passcode=[UNINSTALLPASSCODE]"
+                  Execute="immediate"
+                  Return="check"
+                  Impersonate="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="CheckUninstallAuth" After="CostFinalize"
+              Condition="(REMOVE=&quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
 
     <Feature Id="Main" Title="AegisOne Client" Level="1">
       <ComponentGroupRef Id="ProductComponents" />

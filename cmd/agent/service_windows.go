@@ -160,6 +160,9 @@ func runControlCommand(cmd string) bool {
 		} else {
 			err = stopService()
 		}
+	case "uninstall-check":
+		// MSI uninstall gate: exit 0 = allow, non-zero = abort the uninstall.
+		err = uninstallCheck(os.Args[2:])
 	default:
 		return false
 	}

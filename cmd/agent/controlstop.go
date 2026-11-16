@@ -72,3 +72,22 @@ func promptSecret() string {
 	s, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return strings.TrimSpace(s)
 }
+
+// uninstallCheck is invoked by the MSI's uninstall custom action
+// (AegisOneClient.exe uninstall-check --passcode=<code>). It returns nil (exit 0 =
+// allow) when the agent is NOT tamper-protected or a valid passcode/token was given,
+// and an error (non-zero = abort the uninstall) otherwise. A major-upgrade removal
+// skips this (the MSI condition), so agent upgrades are never blocked.
+func uninstallCheck(args []string) error {
+	cfg := config.Load()
+	loadStoredPasscode(cfg.SecureDir, nil, cfg.DeviceID) // nil outbox: CLI, no server
+	if !passcodeConfigured() && !readUnprotectMarker() {
+		return nil // not protected → allow uninstall
+	}
+	secret, _ := stopTokenFromArgs(args)
+	_ = loadCommandVerifyKey(cfg) // best-effort: also allow a signed token
+	if ok, reason := authorizeUnprotect(secret, cfg.DeviceID); !ok {
+		return fmt.Errorf("uninstall is protected — valid passcode required (%s). Use: msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>", reason)
+	}
+	return nil
+}
