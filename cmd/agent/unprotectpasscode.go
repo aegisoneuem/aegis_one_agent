@@ -200,7 +200,8 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 			DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_cleared", CommandID: cmd.CommandId,
 			Actor: cmd.Actor, Source: cmd.Source, Decision: "cleared", Reason: "unprotect passcode cleared by server",
 		})
-		slog.Info("tamper-protect: unprotect passcode CLEARED", "command_id", cmd.CommandId)
+		slog.Info("tamper-protect: unprotect passcode CLEARED — self-protection OFF (sc stop/disable/delete + uninstall allowed again)",
+			"command_id", cmd.CommandId, "service_self_protect", d.cfg.TamperProtect)
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_SUCCESS, "unprotect passcode cleared"))
 		return
 	}
@@ -243,7 +244,8 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 		DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_set", CommandID: cmd.CommandId,
 		Actor: cmd.Actor, Source: cmd.Source, Decision: "applied", Reason: "unprotect passcode set (mode=static)",
 	})
-	slog.Info("tamper-protect: unprotect passcode set", "command_id", cmd.CommandId, "issued_at", spec.IssuedAt)
+	slog.Info("tamper-protect: unprotect passcode set — service NOW self-protected (sc stop/disable/delete + uninstall require the passcode)",
+		"command_id", cmd.CommandId, "issued_at", spec.IssuedAt, "max_tries", maxTries, "service_self_protect", true)
 	sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_SUCCESS, "unprotect passcode set"))
 }
 
