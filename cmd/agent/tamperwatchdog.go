@@ -26,6 +26,7 @@ func runTamperWatchdog(ctx context.Context, cfg config.Config, outbox chan<- *pb
 	if !runningAsService {
 		return
 	}
+	ensureBinaryBackup(cfg.SecureDir) // one-time "last known good" copy of the exe
 	t := time.NewTicker(tamperWatchdogInterval)
 	defer t.Stop()
 	for {
@@ -45,6 +46,13 @@ func runTamperWatchdog(ctx context.Context, cfg config.Config, outbox chan<- *pb
 				recordAuditEvent(ctx, outbox, auditlog.Event{
 					DeviceID: deviceID, EventType: "service_tampered", Decision: "re-enabled",
 					Reason: "service start-type was set to disabled; watchdog restored auto-start",
+				})
+			}
+			if restoreBinaryIfMissing(cfg.SecureDir) { // undo a deleted exe (last known good)
+				slog.Error("SECURITY: agent binary was MISSING — restored from backup (tamper)")
+				recordAuditEvent(ctx, outbox, auditlog.Event{
+					DeviceID: deviceID, EventType: "binary_tampered", Decision: "restored",
+					Reason: "agent executable was deleted; watchdog restored it from the last-known-good backup",
 				})
 			}
 		}

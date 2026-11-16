@@ -205,11 +205,15 @@ func installService(fips bool) error {
 	defer s.Close()
 
 	// Auto-restart on failure.
+	// Fast restart-on-failure so a taskkill is undone in ~5s (not 60s), without a
+	// second guardian process (resource-light). The failure count resets after 10 min
+	// of stability, so occasional kills keep getting restarted while a genuine
+	// crash-loop still backs off.
 	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 120 * time.Second},
-	}, 86400 /* reset failure count after 1 day */); err != nil {
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+	}, 600 /* reset failure count after 10 min */); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not set recovery actions:", err)
 	}
 
