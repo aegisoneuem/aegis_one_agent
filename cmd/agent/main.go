@@ -743,6 +743,9 @@ func runProcess(parentCtx context.Context) {
 	// Service DACL: lock (block sc stop/disable/delete for non-SYSTEM) when
 	// self-protected, else restore — self-healing at startup. No-op off-service.
 	applyServiceDACLForState(cfg.TamperProtect || passcodeStoreExists(cfg.SecureDir) || readUnprotectMarker())
+	// Watchdog: periodically re-apply the service DACL + undo a disabled start-type
+	// (regedit/sc config) while self-protected. No-op off-service / unprotected.
+	go runTamperWatchdog(ctx, cfg, outbox, cfg.DeviceID)
 
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
