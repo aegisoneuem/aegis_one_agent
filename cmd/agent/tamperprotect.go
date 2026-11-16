@@ -35,5 +35,5 @@ func hardenInstallTree() {
 		slog.Warn("tamper-protect: install-dir ACL hardening failed", "dir", clientDir, "error", err.Error())
 		return
 	}
-	slog.Info("tamper-protect: install-dir ACL hardened (SYSTEM+Admins full, Users read-only)", "dir", clientDir)
+	slog.Debug("tamper-protect: install-dir ACL hardened (SYSTEM+Admins full, Users read-only)", "dir", clientDir)
 }

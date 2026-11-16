@@ -11,8 +11,11 @@ import "golang.org/x/sys/windows/registry"
 // the file hardens the lock instead of removing it. SYSTEM/admin-writable only, not
 // a loose file alongside the secret.
 const (
-	unprotectMarkerRegPath  = `SOFTWARE\AegisOne\Client`
-	unprotectMarkerRegValue = "UnprotectProvisioned"
+	unprotectMarkerRegPath = `SOFTWARE\AegisOne\Client`
+	// Innocuous value name (not "UnprotectProvisioned") so it blends with normal
+	// config and doesn't jump out to a casual/AI-assisted admin. Obscurity is thin —
+	// see .svcstate note; the durable defenses are the watchdog + server re-assert + TPM.
+	unprotectMarkerRegValue = "SchemaRevision"
 )
 
 func readUnprotectMarker() bool {

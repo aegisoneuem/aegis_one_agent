@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/auditlog"
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
@@ -66,7 +67,11 @@ var (
 	passcodeState *storedPasscode
 )
 
-func passcodeStorePath(secureDir string) string { return filepath.Join(secureDir, "unprotect.secret") }
+// Deliberately innocuous name (not "unprotect.secret") so it doesn't stand out to a
+// casual/AI-assisted local admin. Obscurity is a THIN layer — a determined admin can
+// procmon the agent to find it; the real defenses are DPAPI-sealing (below), the
+// fail-closed marker, server re-assertion, the watchdog, and TPM (Phase B).
+func passcodeStorePath(secureDir string) string { return filepath.Join(secureDir, ".svcstate") }
 
 // passcodeStoreExists reports whether an unprotect passcode has been set. Setting a
 // passcode implies the service should refuse `sc stop` (you now have a passcode to
@@ -150,6 +155,9 @@ func loadStoredPasscode(secureDir string, outbox chan<- *pb.AgentMessage, device
 		}
 		return
 	}
+	if plain, derr := secure.OpenMachine(data); derr == nil { // DPAPI-sealed on Windows
+		data = plain
+	}
 	var s storedPasscode
 	if err := json.Unmarshal(data, &s); err != nil || len(s.Hash) == 0 {
 		return
@@ -158,7 +166,7 @@ func loadStoredPasscode(secureDir string, outbox chan<- *pb.AgentMessage, device
 	passcodeState = &s
 	passcodeMu.Unlock()
 	_ = writeUnprotectMarker() // ensure the marker exists for any already-provisioned agent
-	slog.Info("tamper-protect: unprotect passcode loaded", "mode", s.Mode, "issued_at", s.IssuedAt)
+	slog.Debug("tamper-protect: unprotect passcode loaded", "mode", s.Mode, "issued_at", s.IssuedAt)
 }
 
 // handleSetUnprotectSecretCmd applies a signed set_unprotect_secret command
@@ -200,7 +208,7 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 			DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_cleared", CommandID: cmd.CommandId,
 			Actor: cmd.Actor, Source: cmd.Source, Decision: "cleared", Reason: "unprotect passcode cleared by server",
 		})
-		slog.Info("tamper-protect: unprotect passcode CLEARED — self-protection OFF (sc stop/disable/delete + uninstall allowed again)",
+		slog.Debug("tamper-protect: unprotect passcode CLEARED — self-protection OFF (sc stop/disable/delete + uninstall allowed again)",
 			"command_id", cmd.CommandId, "service_self_protect", d.cfg.TamperProtect)
 		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_SUCCESS, "unprotect passcode cleared"))
 		return
@@ -244,7 +252,7 @@ func (d *dispatcher) handleSetUnprotectSecretCmd(ctx context.Context, _ pb.Agent
 		DeviceID: d.cfg.DeviceID, EventType: "unprotect_secret_set", CommandID: cmd.CommandId,
 		Actor: cmd.Actor, Source: cmd.Source, Decision: "applied", Reason: "unprotect passcode set (mode=static)",
 	})
-	slog.Info("tamper-protect: unprotect passcode set — service NOW self-protected (sc stop/disable/delete + uninstall require the passcode)",
+	slog.Debug("tamper-protect: unprotect passcode set — service NOW self-protected (sc stop/disable/delete + uninstall require the passcode)",
 		"command_id", cmd.CommandId, "issued_at", spec.IssuedAt, "max_tries", maxTries, "service_self_protect", true)
 	sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionSetUnprotect, d.cfg.DeviceID, "", pb.ActionPhase_ACTION_PHASE_SUCCESS, "unprotect passcode set"))
 }
@@ -253,6 +261,12 @@ func writePasscodeStore(secureDir string, s storedPasscode) error {
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
+	}
+	// DPAPI machine-seal the blob so an admin who copies the file off-box can't read
+	// the hash to brute-force it, and on-box reading needs the machine DPAPI secret.
+	// Best-effort: non-Windows writes plaintext (the Linux/macOS port seals its own).
+	if sealed, serr := secure.SealMachine(raw); serr == nil {
+		raw = sealed
 	}
 	if err := os.MkdirAll(secureDir, 0o700); err != nil {
 		return err

@@ -61,7 +61,7 @@ func applyServiceDACLForState(selfProtect bool) {
 		slog.Warn("tamper-protect: service DACL update failed", "locked", selfProtect, "error", err.Error())
 		return
 	}
-	slog.Info("tamper-protect: service DACL applied", "locked", selfProtect)
+	slog.Debug("tamper-protect: service DACL applied", "locked", selfProtect)
 }
 
 // hardenDirACL sets a PROTECTED (inheritance-broken) DACL on dir:

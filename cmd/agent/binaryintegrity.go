@@ -48,14 +48,14 @@ func checkBinaryIntegrity(outbox chan<- *pb.AgentMessage, deviceID, version stri
 	switch {
 	case prevHash == "": // first run — establish the baseline
 		_ = writeBinaryBaseline(version, hash)
-		slog.Info("binary integrity: baseline recorded", "version", version)
+		slog.Debug("binary integrity: baseline recorded", "version", version)
 	case prevVer == version && prevHash != hash:
 		binaryAlert(outbox, deviceID, "modified",
 			"agent binary changed without a version change (version "+version+", hash differs from baseline) — possible tampering")
 		_ = writeBinaryBaseline(version, hash) // re-arm the tripwire
 	case prevVer != version:
 		_ = writeBinaryBaseline(version, hash) // legitimate update
-		slog.Info("binary integrity: baseline refreshed for new version", "old_version", prevVer, "new_version", version)
+		slog.Debug("binary integrity: baseline refreshed for new version", "old_version", prevVer, "new_version", version)
 	}
 }
 
