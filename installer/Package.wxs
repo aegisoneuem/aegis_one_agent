@@ -168,7 +168,7 @@
          upgrades through. -->
     <CustomAction Id="CheckUninstallAuth"
                   FileRef="AgentExeFile"
-                  ExeCommand="uninstall-check --passcode=[UNINSTALLPASSCODE]"
+                  ExeCommand="uninstall-check --passcode=[UNINSTALLPASSCODE] --ui=[UILevel]"
                   Execute="immediate"
                   Return="check"
                   Impersonate="yes" />

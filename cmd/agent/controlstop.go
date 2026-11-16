@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,17 @@ func stopTokenFromArgs(args []string) (string, bool) {
 	return "", false
 }
 
+// uiLevelFromArgs reads --ui=<n> (the MSI UILevel) from the args; 0 if absent.
+func uiLevelFromArgs(args []string) int {
+	for _, a := range args {
+		if strings.HasPrefix(a, "--ui=") {
+			n, _ := strconv.Atoi(strings.TrimPrefix(a, "--ui="))
+			return n
+		}
+	}
+	return 0
+}
+
 func promptSecret() string {
 	fmt.Print("Enter unprotect passcode/token: ")
 	s, _ := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -86,8 +98,30 @@ func uninstallCheck(args []string) error {
 	}
 	secret, _ := stopTokenFromArgs(args)
 	_ = loadCommandVerifyKey(cfg) // best-effort: also allow a signed token
-	if ok, reason := authorizeUnprotect(secret, cfg.DeviceID); !ok {
-		return fmt.Errorf("uninstall is protected — valid passcode required (%s). Use: msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>", reason)
+
+	authorized := false
+	if secret != "" {
+		if ok, _ := authorizeUnprotect(secret, cfg.DeviceID); ok {
+			authorized = true
+		}
+	}
+	// Interactive uninstall (Add/Remove Programs) with no/invalid passcode: pop a
+	// native passcode prompt, up to 3 tries. Silent (/qn) never prompts — it uses the
+	// UNINSTALLPASSCODE property. uiLevel: full=5 reduced=4 basic=3 none=2.
+	if !authorized && uiLevelFromArgs(args) >= 4 {
+		for i := 0; i < 3 && !authorized; i++ {
+			code, ok := promptPasswordDialog("AegisOne Client — Uninstall",
+				"This agent is tamper-protected. Enter the unprotect passcode to uninstall:")
+			if !ok {
+				return fmt.Errorf("uninstall cancelled")
+			}
+			if ok2, _ := authorizeUnprotect(code, cfg.DeviceID); ok2 {
+				secret, authorized = code, true
+			}
+		}
+	}
+	if !authorized {
+		return fmt.Errorf("uninstall is protected — valid passcode required. Use: msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>")
 	}
 	// Authorized: STOP the running agent first. A self-protected service does NOT
 	// accept the SCM stop, so the MSI's own StopServices would fail (1052) and leave
