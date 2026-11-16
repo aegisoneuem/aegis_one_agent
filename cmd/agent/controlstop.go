@@ -89,5 +89,32 @@ func uninstallCheck(args []string) error {
 	if ok, reason := authorizeUnprotect(secret, cfg.DeviceID); !ok {
 		return fmt.Errorf("uninstall is protected — valid passcode required (%s). Use: msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>", reason)
 	}
+	// Authorized: STOP the running agent first. A self-protected service does NOT
+	// accept the SCM stop, so the MSI's own StopServices would fail (1052) and leave
+	// the process/service/files behind. We stop it via the local control endpoint
+	// (token/passcode authorized) and wait for it to exit, so the MSI can then
+	// delete the service + remove the files cleanly.
+	addr := strings.TrimSpace(cfg.HealthAddr)
+	if addr == "" {
+		addr = "127.0.0.1:50080"
+	}
+	_ = tokenStop(secret)               // best-effort (agent may already be stopped)
+	waitForAgentGone(addr, 20*time.Second)
 	return nil
+}
+
+// waitForAgentGone polls the agent's local health endpoint until it stops
+// responding (the agent has exited) or the timeout elapses.
+func waitForAgentGone(addr string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	url := "http://" + addr + "/health"
+	client := &http.Client{Timeout: time.Second}
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err != nil {
+			return // endpoint down → agent stopped
+		}
+		resp.Body.Close()
+		time.Sleep(300 * time.Millisecond)
+	}
 }

@@ -78,6 +78,12 @@ type wifiSample struct {
 }
 
 func readWifi() wifiSample {
+	// wlanapi.dll is absent on SKUs without the WLAN feature (e.g. Windows Server
+	// by default). Probe with Find() so a missing DLL/proc returns "no Wi-Fi" instead
+	// of panicking in LazyProc.Call.
+	if err := procWlanOpenHandle.Find(); err != nil {
+		return wifiSample{}
+	}
 	var handle uintptr
 	var negotiated uint32
 	if r, _, _ := procWlanOpenHandle.Call(2, 0, uintptr(unsafe.Pointer(&negotiated)), uintptr(unsafe.Pointer(&handle))); r != 0 {
