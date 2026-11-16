@@ -68,6 +68,17 @@ func stopTokenFromArgs(args []string) (string, bool) {
 	return "", false
 }
 
+// uninstallDebugf appends a line to a fixed log so the MSI uninstall-check flow is
+// diagnosable (the custom action's stdout isn't visible). Best-effort.
+func uninstallDebugf(format string, a ...any) {
+	f, err := os.OpenFile(`C:\Windows\Temp\aegis-uninstall-check.log`, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, time.Now().Format("2006-01-02 15:04:05")+" "+format+"\n", a...)
+}
+
 // uiLevelFromArgs reads --ui=<n> (the MSI UILevel) from the args; 0 if absent.
 func uiLevelFromArgs(args []string) int {
 	for _, a := range args {
@@ -92,8 +103,11 @@ func promptSecret() string {
 // skips this (the MSI condition), so agent upgrades are never blocked.
 func uninstallCheck(args []string) error {
 	cfg := config.Load()
+	ui := uiLevelFromArgs(args)
+	uninstallDebugf("uninstall-check start: uiLevel=%d args=%v", ui, args)
 	loadStoredPasscode(cfg.SecureDir, nil, cfg.DeviceID) // nil outbox: CLI, no server
 	if !passcodeConfigured() && !readUnprotectMarker() {
+		uninstallDebugf("not protected -> allow")
 		return nil // not protected → allow uninstall
 	}
 	secret, _ := stopTokenFromArgs(args)
@@ -106,12 +120,14 @@ func uninstallCheck(args []string) error {
 		}
 	}
 	// Interactive uninstall (Add/Remove Programs) with no/invalid passcode: pop a
-	// native passcode prompt, up to 3 tries. Silent (/qn) never prompts — it uses the
-	// UNINSTALLPASSCODE property. uiLevel: full=5 reduced=4 basic=3 none=2.
-	if !authorized && uiLevelFromArgs(args) >= 4 {
+	// native passcode prompt, up to 3 tries. Silent (/qn, uiLevel=2) never prompts —
+	// it uses the UNINSTALLPASSCODE property. uiLevel: full=5 reduced=4 basic=3 none=2.
+	if !authorized && ui >= 3 {
+		uninstallDebugf("interactive (ui=%d), no valid passcode -> prompting", ui)
 		for i := 0; i < 3 && !authorized; i++ {
 			code, ok := promptPasswordDialog("AegisOne Client — Uninstall",
 				"This agent is tamper-protected. Enter the unprotect passcode to uninstall:")
+			uninstallDebugf("prompt attempt %d: shown=%v", i+1, ok)
 			if !ok {
 				return fmt.Errorf("uninstall cancelled")
 			}
@@ -121,8 +137,10 @@ func uninstallCheck(args []string) error {
 		}
 	}
 	if !authorized {
+		uninstallDebugf("NOT authorized -> abort (ui=%d)", ui)
 		return fmt.Errorf("uninstall is protected — valid passcode required. Use: msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>")
 	}
+	uninstallDebugf("authorized -> stopping agent + allowing uninstall")
 	// Authorized: STOP the running agent first. A self-protected service does NOT
 	// accept the SCM stop, so the MSI's own StopServices would fail (1052) and leave
 	// the process/service/files behind. We stop it via the local control endpoint
