@@ -900,6 +900,28 @@ func sanitizePathSeg(s string) string {
 	return s
 }
 
+// matchesTarget reports whether a connected agent is in the configured target set:
+// its device_id is in AEGIS_TARGET_DEVICE, or its computer_id is in
+// AEGIS_TARGET_COMPUTER (both comma-lists = a group). No targeting env = match all.
+func matchesTarget(deviceID, computerID string) bool {
+	devs := splitCSV(os.Getenv("AEGIS_TARGET_DEVICE"))
+	comps := splitCSV(os.Getenv("AEGIS_TARGET_COMPUTER"))
+	if len(devs) == 0 && len(comps) == 0 {
+		return true
+	}
+	for _, d := range devs {
+		if strings.EqualFold(d, deviceID) {
+			return true
+		}
+	}
+	for _, c := range comps {
+		if strings.EqualFold(c, computerID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	if !clientVerified(stream.Context()) {
 		mockPrintln("Connect REJECTED -> no verified client certificate (must enroll first)")
@@ -914,11 +936,14 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	defer s.deregisterLiveAgent(connectedDevice)
 
 	go func() {
-		// Device targeting for testing: if AEGIS_TARGET_DEVICE is set, only send
-		// commands to that device_id (others just stay connected / receive). The
-		// REAL server targets by device; the mock otherwise sends to whoever connects.
-		if target := strings.TrimSpace(os.Getenv("AEGIS_TARGET_DEVICE")); target != "" && !strings.EqualFold(target, connectedDevice) {
-			mockPrintf("  (AEGIS_TARGET_DEVICE=%s set; connected device=%s — receiving only, NO commands sent)\n", target, connectedDevice)
+		// Targeting for testing (the REAL server/console owns this — groups, dynamic
+		// targeting, etc.; the agent is target-agnostic). Match by device_id
+		// (AEGIS_TARGET_DEVICE) OR console computer_id (AEGIS_TARGET_COMPUTER); each
+		// accepts a COMMA-SEPARATED list, so a list = a device GROUP. No env set =
+		// send to everyone (single/all already worked).
+		computerID := s.computerIDFor(connectedDevice)
+		if !matchesTarget(connectedDevice, computerID) {
+			mockPrintf("  (targeting set; device=%s computer_id=%s not in target list — receiving only, NO commands sent)\n", connectedDevice, computerID)
 			return
 		}
 		time.Sleep(2 * time.Second)
