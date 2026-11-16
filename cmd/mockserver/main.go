@@ -1132,7 +1132,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		// Optionally set a SHORT unprotect passcode (ManageEngine-style). AEGIS_SET_PASSCODE
 		// = the 8-10 char code; AEGIS_PASSCODE_ISSUED_AT overrides issued_at. The agent
 		// stores only a PBKDF2 hash; stop/uninstall then accept this passcode.
-		if pc := strings.TrimSpace(os.Getenv("AEGIS_SET_PASSCODE")); pc != "" {
+		if pc := strings.TrimSpace(os.Getenv("AEGIS_SET_PASSCODE")); pc != "" && strings.TrimSpace(os.Getenv("AEGIS_CLEAR_PASSCODE")) == "" {
 			issued := time.Now().Unix()
 			if v, perr := strconv.ParseInt(strings.TrimSpace(os.Getenv("AEGIS_PASSCODE_ISSUED_AT")), 10, 64); perr == nil && v > 0 {
 				issued = v
