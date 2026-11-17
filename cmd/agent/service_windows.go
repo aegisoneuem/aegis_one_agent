@@ -173,6 +173,34 @@ func runControlCommand(cmd string) bool {
 	return true
 }
 
+// createAgentService creates the LocalSystem auto-start service with the standard
+// fast restart-on-failure recovery actions. Shared by `install` and the tamper
+// watchdog's restoreServiceIfMissing so the two can never drift.
+//
+// Empty ServiceStartName => LocalSystem (what we need for DISM/scan/DPAPI).
+// Fast restart-on-failure so a taskkill is undone in ~5s (not 60s) without a second
+// guardian process (resource-light). The failure count resets after 10 min of
+// stability, so occasional kills keep getting restarted while a genuine crash-loop
+// still backs off.
+func createAgentService(m *mgr.Mgr, exe string) (*mgr.Service, error) {
+	s, err := m.CreateService(serviceName, exe, mgr.Config{
+		DisplayName: serviceDisplay,
+		Description: serviceDesc,
+		StartType:   mgr.StartAutomatic,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+	}, 600 /* reset failure count after 10 min */); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not set recovery actions:", err)
+	}
+	return s, nil
+}
+
 // installService installs the LocalSystem auto-start service. When fips is true
 // it writes GODEBUG=fips140=on into the service's own environment block so the
 // service starts with the Go FIPS 140-3 module active — a single binary toggled
@@ -193,29 +221,11 @@ func installService(fips bool) error {
 		return fmt.Errorf("service %q is already installed", serviceName)
 	}
 
-	s, err := m.CreateService(serviceName, exe, mgr.Config{
-		DisplayName: serviceDisplay,
-		Description: serviceDesc,
-		StartType:   mgr.StartAutomatic,
-		// Empty ServiceStartName => LocalSystem (what we need for DISM/scan/DPAPI).
-	})
+	s, err := createAgentService(m, exe)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-
-	// Auto-restart on failure.
-	// Fast restart-on-failure so a taskkill is undone in ~5s (not 60s), without a
-	// second guardian process (resource-light). The failure count resets after 10 min
-	// of stability, so occasional kills keep getting restarted while a genuine
-	// crash-loop still backs off.
-	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
-	}, 600 /* reset failure count after 10 min */); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not set recovery actions:", err)
-	}
 
 	if fips {
 		if err := setServiceFIPSEnv(); err != nil {

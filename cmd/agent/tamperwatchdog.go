@@ -53,6 +53,13 @@ func runTamperWatchdog(ctx context.Context, cfg config.Config, outbox chan<- *pb
 					Reason: "service start-type was set to disabled; watchdog restored auto-start",
 				})
 			}
+			if restoreServiceIfMissing() { // undo a take-own + full service-key DELETE
+				slog.Error("SECURITY: agent service definition was DELETED — re-registered by watchdog (tamper)")
+				recordAuditEvent(ctx, outbox, auditlog.Event{
+					DeviceID: deviceID, EventType: "service_tampered", Decision: "re-registered",
+					Reason: "service definition was deleted; watchdog re-created it to restore boot-persistence",
+				})
+			}
 			ensureBinaryBackup(cfg.SecureDir, cfg.AgentVersion) // refresh backup on a legit version change
 			if restoreBinaryIfMissing(cfg.SecureDir) {          // undo a DELETED exe (cheap)
 				slog.Error("SECURITY: agent binary was MISSING — restored from backup (tamper)")
