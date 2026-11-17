@@ -163,11 +163,6 @@ func runControlCommand(cmd string) bool {
 	case "uninstall-check":
 		// MSI uninstall gate: exit 0 = allow, non-zero = abort the uninstall.
 		err = uninstallCheck(os.Args[2:])
-	case sessionHelperSubcommand:
-		// Interactive-session tray helper, launched by the service into the user's
-		// desktop. Runs until the session ends / the window is destroyed.
-		runTrayHelper(context.Background())
-		return true
 	default:
 		return false
 	}

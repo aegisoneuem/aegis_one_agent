@@ -118,6 +118,14 @@
         <util:RemoveFolderEx On="uninstall" Property="AEGISINSTALLFOLDER" />
       </Component>
 
+      <!-- The tray UI companion (AegisOneClientUI.exe), installed next to the service
+           exe in SKVC. The service launches it into each logged-on user's desktop to
+           show the tray icon + user notifications. A separate, separately-signed binary
+           (BigFix-style BESClientUI.exe) so it carries its own name + file description. -->
+      <Component Id="AgentUIExeComponent" Directory="SKVCDir" Guid="*">
+        <File Id="AgentUIExeFile" Name="AegisOneClientUI.exe" Source="..\build\AegisOneClientUI.exe" KeyPath="yes" />
+      </Component>
+
       <!-- Installer-written config in its OWN component (a registry keypath), so
            the registry is a standalone, reliably-versioned resource rather than a
            side-effect of the exe/service component. The agent reads these natively

@@ -7,6 +7,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/trayui"
 )
 
 // Service-alive beacon: a cross-session named event the SERVICE creates and holds
@@ -20,12 +22,13 @@ import (
 // can share it; a permissive DACL lets any interactive user OPEN it (existence check
 // only — nothing is signalled through it).
 
-const serviceAliveEventName = `Global\AegisOneClientAlive`
+// serviceAliveEventName is shared with the tray UI so the beacon name never drifts.
+const serviceAliveEventName = trayui.ServiceAliveEventName
 
-var (
-	procOpenEvent    = pwKernel32.NewProc("OpenEventW")
-	serviceAliveEvt  windows.Handle // held for the service process lifetime (never closed)
-)
+// serviceAliveEvt is held for the service process lifetime (never closed) — when the
+// process exits, the handle closes, the named event vanishes, and the tray UI (which
+// polls it) exits. The POLL side lives in internal/trayui.
+var serviceAliveEvt windows.Handle
 
 // startServiceAliveBeacon creates the named event (service side). No-op off-service.
 func startServiceAliveBeacon() {
@@ -48,20 +51,4 @@ func startServiceAliveBeacon() {
 		return
 	}
 	serviceAliveEvt = h // keep the handle open; closing it would defeat the beacon
-}
-
-// serviceAliveBeaconPresent returns true while the service's beacon exists (helper
-// side). It opens then immediately closes the handle so the helper never keeps the
-// object alive after the service is gone.
-func serviceAliveBeaconPresent() bool {
-	name, err := windows.UTF16PtrFromString(serviceAliveEventName)
-	if err != nil {
-		return true // can't tell — don't kill the helper on a transient error
-	}
-	r, _, _ := procOpenEvent.Call(uintptr(windows.SYNCHRONIZE), 0, uintptr(unsafe.Pointer(name)))
-	if r == 0 {
-		return false // not found → service gone
-	}
-	_ = windows.CloseHandle(windows.Handle(r))
-	return true
 }

@@ -19,23 +19,18 @@ import (
 // not a separately built exe.
 const uiExeName = "AegisOneClientUI.exe"
 
-// ensureHelperExe keeps a copy of the agent exe named AegisOneClientUI.exe in the
-// secure dir and returns its path (so the helper shows under that name). Version-aware
-// by size+modtime: refreshed after an agent update, cheap otherwise (two Stats). Falls
-// back to launching the agent exe itself if the copy can't be made.
-func ensureHelperExe(secureDir string) string {
+// helperExePath returns the path to the shipped tray-UI binary (AegisOneClientUI.exe),
+// which the MSI installs next to the service exe. Returns "" if it isn't present (then
+// no helper is launched — the service runs fine without the UI). A separate, signed
+// binary (not a self-copy) so it carries its own name/description and signature.
+func helperExePath() string {
 	exe, err := os.Executable()
 	if err != nil {
-		return exe
+		return ""
 	}
-	ui := filepath.Join(secureDir, uiExeName)
-	si, e1 := os.Stat(exe)
-	di, e2 := os.Stat(ui)
-	stale := e2 != nil || (e1 == nil && (si.Size() != di.Size() || si.ModTime().After(di.ModTime())))
-	if stale {
-		if copyFileContents(exe, ui) != nil {
-			return exe // copy failed (e.g. old helper still holds it) — launch self
-		}
+	ui := filepath.Join(filepath.Dir(exe), uiExeName)
+	if _, err := os.Stat(ui); err != nil {
+		return ""
 	}
 	return ui
 }
@@ -52,8 +47,6 @@ func ensureHelperExe(secureDir string) string {
 //
 // Honest bound: launching into a user session needs SeTcbPrivilege — LocalSystem has
 // it, so this only works when the agent runs as the service (not in dev/console).
-
-const sessionHelperSubcommand = "tray-helper"
 
 const (
 	createUnicodeEnvironment = 0x00000400
@@ -108,9 +101,10 @@ func launchHelperInSession(sessionID uint32, helperExe string) (windows.Handle, 
 	if err != nil {
 		return 0, err
 	}
-	// Writable command line buffer (CreateProcess may modify it in place).
+	// Writable command line buffer (CreateProcess may modify it in place). The UI
+	// binary needs no arguments — its main runs the tray directly.
 	cmdline := make([]uint16, 0)
-	if c, cerr := windows.UTF16FromString(`"` + helperExe + `" ` + sessionHelperSubcommand); cerr == nil {
+	if c, cerr := windows.UTF16FromString(`"` + helperExe + `"`); cerr == nil {
 		cmdline = c
 	}
 	desktop, _ := windows.UTF16PtrFromString(`winsta0\default`)
@@ -135,7 +129,7 @@ func launchHelperInSession(sessionID uint32, helperExe string) (windows.Handle, 
 // session. It reconciles every 15s: launch where missing, reap exited helpers (so the
 // next tick relaunches), and drop sessions that logged off. Resource-light: a cheap
 // WTS enumerate + a few handle checks, no busy loop. Only runs as the service.
-func runSessionHelperSupervisor(ctx context.Context, secureDir string) {
+func runSessionHelperSupervisor(ctx context.Context) {
 	defer recoverLog("session-helper-supervisor")
 	if !runningAsService {
 		return // dev/console: no SeTcbPrivilege and the user IS session-interactive
@@ -149,7 +143,10 @@ func runSessionHelperSupervisor(ctx context.Context, secureDir string) {
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
 	reconcile := func() {
-		helperExe := ensureHelperExe(secureDir) // AegisOneClientUI.exe (distinct name)
+		helperExe := helperExePath() // shipped AegisOneClientUI.exe
+		if helperExe == "" {
+			return // UI binary not installed — nothing to supervise
+		}
 		active := activeSessionIDs()
 		activeSet := make(map[uint32]bool, len(active))
 		for _, s := range active {
