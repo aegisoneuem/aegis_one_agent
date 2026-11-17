@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"runtime"
 	"syscall"
 	"time"
@@ -21,9 +23,35 @@ import (
 var (
 	thShell32            = windows.NewLazySystemDLL("shell32.dll")
 	procShellNotifyIcon  = thShell32.NewProc("Shell_NotifyIconW")
+	procExtractIcon      = thShell32.NewProc("ExtractIconW")
 	procLoadIcon         = pwUser32.NewProc("LoadIconW")
 	procRegisterWindowMsg = pwUser32.NewProc("RegisterWindowMessageW")
 )
+
+// trayDebugf appends a line to a diagnostic log (the helper has no console). Best
+// effort; used to confirm the tray icon was added / why it was not.
+func trayDebugf(format string, a ...any) {
+	f, err := os.OpenFile(`C:\Windows\Temp\aegis-trayhelper.log`, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, time.Now().Format("15:04:05")+" "+format+"\n", a...)
+}
+
+// loadTrayIcon returns the agent exe's own embedded icon (aegisone.ico), falling back
+// to the stock application icon if extraction fails.
+func loadTrayIcon(hInst uintptr) uintptr {
+	if exe, err := os.Executable(); err == nil {
+		if p, perr := windows.UTF16PtrFromString(exe); perr == nil {
+			if h, _, _ := procExtractIcon.Call(hInst, uintptr(unsafe.Pointer(p)), 0); h > 1 {
+				return h
+			}
+		}
+	}
+	h, _, _ := procLoadIcon.Call(0, uintptr(idiApplication))
+	return h
+}
 
 // taskbarCreatedMsg is the "TaskbarCreated" broadcast the shell sends when Explorer
 // (re)starts; on it we must re-add our tray icon or it vanishes after an Explorer
@@ -43,7 +71,7 @@ const (
 
 	niifInfo = 0x1
 
-	idiShield = 32518 // IDI_SHIELD stock icon (a security shield)
+	idiApplication = 32512 // IDI_APPLICATION stock icon (fallback)
 
 	wmApp            = 0x8000
 	trayCallbackMsg  = wmApp + 1
@@ -130,7 +158,7 @@ func runTrayHelper(ctx context.Context) {
 		return
 	}
 
-	hIcon, _, _ := procLoadIcon.Call(0, uintptr(idiShield))
+	hIcon := loadTrayIcon(hInst)
 
 	trayIconData = notifyIconData{
 		hWnd:             windows.Handle(hwnd),
@@ -141,12 +169,17 @@ func runTrayHelper(ctx context.Context) {
 	}
 	trayIconData.cbSize = uint32(unsafe.Sizeof(trayIconData))
 	copyUTF16(trayIconData.szTip[:], "AegisOne Client — endpoint protection active")
-	procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&trayIconData)))
+	addOK, _, addErr := procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&trayIconData)))
+	trayDebugf("NIM_ADD ok=%d hwnd=%d hIcon=%d err=%v", addOK, hwnd, hIcon, addErr)
 
 	trayIconData.uVersionOrTimeout = notifyVersion4
 	procShellNotifyIcon.Call(nimSetVersion, uintptr(unsafe.Pointer(&trayIconData)))
 
 	defer procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&trayIconData)))
+
+	// A one-time startup balloon confirms the helper is live even when Windows tucks
+	// the icon into the overflow ("^") area, where new icons go by default.
+	trayShowBalloon("AegisOne Client", "Endpoint protection is active.")
 
 	// Exit cleanly when the context is cancelled OR the service's alive beacon
 	// disappears (service stopped/crashed) — so the helper never lingers orphaned and
