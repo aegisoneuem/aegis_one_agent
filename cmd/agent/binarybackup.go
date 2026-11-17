@@ -52,6 +52,12 @@ func ensureBinaryBackup(secureDir, version string) {
 	if err != nil {
 		return
 	}
+	// Recreate the secure dir if an admin deleted it, so the backup (and the rest of
+	// the secure state) can be re-written. Cheap: MkdirAll is a stat when it exists.
+	// A freshly created SKVC inherits the hardened install-tree ACL from its parent.
+	if err := os.MkdirAll(secureDir, 0o700); err != nil {
+		return
+	}
 	bk := backupBinaryPath(secureDir)
 	verFile := backupVersionPath(secureDir)
 	cur, _ := os.ReadFile(verFile)
