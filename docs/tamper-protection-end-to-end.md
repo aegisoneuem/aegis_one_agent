@@ -78,7 +78,7 @@ Active whenever a passcode is set **or** `AEGIS_TAMPER_PROTECT=1`:
 | **Service rejects SCM stop** | agent drops `SERVICE_ACCEPT_STOP` | `sc stop` / services.msc Stop → **1052** (even for admin/SYSTEM) |
 | **Restrictive service DACL** | SCM object locked | `sc config … disabled`, `sc delete` → **Access denied (5)** |
 | **Service registry-key ACL** | `HKLM\SYSTEM\CurrentControlSet\Services\<svc>` locked | regedit `Start=4` → **Access denied** |
-| **Watchdog self-heal (30s)** | re-applies DACLs; undoes a disabled start-type; restores a **deleted or replaced** exe | each raises `service_tampered` / `binary_tampered` |
+| **Watchdog self-heal (30s)** | re-applies DACLs; undoes a disabled start-type; **re-registers a deleted service definition**; restores a **deleted or replaced** exe | each raises `service_tampered` / `binary_tampered` |
 | **Fast restart-on-failure (~5s)** | SCM recovery restarts a killed process | `taskkill /f` → process back in ~5s |
 | **Fail-closed** | deleting the on-disk passcode store keeps protection on (registry marker) | store deleted → still protected + `unprotect_secret_tampered` |
 
@@ -190,6 +190,7 @@ Run on a clean box with the **latest** dist MSI installed and a passcode set
 | 2 | `sc config aegisoneclient start= disabled` | **Access denied (5)** | — |
 | 3 | `sc delete aegisoneclient` | **Access denied (5)** | — |
 | 4 | regedit `…\Services\aegisoneclient` → `Start=4` | Denied; or watchdog restores `Start=2` ≤30s | `service_tampered` |
+| 4b | take-ownership + delete the whole `…\Services\aegisoneclient` key | process keeps running; watchdog re-registers the service ≤30s (boot-persistence restored) | `service_tampered` (re-registered) |
 | 5 | `taskkill /f /im AegisOneClient.exe` | process restarts in ~5s | — |
 | 6a | delete the exe | restored from backup ≤30s | `binary_tampered` (restored) |
 | 6b | overwrite exe with another binary (e.g. copy notepad over it) | restored from backup ≤~5min | `binary_tampered` (restored) |
@@ -250,9 +251,11 @@ rotation-ready, group/computer-id targeting, obscured+sealed secrets, debug-leve
 logs, light resource footprint. **VM-verified.**
 
 **Remaining determined-admin edges (boundary → server silent-detection + re-deploy):**
-rapid `taskkill` loop faster than recovery; service take-ownership by an admin who
-fights the DACL continuously; deleting **both** the exe **and** its on-box backup.
-These are the stated Phase-B targets.
+rapid `taskkill` loop faster than recovery; an admin who take-owns and fights the
+DACL / re-deletes **faster than the 30s watchdog tick** continuously; deleting
+**both** the exe **and** its on-box backup together. These are the stated Phase-B
+targets. *(A one-shot take-own + full service-key delete is now self-healed — the
+watchdog re-registers the service; only a sustained faster-than-tick loop defeats it.)*
 
 **Not yet / future:**
 - **Code-signing (Authenticode)** of exe + MSI — **go-live prerequisite** (build/

@@ -25,8 +25,9 @@ Active whenever a passcode is set (or `AEGIS_TAMPER_PROTECT=1`):
 - **Service registry-key ACL** — `HKLM\SYSTEM\CurrentControlSet\Services\<svc>` is
   locked so a regedit `Start=4` (disable) is denied.
 - **Watchdog (30s)** self-heals: re-applies the DACLs, re-enables a disabled
-  start-type, restores a **deleted or replaced** exe from a last-known-good backup —
-  each raising a `service_tampered` / `binary_tampered` alert.
+  start-type, **re-registers a deleted service definition** (take-own + full
+  service-key delete), restores a **deleted or replaced** exe from a last-known-good
+  backup — each raising a `service_tampered` / `binary_tampered` alert.
 - **Fast restart-on-failure** (~5s) so a `taskkill` is undone quickly.
 - **Fail-closed**: deleting the on-disk passcode store keeps the service protected
   (a registry marker) and raises `unprotect_secret_tampered`.
