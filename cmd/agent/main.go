@@ -747,6 +747,10 @@ func runProcess(parentCtx context.Context) {
 	// (regedit/sc config) while self-protected. No-op off-service / unprotected.
 	go runTamperWatchdog(ctx, cfg, outbox, cfg.DeviceID)
 
+	// Keep a tray helper alive in each interactive user session (user-messaging UI).
+	// No-op off-service (dev/console). Platform-split; stubbed on non-Windows.
+	go runSessionHelperSupervisor(ctx)
+
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
 	// provider are ready (so a tamper raises a streamed/buffered alert) and before
