@@ -6,6 +6,7 @@ import (
 	"context"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,10 +19,16 @@ import (
 // presence itself. The same helper process will host Remote-Control capture later.
 
 var (
-	thShell32         = windows.NewLazySystemDLL("shell32.dll")
-	procShellNotifyIcon = thShell32.NewProc("Shell_NotifyIconW")
-	procLoadIcon        = pwUser32.NewProc("LoadIconW")
+	thShell32            = windows.NewLazySystemDLL("shell32.dll")
+	procShellNotifyIcon  = thShell32.NewProc("Shell_NotifyIconW")
+	procLoadIcon         = pwUser32.NewProc("LoadIconW")
+	procRegisterWindowMsg = pwUser32.NewProc("RegisterWindowMessageW")
 )
+
+// taskbarCreatedMsg is the "TaskbarCreated" broadcast the shell sends when Explorer
+// (re)starts; on it we must re-add our tray icon or it vanishes after an Explorer
+// restart. Resolved once at helper start.
+var taskbarCreatedMsg uint32
 
 const (
 	nimAdd        = 0x0
@@ -40,8 +47,7 @@ const (
 
 	wmApp            = 0x8000
 	trayCallbackMsg  = wmApp + 1
-	notifyVersion4   = 4
-	hwndMessageConst = ^uintptr(2) // HWND_MESSAGE == (HWND)-3
+	notifyVersion4 = 4
 )
 
 // notifyIconData mirrors NOTIFYICONDATAW (modern layout). cbSize is set from
@@ -86,13 +92,17 @@ func runTrayHelper(ctx context.Context) {
 	className, _ := windows.UTF16PtrFromString("AegisOneTrayHelper")
 
 	wndProc := syscall.NewCallback(func(hwnd windows.Handle, msg uint32, wParam, lParam uintptr) uintptr {
-		switch msg {
-		case wmDestroy:
+		switch {
+		case msg == wmDestroy:
 			procPostQuitMessage.Call(0)
 			return 0
-		case trayCallbackMsg:
+		case msg == trayCallbackMsg:
 			// Left/right click handling (context menu, open portal) arrives in a later
 			// step; for now the icon is informational.
+			return 0
+		case taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg:
+			// Explorer restarted — re-add the icon so it reappears.
+			procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&trayIconData)))
 			return 0
 		}
 		r, _, _ := procDefWindowProc.Call(uintptr(hwnd), uintptr(msg), wParam, lParam)
@@ -107,9 +117,15 @@ func runTrayHelper(ctx context.Context) {
 	}
 	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
 
-	// A message-only window is enough to receive the tray callback.
+	if tbName, err := windows.UTF16PtrFromString("TaskbarCreated"); err == nil {
+		r, _, _ := procRegisterWindowMsg.Call(uintptr(unsafe.Pointer(tbName)))
+		taskbarCreatedMsg = uint32(r)
+	}
+
+	// A normal top-level window (created hidden — never shown) reliably hosts a tray
+	// icon; a message-only window does not receive the shell's icon plumbing.
 	hwnd, _, _ := procCreateWindowEx.Call(0, uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(className)), 0, 0, 0, 0, 0, hwndMessageConst, 0, hInst, 0)
+		uintptr(unsafe.Pointer(className)), wsOverlapped, 0, 0, 0, 0, 0, 0, hInst, 0)
 	if hwnd == 0 {
 		return
 	}
@@ -132,11 +148,24 @@ func runTrayHelper(ctx context.Context) {
 
 	defer procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&trayIconData)))
 
-	// Exit cleanly when the agent context is cancelled (service stopping): post a
-	// WM_DESTROY so the message loop returns and the icon is removed.
+	// Exit cleanly when the context is cancelled OR the service's alive beacon
+	// disappears (service stopped/crashed) — so the helper never lingers orphaned and
+	// a restart never leaves two tray icons.
 	go func() {
-		<-ctx.Done()
-		procDestroyWindow.Call(hwnd)
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				procDestroyWindow.Call(hwnd)
+				return
+			case <-t.C:
+				if !serviceAliveBeaconPresent() {
+					procDestroyWindow.Call(hwnd)
+					return
+				}
+			}
+		}
 	}()
 
 	// Message loop.

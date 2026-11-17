@@ -749,7 +749,8 @@ func runProcess(parentCtx context.Context) {
 
 	// Keep a tray helper alive in each interactive user session (user-messaging UI).
 	// No-op off-service (dev/console). Platform-split; stubbed on non-Windows.
-	go runSessionHelperSupervisor(ctx)
+	startServiceAliveBeacon() // helper ties its lifetime to this beacon
+	go runSessionHelperSupervisor(ctx, cfg.SecureDir)
 
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key

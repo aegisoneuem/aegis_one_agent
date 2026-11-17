@@ -6,11 +6,39 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// uiExeName is the distinct process name for the interactive tray helper, so Task
+// Manager shows it apart from the SYSTEM service (BigFix shows BESClient.exe vs
+// BESClientUI.exe). Single-source-binary: it is a byte-copy of AegisOneClient.exe,
+// not a separately built exe.
+const uiExeName = "AegisOneClientUI.exe"
+
+// ensureHelperExe keeps a copy of the agent exe named AegisOneClientUI.exe in the
+// secure dir and returns its path (so the helper shows under that name). Version-aware
+// by size+modtime: refreshed after an agent update, cheap otherwise (two Stats). Falls
+// back to launching the agent exe itself if the copy can't be made.
+func ensureHelperExe(secureDir string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return exe
+	}
+	ui := filepath.Join(secureDir, uiExeName)
+	si, e1 := os.Stat(exe)
+	di, e2 := os.Stat(ui)
+	stale := e2 != nil || (e1 == nil && (si.Size() != di.Size() || si.ModTime().After(di.ModTime())))
+	if stale {
+		if copyFileContents(exe, ui) != nil {
+			return exe // copy failed (e.g. old helper still holds it) — launch self
+		}
+	}
+	return ui
+}
 
 // Session-helper launcher. The agent runs as LocalSystem in Session 0, which has no
 // interactive desktop — it cannot draw a tray icon or a dialog for the logged-in
@@ -54,12 +82,7 @@ func activeSessionIDs() []uint32 {
 // launchHelperInSession starts AegisOneClient.exe tray-helper inside sessionID, in the
 // logged-on user's security context and on their interactive desktop. Returns the
 // process handle so the supervisor can tell when the helper exits.
-func launchHelperInSession(sessionID uint32) (windows.Handle, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return 0, err
-	}
-
+func launchHelperInSession(sessionID uint32, helperExe string) (windows.Handle, error) {
 	var userTok windows.Token
 	if err := windows.WTSQueryUserToken(sessionID, &userTok); err != nil {
 		return 0, err // no interactive token (e.g. the session just went away)
@@ -81,13 +104,13 @@ func launchHelperInSession(sessionID uint32) (windows.Handle, error) {
 		env = nil // fall back to no custom environment
 	}
 
-	appName, err := windows.UTF16PtrFromString(exe)
+	appName, err := windows.UTF16PtrFromString(helperExe)
 	if err != nil {
 		return 0, err
 	}
 	// Writable command line buffer (CreateProcess may modify it in place).
 	cmdline := make([]uint16, 0)
-	if c, cerr := windows.UTF16FromString(`"` + exe + `" ` + sessionHelperSubcommand); cerr == nil {
+	if c, cerr := windows.UTF16FromString(`"` + helperExe + `" ` + sessionHelperSubcommand); cerr == nil {
 		cmdline = c
 	}
 	desktop, _ := windows.UTF16PtrFromString(`winsta0\default`)
@@ -112,7 +135,7 @@ func launchHelperInSession(sessionID uint32) (windows.Handle, error) {
 // session. It reconciles every 15s: launch where missing, reap exited helpers (so the
 // next tick relaunches), and drop sessions that logged off. Resource-light: a cheap
 // WTS enumerate + a few handle checks, no busy loop. Only runs as the service.
-func runSessionHelperSupervisor(ctx context.Context) {
+func runSessionHelperSupervisor(ctx context.Context, secureDir string) {
 	defer recoverLog("session-helper-supervisor")
 	if !runningAsService {
 		return // dev/console: no SeTcbPrivilege and the user IS session-interactive
@@ -126,6 +149,7 @@ func runSessionHelperSupervisor(ctx context.Context) {
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
 	reconcile := func() {
+		helperExe := ensureHelperExe(secureDir) // AegisOneClientUI.exe (distinct name)
 		active := activeSessionIDs()
 		activeSet := make(map[uint32]bool, len(active))
 		for _, s := range active {
@@ -145,7 +169,7 @@ func runSessionHelperSupervisor(ctx context.Context) {
 			if _, ok := helpers[sid]; ok {
 				continue
 			}
-			h, err := launchHelperInSession(sid)
+			h, err := launchHelperInSession(sid, helperExe)
 			if err != nil {
 				slog.Debug("session-helper: launch failed", "session", sid, "error", err.Error())
 				continue
