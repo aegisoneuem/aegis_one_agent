@@ -26,6 +26,7 @@ var (
 	procExtractIcon      = thShell32.NewProc("ExtractIconW")
 	procLoadIcon         = pwUser32.NewProc("LoadIconW")
 	procRegisterWindowMsg = pwUser32.NewProc("RegisterWindowMessageW")
+	procPostMessage      = pwUser32.NewProc("PostMessageW")
 )
 
 // trayDebugf appends a line to a diagnostic log (the helper has no console). Best
@@ -183,18 +184,22 @@ func runTrayHelper(ctx context.Context) {
 
 	// Exit cleanly when the context is cancelled OR the service's alive beacon
 	// disappears (service stopped/crashed) — so the helper never lingers orphaned and
-	// a restart never leaves two tray icons.
+	// a restart never leaves two tray icons. NOTE: DestroyWindow only works on the
+	// thread that created the window; from this goroutine we must POST a WM_CLOSE so
+	// the message-loop thread tears the window down (DefWindowProc -> WM_DESTROY ->
+	// PostQuitMessage). Calling DestroyWindow here would be silently ignored.
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				procDestroyWindow.Call(hwnd)
+				procPostMessage.Call(hwnd, wmClose, 0, 0)
 				return
 			case <-t.C:
 				if !serviceAliveBeaconPresent() {
-					procDestroyWindow.Call(hwnd)
+					trayDebugf("alive beacon gone — posting WM_CLOSE to exit helper")
+					procPostMessage.Call(hwnd, wmClose, 0, 0)
 					return
 				}
 			}
