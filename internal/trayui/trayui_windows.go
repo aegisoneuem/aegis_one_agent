@@ -59,6 +59,7 @@ var (
 
 	gdi32             = windows.NewLazySystemDLL("gdi32.dll")
 	procGetStockObject = gdi32.NewProc("GetStockObject")
+	procCreateFont     = gdi32.NewProc("CreateFontW")
 
 	procShellNotifyIcon = shell32.NewProc("Shell_NotifyIconW")
 	procExtractIcon     = shell32.NewProc("ExtractIconW")
