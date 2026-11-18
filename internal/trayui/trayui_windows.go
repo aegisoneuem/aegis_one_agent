@@ -265,9 +265,8 @@ func Run() {
 	procShellNotifyIcon.Call(nimSetVersion, uintptr(unsafe.Pointer(&iconData)))
 	defer procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&iconData)))
 
-	// Startup balloon confirms the UI is live even when Windows hides a new icon in
-	// the overflow ("^") area.
-	showBalloon("AegisOne Client", "Endpoint protection is active.")
+	// No startup balloon: this is a UEM agent, it runs silently. The tray icon is
+	// always present; a balloon appears ONLY when the server pushes a notify_user.
 
 	// Exit when the service's beacon disappears. DestroyWindow only works on the
 	// window's own thread, so POST a WM_CLOSE from here instead.
