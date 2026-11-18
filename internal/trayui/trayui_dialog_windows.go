@@ -66,8 +66,9 @@ const (
 	cbSetCurSel = 0x014E
 	cbGetCurSel = 0x0147
 	swShow     = 5
-	smCXScreen = 0
-	smCYScreen = 1
+	smCXScreen   = 0
+	smCYScreen   = 1
+	spiGetWorkArea = 0x0030
 	fwBold     = 700
 	fwNormal   = 400
 	defaultCharset = 1
@@ -235,10 +236,24 @@ func runDialog(m uimsg.Message) (string, int64) {
 	winW := int(r.right - r.left)
 	winH := int(r.bottom - r.top)
 
-	scrW, _, _ := procGetSysMetrics.Call(smCXScreen)
-	scrH, _, _ := procGetSysMetrics.Call(smCYScreen)
-	x := (int(scrW) - winW) / 2
-	y := (int(scrH) - winH) / 2
+	// Position by kind: an action/reboot request sits in the SCREEN CENTRE (it demands
+	// attention); a plain message/notification sits BOTTOM-RIGHT near the tray, like a
+	// toast. Use the work area so it never overlaps the taskbar.
+	var wa winRect
+	procSystemParams.Call(spiGetWorkArea, 0, uintptr(unsafe.Pointer(&wa)), 0)
+	if wa.right == 0 || wa.bottom == 0 { // fallback to full screen
+		sw, _, _ := procGetSysMetrics.Call(smCXScreen)
+		sh, _, _ := procGetSysMetrics.Call(smCYScreen)
+		wa = winRect{0, 0, int32(sw), int32(sh)}
+	}
+	var x, y int
+	if m.Kind == uimsg.KindAction {
+		x = int(wa.left) + (int(wa.right-wa.left)-winW)/2
+		y = int(wa.top) + (int(wa.bottom-wa.top)-winH)/2
+	} else {
+		x = int(wa.right) - winW - 16 // bottom-right, near the tray
+		y = int(wa.bottom) - winH - 16
+	}
 
 	// Caption = product (BigFix-style); the action title is a bold heading inside.
 	// WS_EX_DLGMODALFRAME + clearing WM_SETICON removes the stray default caption icon.
