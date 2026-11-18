@@ -1154,6 +1154,24 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			mockPrintf("Sent command -> id: stop-001, type: stop_agent, token_device=%s exp=%d invalid=%v (signed)\n", dev, exp, invalid)
 		}
 
+		// AEGIS_NOTIFY_USER="Title|Text" pushes a tray notification to the logged-on
+		// user(s). AEGIS_NOTIFY_TEXT overrides the text if AEGIS_NOTIFY_USER has no "|".
+		if nu := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_USER")); nu != "" {
+			title, text := nu, strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_TEXT"))
+			if i := strings.Index(nu, "|"); i >= 0 {
+				title, text = strings.TrimSpace(nu[:i]), strings.TrimSpace(nu[i+1:])
+			}
+			payload, _ := json.Marshal(map[string]string{"title": title, "text": text})
+			notifyCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
+				CommandId: "notify-001", Type: "notify_user", Payload: payload,
+			})}}
+			if err := connection.send(notifyCmd); err != nil {
+				log.Printf("failed to send notify_user command: %v", err)
+				return
+			}
+			mockPrintf("Sent command -> id: notify-001, type: notify_user, title=%q (signed)\n", title)
+		}
+
 		// Optionally set a SHORT unprotect passcode (ManageEngine-style). AEGIS_SET_PASSCODE
 		// = the 8-10 char code; AEGIS_PASSCODE_ISSUED_AT overrides issued_at. The agent
 		// stores only a PBKDF2 hash; stop/uninstall then accept this passcode.

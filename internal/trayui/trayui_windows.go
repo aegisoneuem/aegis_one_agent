@@ -9,14 +9,20 @@
 package trayui
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/uimsg"
 )
 
 // ServiceAliveEventName is the cross-session beacon the SERVICE creates and holds
@@ -68,9 +74,14 @@ const (
 	idiApplication  = 32512
 	wmApp           = 0x8000
 	trayCallbackMsg = wmApp + 1
+	wmUINotify      = wmApp + 2 // posted by the pipe reader → drain + show balloon on the UI thread
 	notifyVersion4  = 4
 	synchronize     = 0x00100000
 )
+
+// notifyQueue carries pipe notifications to the UI thread (Shell_NotifyIcon must run
+// on the window's own thread). Buffered so the reader never blocks.
+var notifyQueue = make(chan uimsg.Message, 16)
 
 type wndClassEx struct {
 	cbSize        uint32
@@ -200,6 +211,16 @@ func Run() {
 		case taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg:
 			procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&iconData)))
 			return 0
+		case msg == wmUINotify:
+			// Drain any queued notifications and show them (on the UI thread).
+			for {
+				select {
+				case m := <-notifyQueue:
+					showBalloon(m.Title, m.Text)
+				default:
+					return 0
+				}
+			}
 		}
 		r, _, _ := procDefWindowProc.Call(uintptr(hwnd), uintptr(msg), wParam, lParam)
 		return r
@@ -262,6 +283,9 @@ func Run() {
 		}
 	}()
 
+	// Connect to the service's notification pipe and render messages it pushes.
+	go runNotifyPipeClient(hwnd)
+
 	var msg msgStruct
 	for {
 		r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
@@ -270,5 +294,44 @@ func Run() {
 		}
 		procTranslateMsg.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
+	}
+}
+
+// runNotifyPipeClient keeps a connection to the service's UI pipe and renders the
+// notifications it pushes. It reconnects on drop (service restart). Each notify is
+// queued and the UI thread is poked via WM_UINotify so Shell_NotifyIcon runs on the
+// window's own thread.
+func runNotifyPipeClient(hwnd uintptr) {
+	path := `\\.\pipe\` + uimsg.PipeName
+	for {
+		if !beaconPresent() {
+			return // service gone — the beacon watcher is tearing us down
+		}
+		conn, err := winio.DialPipe(path, nil)
+		if err != nil {
+			time.Sleep(2 * time.Second) // service not ready / no pipe yet — retry
+			continue
+		}
+		readNotifyConn(conn, hwnd)
+		_ = conn.Close()
+		time.Sleep(1 * time.Second) // dropped — reconnect
+	}
+}
+
+func readNotifyConn(conn net.Conn, hwnd uintptr) {
+	sc := bufio.NewScanner(conn)
+	sc.Buffer(make([]byte, 0, 4096), 1<<20)
+	for sc.Scan() {
+		var m uimsg.Message
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			continue
+		}
+		if m.Kind == uimsg.KindNotify {
+			select {
+			case notifyQueue <- m:
+			default: // queue full — drop the oldest-style; never block the reader
+			}
+			procPostMessage.Call(hwnd, wmUINotify, 0, 0)
+		}
 	}
 }

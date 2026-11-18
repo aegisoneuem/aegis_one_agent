@@ -60,6 +60,7 @@ func newDispatcher(cfg config.Config, outbox chan *pb.AgentMessage, installJobs 
 		"stop_agent":               d.handleStopAgentCmd,
 		"set_unprotect_secret":     d.handleSetUnprotectSecretCmd,
 		"remote_control":           d.handleRemoteControlCmd,
+		"notify_user":              d.handleNotifyUserCmd,
 	}
 	return d
 }
