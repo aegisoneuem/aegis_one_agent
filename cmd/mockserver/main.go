@@ -1186,6 +1186,9 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if c := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_CONFIRM")); c != "" {
 				p["confirm_text"] = c
 			}
+			if oa := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_ON_ACCEPT")); oa != "" {
+				p["on_accept"] = oa // e.g. "reboot": primary button actually reboots
+			}
 			if so := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_SNOOZE_OPTS")); so != "" {
 				var opts []int64
 				for _, s := range splitCSV(so) {

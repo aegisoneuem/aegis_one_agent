@@ -19,7 +19,11 @@ import (
 func humanizeSnooze(s int64) string {
 	switch {
 	case s < 3600:
-		return fmt.Sprintf("in %d minutes", s/60)
+		if mn := s / 60; mn == 1 {
+			return "in 1 minute"
+		} else {
+			return fmt.Sprintf("in %d minutes", mn)
+		}
 	case s < 86400:
 		if h := s / 3600; h == 1 {
 			return "in 1 hour"
@@ -193,7 +197,7 @@ func runDialog(m uimsg.Message) (string, int64) {
 	hasSnooze := m.Kind == uimsg.KindAction && m.AllowSnooze
 	snoozeOpts := m.SnoozeOpts
 	if hasSnooze && len(snoozeOpts) == 0 {
-		snoozeOpts = []int64{1800, 3600, 21600} // 30m, 1h, 6h
+		snoozeOpts = []int64{60, 300, 1800, 3600, 10800, 21600, 43200, 86400} // 1m..24h
 	}
 
 	const (
