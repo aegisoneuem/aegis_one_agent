@@ -30,9 +30,12 @@ type Message struct {
 	ID           string   `json:"id,omitempty"`            // correlates an action with its response
 	Title        string   `json:"title,omitempty"`
 	Text         string   `json:"text,omitempty"`
+	Detail       string   `json:"detail,omitempty"`        // action: secondary line (e.g. "This reboot applies: <patch>")
 	Buttons      []string `json:"buttons,omitempty"`       // action choices, e.g. ["Take Action","Cancel"]
 	DeadlineUnix int64    `json:"deadline_unix,omitempty"` // action: auto-run deadline (0 = none)
 	AllowSnooze  bool     `json:"allow_snooze,omitempty"`  // action: offer a Snooze control
-	Action       string   `json:"action,omitempty"`        // response: chosen button / "snoozed" / "dismissed"
+	SnoozeOpts   []int64  `json:"snooze_opts,omitempty"`   // action: snooze durations (seconds) for the dropdown
+	ConfirmText  string   `json:"confirm_text,omitempty"`  // action: if set, the primary button opens a confirmation dialog first
+	Action       string   `json:"action,omitempty"`        // response: chosen button / "snoozed" / "dismissed" / "cancelled"
 	SnoozeSecs   int64    `json:"snooze_secs,omitempty"`   // response: chosen snooze duration
 }

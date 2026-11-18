@@ -1180,6 +1180,24 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_SNOOZE")) != "" {
 				p["allow_snooze"] = true
 			}
+			if d := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_DETAIL")); d != "" {
+				p["detail"] = d
+			}
+			if c := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_CONFIRM")); c != "" {
+				p["confirm_text"] = c
+			}
+			if so := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_SNOOZE_OPTS")); so != "" {
+				var opts []int64
+				for _, s := range splitCSV(so) {
+					if v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && v > 0 {
+						opts = append(opts, v)
+					}
+				}
+				if len(opts) > 0 {
+					p["snooze_opts"] = opts
+					p["allow_snooze"] = true
+				}
+			}
 			payload, _ := json.Marshal(p)
 			notifyCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 				CommandId: "notify-001", Type: "notify_user", Payload: payload,

@@ -3,6 +3,7 @@
 package trayui
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"syscall"
@@ -13,6 +14,26 @@ import (
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/uimsg"
 )
+
+// humanizeSnooze turns a snooze duration in seconds into a dropdown label.
+func humanizeSnooze(s int64) string {
+	switch {
+	case s < 3600:
+		return fmt.Sprintf("in %d minutes", s/60)
+	case s < 86400:
+		if h := s / 3600; h == 1 {
+			return "in 1 hour"
+		} else {
+			return fmt.Sprintf("in %d hours", h)
+		}
+	default:
+		if d := s / 86400; d == 1 {
+			return "in 1 day"
+		} else {
+			return fmt.Sprintf("in %d days", d)
+		}
+	}
+}
 
 // Native message / action-request windows (BigFix "Action Requests" style). A
 // KindMessage shows text the user reads and closes; a KindAction shows choice buttons
@@ -35,6 +56,11 @@ const (
 	wmSetIcon  = 0x0080
 	stmSetIcon = 0x0170
 	wsExDlgModalFrame = 0x00000001
+	wsVScroll  = 0x00200000
+	cbsDropDownList = 0x0003
+	cbAddString = 0x0143
+	cbSetCurSel = 0x014E
+	cbGetCurSel = 0x0147
 	swShow     = 5
 	smCXScreen = 0
 	smCYScreen = 1
@@ -65,9 +91,11 @@ type btnInfo struct {
 }
 
 type dlgState struct {
-	buttons map[uintptr]btnInfo
-	action  string
-	snooze  int64
+	buttons    map[uintptr]btnInfo
+	comboHwnd  uintptr // snooze dropdown (0 = none)
+	snoozeOpts []int64 // seconds, parallel to the dropdown entries
+	action     string
+	snooze     int64
 }
 
 var (
@@ -87,6 +115,13 @@ func dlgWndProc(hwnd windows.Handle, msg uint32, wParam, lParam uintptr) uintptr
 		if st != nil {
 			if bi, ok := st.buttons[id]; ok {
 				st.action, st.snooze = bi.action, bi.snooze
+				// Snooze: read the chosen duration from the dropdown if present.
+				if bi.action == "snoozed" && st.comboHwnd != 0 && len(st.snoozeOpts) > 0 {
+					idx, _, _ := procSendMessage.Call(st.comboHwnd, cbGetCurSel, 0, 0)
+					if i := int(int32(idx)); i >= 0 && i < len(st.snoozeOpts) {
+						st.snooze = st.snoozeOpts[i]
+					}
+				}
 				procDestroyWindow.Call(uintptr(hwnd))
 			}
 		}
@@ -155,24 +190,41 @@ func runDialog(m uimsg.Message) (string, int64) {
 	if m.Kind != uimsg.KindAction || len(labels) == 0 {
 		labels = []string{"Close"}
 	}
-
-	// Clean layout: icon on the left, bold title, wrapped body, deadline, buttons on
-	// the bottom-right. Height grows with a deadline line.
-	const (
-		width   = 500
-		margin  = 24
-		textX   = 84 // right of the icon
-		textW   = width - textX - margin
-	)
-	bodyY := 70
-	bodyH := 96
-	clientH := 230 // height of the CLIENT area (not the whole window)
-	if m.DeadlineUnix > 0 {
-		clientH = 262
+	hasSnooze := m.Kind == uimsg.KindAction && m.AllowSnooze
+	snoozeOpts := m.SnoozeOpts
+	if hasSnooze && len(snoozeOpts) == 0 {
+		snoozeOpts = []int64{1800, 3600, 21600} // 30m, 1h, 6h
 	}
 
+	const (
+		width  = 540
+		margin = 24
+		textX  = 84 // right of the icon
+		textW  = width - textX - margin
+		bh     = 32
+		bw     = 120
+		gap    = 10
+		bodyH  = 54
+	)
+
+	// Top-down layout cursor → also yields the client height so nothing is clipped.
+	titleY := 22
+	bodyY := titleY + 34
+	cur := bodyY + bodyH + 6
+	detailY, deadlineY := 0, 0
+	if m.Detail != "" {
+		detailY = cur
+		cur += 44
+	}
+	if m.DeadlineUnix > 0 {
+		deadlineY = cur
+		cur += 24
+	}
+	rowY := cur + 8
+	clientH := rowY + bh + 16
+
 	// Convert the desired CLIENT size into the full WINDOW size (so the title bar +
-	// borders don't eat the buttons). Without this the buttons fell below the frame.
+	// borders don't eat the buttons).
 	style := uint32(wsCaption | wsSysMenu | wsVisible)
 	r := winRect{0, 0, int32(width), int32(clientH)}
 	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&r)), uintptr(style), 0)
@@ -184,9 +236,8 @@ func runDialog(m uimsg.Message) (string, int64) {
 	x := (int(scrW) - winW) / 2
 	y := (int(scrH) - winH) / 2
 
-	// Caption = product (BigFix-style); the action title is a bold heading inside, so
-	// it never looks duplicated. WS_EX_DLGMODALFRAME + clearing WM_SETICON removes the
-	// stray default caption icon for a clean look.
+	// Caption = product (BigFix-style); the action title is a bold heading inside.
+	// WS_EX_DLGMODALFRAME + clearing WM_SETICON removes the stray default caption icon.
 	captionPtr, _ := windows.UTF16PtrFromString("AegisOne Client")
 	exStyle := uintptr(wsExDlgModalFrame)
 	if m.Kind == uimsg.KindAction {
@@ -201,7 +252,7 @@ func runDialog(m uimsg.Message) (string, int64) {
 	procSendMessage.Call(hwnd, wmSetIcon, 0, 0) // ICON_SMALL = none
 	procSendMessage.Call(hwnd, wmSetIcon, 1, 0) // ICON_BIG   = none
 
-	st := &dlgState{buttons: map[uintptr]btnInfo{}}
+	st := &dlgState{buttons: map[uintptr]btnInfo{}, snoozeOpts: snoozeOpts}
 	dlgMu.Lock()
 	dlgStates[hwnd] = st
 	dlgMu.Unlock()
@@ -211,39 +262,51 @@ func runDialog(m uimsg.Message) (string, int64) {
 		dlgMu.Unlock()
 	}()
 
-	// Icon (32x32) on the left.
+	// Icon on the left, aligned with the title.
 	iconCtrl, _, _ := procCreateWindowEx.Call(0,
 		uintptr(unsafe.Pointer(mustUTF16("STATIC"))), uintptr(unsafe.Pointer(mustUTF16(""))),
-		wsChild|wsVisible|ssIcon, margin, 26, 32, 32, hwnd, 0, hInst, 0)
+		wsChild|wsVisible|ssIcon, margin, uintptr(titleY+2), 32, 32, hwnd, 0, hInst, 0)
 	if iconCtrl != 0 && icon != 0 {
 		procSendMessage.Call(iconCtrl, stmSetIcon, icon, 0)
 	}
 
-	// Bold title + wrapped body + optional deadline.
-	newControl(hwnd, hInst, titleFont, "STATIC", m.Title, wsChild|wsVisible|ssLeft, textX, 24, textW, 30, 0)
+	// Bold title + wrapped body + optional detail + deadline.
+	newControl(hwnd, hInst, titleFont, "STATIC", m.Title, wsChild|wsVisible|ssLeft, textX, titleY, textW, 30, 0)
 	newControl(hwnd, hInst, bodyFont, "STATIC", m.Text, wsChild|wsVisible|ssLeft, textX, bodyY, textW, bodyH, 0)
-	if m.DeadlineUnix > 0 {
+	if detailY > 0 {
+		newControl(hwnd, hInst, bodyFont, "STATIC", m.Detail, wsChild|wsVisible|ssLeft, textX, detailY, textW, 40, 0)
+	}
+	if deadlineY > 0 {
 		dl := "This action runs automatically at " + time.Unix(m.DeadlineUnix, 0).Format("Mon 02 Jan, 3:04 PM") + "."
-		newControl(hwnd, hInst, bodyFont, "STATIC", dl, wsChild|wsVisible|ssLeft, textX, bodyY+bodyH+6, textW, 20, 0)
+		newControl(hwnd, hInst, bodyFont, "STATIC", dl, wsChild|wsVisible|ssLeft, textX, deadlineY, textW, 20, 0)
 	}
 
-	// Buttons, right-aligned along the bottom.
-	const bw, bh, gap = 124, 32, 10
+	// Bottom row: action buttons on the right.
 	bx := width - margin - bw
-	by := clientH - bh - 20
 	for i := len(labels) - 1; i >= 0; i-- {
 		id := uintptr(100 + i)
-		style := uint32(wsChild | wsVisible | wsTabStop)
+		bstyle := uint32(wsChild | wsVisible | wsTabStop)
 		if i == 0 {
-			style |= bsDefPushBtn
+			bstyle |= bsDefPushBtn
 		}
 		st.buttons[id] = btnInfo{action: labels[i]}
-		newControl(hwnd, hInst, bodyFont, "BUTTON", labels[i], style, bx, by, bw, bh, id)
+		newControl(hwnd, hInst, bodyFont, "BUTTON", labels[i], bstyle, bx, rowY, bw, bh, id)
 		bx -= bw + gap
 	}
-	if m.Kind == uimsg.KindAction && m.AllowSnooze {
-		st.buttons[snoozeButtonID] = btnInfo{action: "snoozed", snooze: snoozeSeconds}
-		newControl(hwnd, hInst, bodyFont, "BUTTON", "Snooze 30m", wsChild|wsVisible|wsTabStop, margin, by, bw, bh, snoozeButtonID)
+	// Snooze dropdown + button on the left (BigFix "remind me again" style).
+	if hasSnooze {
+		combo, _, _ := procCreateWindowEx.Call(0,
+			uintptr(unsafe.Pointer(mustUTF16("COMBOBOX"))), uintptr(unsafe.Pointer(mustUTF16(""))),
+			wsChild|wsVisible|wsTabStop|cbsDropDownList|wsVScroll,
+			margin, uintptr(rowY+2), 150, 220, hwnd, 0, hInst, 0)
+		procSendMessage.Call(combo, wmSetFont, bodyFont, 1)
+		for _, s := range snoozeOpts {
+			procSendMessage.Call(combo, cbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(humanizeSnooze(s)))))
+		}
+		procSendMessage.Call(combo, cbSetCurSel, 0, 0)
+		st.comboHwnd = combo
+		st.buttons[snoozeButtonID] = btnInfo{action: "snoozed", snooze: snoozeOpts[0]}
+		newControl(hwnd, hInst, bodyFont, "BUTTON", "Snooze", wsChild|wsVisible|wsTabStop, margin+158, rowY, 92, bh, snoozeButtonID)
 	}
 
 	procSetForeground.Call(hwnd)

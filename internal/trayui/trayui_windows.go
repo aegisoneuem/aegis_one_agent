@@ -364,6 +364,18 @@ func readNotifyConn(conn net.Conn, hwnd uintptr, respond func(uimsg.Message)) {
 			debugf("action received: id=%q title=%q", m.ID, m.Title)
 			go func(req uimsg.Message) {
 				action, snooze := runDialog(req)
+				// Two-step confirm (BigFix "Confirmation Required"): if the user chose
+				// the primary/default button and a confirmation message is set, require
+				// an explicit acknowledgement before reporting the action.
+				if req.ConfirmText != "" && len(req.Buttons) > 0 && action == req.Buttons[0] {
+					confirm, _ := runDialog(uimsg.Message{
+						Kind: uimsg.KindAction, Title: "Confirmation Required",
+						Text: req.ConfirmText, Buttons: []string{action, "Cancel"},
+					})
+					if confirm != action {
+						action = "cancelled"
+					}
+				}
 				respond(uimsg.Message{Kind: uimsg.KindResponse, ID: req.ID, Action: action, SnoozeSecs: snooze})
 			}(m)
 		}
