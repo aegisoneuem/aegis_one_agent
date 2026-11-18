@@ -28,6 +28,9 @@ func (d *dispatcher) handleNotifyUserCmd(ctx context.Context, _ pb.AgentControlP
 			p.Text = strings.TrimSpace(parts[1])
 		}
 	}
+	// Defensive: strip stray surrounding quotes (common when set via a shell env var).
+	p.Title = strings.Trim(strings.TrimSpace(p.Title), `"`)
+	p.Text = strings.Trim(strings.TrimSpace(p.Text), `"`)
 	if p.Title == "" {
 		p.Title = "AegisOne Client"
 	}
