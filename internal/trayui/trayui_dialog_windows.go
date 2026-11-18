@@ -32,7 +32,9 @@ const (
 	bsDefPushBtn = 0x1
 	wmCommand  = 0x0111
 	wmSetFont  = 0x0030
+	wmSetIcon  = 0x0080
 	stmSetIcon = 0x0170
+	wsExDlgModalFrame = 0x00000001
 	swShow     = 5
 	smCXScreen = 0
 	smCYScreen = 1
@@ -54,6 +56,8 @@ func makeFont(height, weight int) uintptr {
 		uintptr(unsafe.Pointer(face)))
 	return h
 }
+
+type winRect struct{ left, top, right, bottom int32 }
 
 type btnInfo struct {
 	action string
@@ -162,29 +166,40 @@ func runDialog(m uimsg.Message) (string, int64) {
 	)
 	bodyY := 70
 	bodyH := 96
-	height := 236
+	clientH := 230 // height of the CLIENT area (not the whole window)
 	if m.DeadlineUnix > 0 {
-		height = 268
+		clientH = 262
 	}
+
+	// Convert the desired CLIENT size into the full WINDOW size (so the title bar +
+	// borders don't eat the buttons). Without this the buttons fell below the frame.
+	style := uint32(wsCaption | wsSysMenu | wsVisible)
+	r := winRect{0, 0, int32(width), int32(clientH)}
+	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&r)), uintptr(style), 0)
+	winW := int(r.right - r.left)
+	winH := int(r.bottom - r.top)
 
 	scrW, _, _ := procGetSysMetrics.Call(smCXScreen)
 	scrH, _, _ := procGetSysMetrics.Call(smCYScreen)
-	x := (int(scrW) - width) / 2
-	y := (int(scrH) - height) / 2
+	x := (int(scrW) - winW) / 2
+	y := (int(scrH) - winH) / 2
 
-	// Caption = product (BigFix-style "BigFix Action Requests"); the action title is a
-	// bold heading inside, so it never looks duplicated.
+	// Caption = product (BigFix-style); the action title is a bold heading inside, so
+	// it never looks duplicated. WS_EX_DLGMODALFRAME + clearing WM_SETICON removes the
+	// stray default caption icon for a clean look.
 	captionPtr, _ := windows.UTF16PtrFromString("AegisOne Client")
-	exStyle := uintptr(0)
+	exStyle := uintptr(wsExDlgModalFrame)
 	if m.Kind == uimsg.KindAction {
-		exStyle = wsExTopmost // action requests pop to the front
+		exStyle |= wsExTopmost // action requests pop to the front
 	}
 	hwnd, _, _ := procCreateWindowEx.Call(exStyle, uintptr(unsafe.Pointer(dlgClassPtr)),
-		uintptr(unsafe.Pointer(captionPtr)), wsCaption|wsSysMenu|wsVisible,
-		uintptr(x), uintptr(y), width, uintptr(height), 0, 0, hInst, 0)
+		uintptr(unsafe.Pointer(captionPtr)), uintptr(style),
+		uintptr(x), uintptr(y), uintptr(winW), uintptr(winH), 0, 0, hInst, 0)
 	if hwnd == 0 {
 		return "dismissed", 0
 	}
+	procSendMessage.Call(hwnd, wmSetIcon, 0, 0) // ICON_SMALL = none
+	procSendMessage.Call(hwnd, wmSetIcon, 1, 0) // ICON_BIG   = none
 
 	st := &dlgState{buttons: map[uintptr]btnInfo{}}
 	dlgMu.Lock()
@@ -215,7 +230,7 @@ func runDialog(m uimsg.Message) (string, int64) {
 	// Buttons, right-aligned along the bottom.
 	const bw, bh, gap = 124, 32, 10
 	bx := width - margin - bw
-	by := height - bh - 20
+	by := clientH - bh - 20
 	for i := len(labels) - 1; i >= 0; i-- {
 		id := uintptr(100 + i)
 		style := uint32(wsChild | wsVisible | wsTabStop)

@@ -52,6 +52,7 @@ var (
 	procGetSysMetrics   = user32.NewProc("GetSystemMetrics")
 	procSetForeground   = user32.NewProc("SetForegroundWindow")
 	procUpdateWindow    = user32.NewProc("UpdateWindow")
+	procAdjustWindowRect = user32.NewProc("AdjustWindowRect")
 
 	procGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
 	procGetConsoleWin   = kernel32.NewProc("GetConsoleWindow")
