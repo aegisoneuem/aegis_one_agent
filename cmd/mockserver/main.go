@@ -1155,13 +1155,32 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		}
 
 		// AEGIS_NOTIFY_USER="Title|Text" pushes a tray notification to the logged-on
-		// user(s). AEGIS_NOTIFY_TEXT overrides the text if AEGIS_NOTIFY_USER has no "|".
+		// user(s). Optional:
+		//   AEGIS_NOTIFY_KIND     = info (default) | message | action
+		//   AEGIS_NOTIFY_BUTTONS  = comma list (action), e.g. "Restart now,Later"
+		//   AEGIS_NOTIFY_DEADLINE = seconds from now (action) → shows an auto-run time
+		//   AEGIS_NOTIFY_SNOOZE   = 1 (action) → offer a Snooze button
 		if nu := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_USER")); nu != "" {
 			title, text := nu, strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_TEXT"))
 			if i := strings.Index(nu, "|"); i >= 0 {
 				title, text = strings.TrimSpace(nu[:i]), strings.TrimSpace(nu[i+1:])
 			}
-			payload, _ := json.Marshal(map[string]string{"title": title, "text": text})
+			p := map[string]any{"title": title, "text": text}
+			if k := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_KIND")); k != "" {
+				p["kind"] = k
+			}
+			if b := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_BUTTONS")); b != "" {
+				p["buttons"] = splitCSV(b)
+			}
+			if ds := strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_DEADLINE")); ds != "" {
+				if secs, err := strconv.Atoi(ds); err == nil && secs > 0 {
+					p["deadline_unix"] = time.Now().Add(time.Duration(secs) * time.Second).Unix()
+				}
+			}
+			if strings.TrimSpace(os.Getenv("AEGIS_NOTIFY_SNOOZE")) != "" {
+				p["allow_snooze"] = true
+			}
+			payload, _ := json.Marshal(p)
 			notifyCmd := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 				CommandId: "notify-001", Type: "notify_user", Payload: payload,
 			})}}
@@ -1169,7 +1188,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				log.Printf("failed to send notify_user command: %v", err)
 				return
 			}
-			mockPrintf("Sent command -> id: notify-001, type: notify_user, title=%q (signed)\n", title)
+			mockPrintf("Sent command -> id: notify-001, type: notify_user, kind=%q title=%q (signed)\n", p["kind"], title)
 		}
 
 		// Optionally set a SHORT unprotect passcode (ManageEngine-style). AEGIS_SET_PASSCODE

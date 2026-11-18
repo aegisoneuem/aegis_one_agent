@@ -6,7 +6,7 @@ import (
 )
 
 func TestMessageRoundTrip(t *testing.T) {
-	in := Message{Kind: KindPrompt, ID: "p1", Title: "Reboot", Text: "Restart now?", Buttons: []string{"Now", "Later"}}
+	in := Message{Kind: KindAction, ID: "p1", Title: "Reboot", Text: "Restart now?", Buttons: []string{"Now", "Later"}, DeadlineUnix: 123, AllowSnooze: true}
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatal(err)
@@ -15,7 +15,7 @@ func TestMessageRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Kind != KindPrompt || out.ID != "p1" || out.Title != "Reboot" || len(out.Buttons) != 2 {
+	if out.Kind != KindAction || out.ID != "p1" || out.Title != "Reboot" || len(out.Buttons) != 2 || out.DeadlineUnix != 123 || !out.AllowSnooze {
 		t.Fatalf("round-trip mismatch: %+v", out)
 	}
 }

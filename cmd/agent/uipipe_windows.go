@@ -61,11 +61,9 @@ func unregisterUIConn(c net.Conn) {
 	_ = c.Close()
 }
 
-// showUserNotification broadcasts a one-way info notification to every connected UI
-// and returns how many UI sessions it reached (0 = no tray UI connected).
-func showUserNotification(title, text string) int {
-	return broadcastUI(uimsg.Message{Kind: uimsg.KindNotify, Title: title, Text: text})
-}
+// deliverUIMessage broadcasts a UI message (notify/message/action) to every connected
+// tray UI and returns how many it reached (0 = none connected).
+func deliverUIMessage(m uimsg.Message) int { return broadcastUI(m) }
 
 // broadcastUI writes m to every connected UI and returns the number reached.
 func broadcastUI(m uimsg.Message) int {
@@ -97,8 +95,8 @@ func readUIResponses(_ context.Context, c net.Conn) {
 			continue
 		}
 		if m.Kind == uimsg.KindResponse {
-			// Step 3 wires this to an audit event + server response.
 			slog.Info("ui-notify: user response", "id", m.ID, "action", m.Action)
+			reportUserResponse(m.ID, m.Action, m.SnoozeSecs)
 		}
 	}
 }

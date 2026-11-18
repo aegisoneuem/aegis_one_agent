@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -46,10 +47,18 @@ var (
 	procLoadIcon        = user32.NewProc("LoadIconW")
 	procRegisterWinMsg  = user32.NewProc("RegisterWindowMessageW")
 	procShowWindow      = user32.NewProc("ShowWindow")
+	procDestroyWindow   = user32.NewProc("DestroyWindow")
+	procSendMessage     = user32.NewProc("SendMessageW")
+	procGetSysMetrics   = user32.NewProc("GetSystemMetrics")
+	procSetForeground   = user32.NewProc("SetForegroundWindow")
+	procUpdateWindow    = user32.NewProc("UpdateWindow")
 
 	procGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
 	procGetConsoleWin   = kernel32.NewProc("GetConsoleWindow")
 	procOpenEvent       = kernel32.NewProc("OpenEventW")
+
+	gdi32             = windows.NewLazySystemDLL("gdi32.dll")
+	procGetStockObject = gdi32.NewProc("GetStockObject")
 
 	procShellNotifyIcon = shell32.NewProc("Shell_NotifyIconW")
 	procExtractIcon     = shell32.NewProc("ExtractIconW")
@@ -313,13 +322,24 @@ func runNotifyPipeClient(hwnd uintptr) {
 			continue
 		}
 		debugf("connected to notify pipe %s", path)
-		readNotifyConn(conn, hwnd)
+		var sendMu sync.Mutex
+		respond := func(resp uimsg.Message) {
+			b, err := json.Marshal(resp)
+			if err != nil {
+				return
+			}
+			b = append(b, '\n')
+			sendMu.Lock()
+			_, _ = conn.Write(b)
+			sendMu.Unlock()
+		}
+		readNotifyConn(conn, hwnd, respond)
 		_ = conn.Close()
 		time.Sleep(1 * time.Second) // dropped — reconnect
 	}
 }
 
-func readNotifyConn(conn net.Conn, hwnd uintptr) {
+func readNotifyConn(conn net.Conn, hwnd uintptr, respond func(uimsg.Message)) {
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 0, 4096), 1<<20)
 	for sc.Scan() {
@@ -327,13 +347,23 @@ func readNotifyConn(conn net.Conn, hwnd uintptr) {
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue
 		}
-		if m.Kind == uimsg.KindNotify {
+		switch m.Kind {
+		case uimsg.KindNotify:
 			debugf("notify received: title=%q", m.Title)
 			select {
 			case notifyQueue <- m:
 			default: // queue full — never block the reader
 			}
 			procPostMessage.Call(hwnd, wmUINotify, 0, 0)
+		case uimsg.KindMessage:
+			debugf("message received: title=%q", m.Title)
+			go runDialog(m) // persistent window, user closes it; no response
+		case uimsg.KindAction:
+			debugf("action received: id=%q title=%q", m.ID, m.Title)
+			go func(req uimsg.Message) {
+				action, snooze := runDialog(req)
+				respond(uimsg.Message{Kind: uimsg.KindResponse, ID: req.ID, Action: action, SnoozeSecs: snooze})
+			}(m)
 		}
 	}
 }

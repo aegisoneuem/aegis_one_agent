@@ -2,9 +2,13 @@
 
 package main
 
-import "context"
+import (
+	"context"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/uimsg"
+)
 
 // Non-Windows: the tray UI pipe is Windows-specific; no-op.
 func runUINotifyServer(_ context.Context) {}
 
-func showUserNotification(_, _ string) int { return 0 }
+func deliverUIMessage(_ uimsg.Message) int { return 0 }

@@ -7,24 +7,32 @@ package uimsg
 // PipeName is the base name of the UI pipe. The Windows path is \\.\pipe\<PipeName>.
 const PipeName = "AegisOneClientUI"
 
-// Kind is the message type.
+// Kind is the message type — it maps to how the UI renders it (BigFix taxonomy).
 type Kind string
 
 const (
-	// KindNotify: one-way informational message → shown as a tray balloon.
+	// KindNotify: one-way info → tray balloon, auto-dismisses after a few seconds.
 	KindNotify Kind = "notify"
-	// KindPrompt: a message that asks the user to choose (Step 3) → shown as a dialog.
-	KindPrompt Kind = "prompt"
-	// KindResponse: UI → service, the user's choice for a prompt (Step 3).
+	// KindMessage: a window with text the user READS and closes with X. Persistent
+	// (does not auto-dismiss). No response expected.
+	KindMessage Kind = "message"
+	// KindAction: an action request → a prominent window with Title/Text, an optional
+	// deadline, choice Buttons, and an optional Snooze. The user's choice comes back
+	// as a KindResponse (correlated by ID).
+	KindAction Kind = "action"
+	// KindResponse: UI → service, the user's choice for a KindAction.
 	KindResponse Kind = "response"
 )
 
 // Message is one line of JSON on the pipe.
 type Message struct {
-	Kind    Kind     `json:"kind"`
-	ID      string   `json:"id,omitempty"`      // correlates a prompt with its response
-	Title   string   `json:"title,omitempty"`
-	Text    string   `json:"text,omitempty"`
-	Buttons []string `json:"buttons,omitempty"` // prompt choices (Step 3)
-	Action  string   `json:"action,omitempty"`  // response: which button / "dismissed"
+	Kind         Kind     `json:"kind"`
+	ID           string   `json:"id,omitempty"`            // correlates an action with its response
+	Title        string   `json:"title,omitempty"`
+	Text         string   `json:"text,omitempty"`
+	Buttons      []string `json:"buttons,omitempty"`       // action choices, e.g. ["Take Action","Cancel"]
+	DeadlineUnix int64    `json:"deadline_unix,omitempty"` // action: auto-run deadline (0 = none)
+	AllowSnooze  bool     `json:"allow_snooze,omitempty"`  // action: offer a Snooze control
+	Action       string   `json:"action,omitempty"`        // response: chosen button / "snoozed" / "dismissed"
+	SnoozeSecs   int64    `json:"snooze_secs,omitempty"`   // response: chosen snooze duration
 }
