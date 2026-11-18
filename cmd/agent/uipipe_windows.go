@@ -61,24 +61,30 @@ func unregisterUIConn(c net.Conn) {
 	_ = c.Close()
 }
 
-// showUserNotification broadcasts a one-way info notification to every connected UI.
-func showUserNotification(title, text string) {
-	broadcastUI(uimsg.Message{Kind: uimsg.KindNotify, Title: title, Text: text})
+// showUserNotification broadcasts a one-way info notification to every connected UI
+// and returns how many UI sessions it reached (0 = no tray UI connected).
+func showUserNotification(title, text string) int {
+	return broadcastUI(uimsg.Message{Kind: uimsg.KindNotify, Title: title, Text: text})
 }
 
-func broadcastUI(m uimsg.Message) {
+// broadcastUI writes m to every connected UI and returns the number reached.
+func broadcastUI(m uimsg.Message) int {
 	b, err := json.Marshal(m)
 	if err != nil {
-		return
+		return 0
 	}
 	b = append(b, '\n')
 	uiConnsMu.Lock()
 	defer uiConnsMu.Unlock()
+	n := 0
 	for _, w := range uiConns {
 		if _, err := w.Write(b); err == nil {
 			_ = w.Flush()
+			n++
 		}
 	}
+	slog.Debug("ui-notify: broadcast", "kind", m.Kind, "reached", n)
+	return n
 }
 
 // readUIResponses reads user responses (Step 3) until the UI disconnects.

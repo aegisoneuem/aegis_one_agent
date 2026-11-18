@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
@@ -30,7 +31,13 @@ func (d *dispatcher) handleNotifyUserCmd(ctx context.Context, _ pb.AgentControlP
 	if p.Title == "" {
 		p.Title = "AegisOne Client"
 	}
-	showUserNotification(p.Title, p.Text) // no-op if no UI is connected
-	sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionNotifyUser, d.cfg.DeviceID, "",
-		pb.ActionPhase_ACTION_PHASE_SUCCESS, "notification delivered to connected user sessions"))
+	n := showUserNotification(p.Title, p.Text)
+	// Report the actual reach so a "success" with 0 sessions is visible (no tray UI
+	// connected) rather than silently looking delivered.
+	phase := pb.ActionPhase_ACTION_PHASE_SUCCESS
+	reason := fmt.Sprintf("notification delivered to %d connected user session(s)", n)
+	if n == 0 {
+		reason = "no tray UI connected — notification not shown (user not logged on, or UI not running)"
+	}
+	sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionNotifyUser, d.cfg.DeviceID, "", phase, reason))
 }

@@ -308,9 +308,11 @@ func runNotifyPipeClient(hwnd uintptr) {
 		}
 		conn, err := winio.DialPipe(path, nil)
 		if err != nil {
+			debugf("notify pipe dial failed: %v (retry)", err)
 			time.Sleep(2 * time.Second) // service not ready / no pipe yet — retry
 			continue
 		}
+		debugf("connected to notify pipe %s", path)
 		readNotifyConn(conn, hwnd)
 		_ = conn.Close()
 		time.Sleep(1 * time.Second) // dropped — reconnect
@@ -326,9 +328,10 @@ func readNotifyConn(conn net.Conn, hwnd uintptr) {
 			continue
 		}
 		if m.Kind == uimsg.KindNotify {
+			debugf("notify received: title=%q", m.Title)
 			select {
 			case notifyQueue <- m:
-			default: // queue full — drop the oldest-style; never block the reader
+			default: // queue full — never block the reader
 			}
 			procPostMessage.Call(hwnd, wmUINotify, 0, 0)
 		}
