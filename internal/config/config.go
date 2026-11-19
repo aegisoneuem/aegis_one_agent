@@ -175,6 +175,10 @@ type Config struct {
 	// is silent unless the operator turns this on.
 	NotifyOnPatch bool
 
+	// Pprof, when set (AEGIS_PPROF=1), exposes net/http/pprof on the localhost-only
+	// health endpoint for leak/perf diagnostics. OFF by default.
+	Pprof bool
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -373,6 +377,7 @@ func Load() Config {
 		BinaryIntegrity:                int64FromEnv("AEGIS_BINARY_INTEGRITY", 0) == 1,
 		TamperProtect:                  int64FromEnv("AEGIS_TAMPER_PROTECT", 0) == 1,
 		NotifyOnPatch:                  int64FromEnv("AEGIS_NOTIFY_ON_PATCH", 0) == 1,
+		Pprof:                          int64FromEnv("AEGIS_PPROF", 0) == 1,
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

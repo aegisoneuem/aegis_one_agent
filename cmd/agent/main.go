@@ -257,6 +257,7 @@ func runAgent(rootCtx context.Context, cfg config.Config, buf buffer.Buffer, out
 			connFail = 0
 		}
 		agentHealth.update(func(h *healthState) { h.connected = true })
+		slog.Debug("diag: stream connected", "goroutines", runtime.NumGoroutine())
 		// Tier-3 reconnect snapshot: on connect-after-disconnect, fire a
 		// full-inventory trigger. runFullInventoryReport enforces the flap
 		// floor (ReconnectSnapshotMinInterval) so a flapping NIC is safe.
@@ -603,7 +604,8 @@ func runProcess(parentCtx context.Context) {
 	agentHealth.update(func(h *healthState) {
 		h.version, h.deviceID, h.hostname, h.osName, h.enrolled = cfg.AgentVersion, cfg.DeviceID, cfg.Hostname, cfg.OS, true
 	})
-	startHealthServer(ctx, cfg.HealthAddr, cfg.DeviceID)
+	startHealthServer(ctx, cfg.HealthAddr, cfg.DeviceID, cfg.Pprof)
+	go runDiagLogger(ctx) // periodic goroutine/heap log to catch a slow leak
 
 	slog.Info("Aegis One Agent starting up",
 		"server", cfg.ServerAddress,
