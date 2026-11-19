@@ -38,7 +38,7 @@ Operator: ______  Date: ______  Endpoint hostname/device_id: ______
 | 30 | Required publisher signature rejects unsigned script | FAILED; publisher signature check failed | PENDING | PENDING | PENDING |
 | 31 | CMD payload path contains spaces | SUCCESS; verified removed | PENDING | PENDING | PENDING |
 | 32 | Installed but requested version cannot be verified | FAILED; installed version is unknown (target 1.0) | PENDING | PENDING | PENDING |
-| 33 | NSH Software Distribution job, parameters and fleet loop | JOB SUCCESS; per-target package/tag/hostname output | PENDING | PENDING | PENDING |
-| 34 | NSH job propagates native script failure | JOB FAILED; native command exit_code=7 | PENDING | PENDING | PENDING |
+| 33 | SVSH Software Distribution job, parameters and fleet loop | JOB SUCCESS; per-target package/tag/hostname output | PENDING | PENDING | PENDING |
+| 34 | SVSH job propagates native script failure | JOB FAILED; native command exit_code=7 | PENDING | PENDING | PENDING |
 
 Additional real-app results: MSI install / repeat / ProductCode uninstall / repeat / registry uninstall; EXE install / upgrade / uninstall. Record package name/version/architecture and actual vendor arguments.

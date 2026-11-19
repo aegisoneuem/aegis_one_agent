@@ -189,13 +189,13 @@ Open it; the `artifacts[]` block gives you the authoritative SHA256 for the EXE 
 The mockserver has two run modes you'll see in these tests:
 
 - **`mockserver.exe server`** — one-shot: picks up `AEGIS_*` env vars from the CMD, sends one signed command, prints the ActionStatus stream, exits (or holds the connection — Ctrl+C to stop).
-- **`mockserver.exe nsh`** — interactive REPL. You'll see this in Block UC-18/19 and in NSH tests. See the separate `tester-guide-nsh.md`.
+- **`mockserver.exe svsh`** — interactive REPL. You'll see this in Block UC-18/19 and in SVSH tests. See the separate `tester-guide-svsh.md`.
 
-NSH prompt forms:
+SVSH prompt forms:
 
 | Prompt | Meaning |
 |---|---|
-| `nsh> ` | no target selected |
+| `svsh> ` | no target selected |
 | `<hostname>> ` | one target (after `cd <hostname>`) |
 | `[N hosts]> ` | N targets selected (after `cd \fleet-group`) |
 | `...> ` | continuation inside a `for` / `foreach` / `if` block |
@@ -275,7 +275,7 @@ set "AEGIS_DEPLOY_POST_NAME="
 set "AEGIS_DEPENDENCY_ID="
 set "AEGIS_DEPENDENCY_NAME="
 set "AEGIS_DEPENDENCY_FILE="
-set "AEGIS_NSH="
+set "AEGIS_SVSH="
 set "AEGIS_DEPLOY_FILE="
 set "AEGIS_DEPLOY_HASH="
 set "AEGIS_DEPLOY_HASH_ALGO=sha256"
@@ -455,7 +455,7 @@ Set common envs (same clean-slate reset as A, plus workflow fields):
 set "AEGIS_DEPENDENCY_ID="
 set "AEGIS_DEPENDENCY_NAME="
 set "AEGIS_DEPENDENCY_FILE="
-set "AEGIS_NSH="
+set "AEGIS_SVSH="
 set "AEGIS_INSTALL_FILE="
 set "AEGIS_UNINSTALL_KB="
 set "AEGIS_TARGET_DEVICE=<DEVICE_UUID>"
@@ -924,7 +924,7 @@ Mockserver CMD, FRESH:
 ```cmd
 cd /d C:\temp\mock
 mkdir C:\temp\AegisRealTests
-set "AEGIS_NSH="
+set "AEGIS_SVSH="
 set "AEGIS_INSTALL_FILE="
 set "AEGIS_UNINSTALL_KB="
 set "AEGIS_STAGE_KB="
@@ -1227,7 +1227,7 @@ set "AEGIS_DEPLOY_DETECT_COUNT=0"
 set "AEGIS_DEPENDENCY_DETECT_COUNT=0"
 set "AEGIS_DEPENDENCY_ID="
 set "AEGIS_DEPENDENCY_NAME="
-set "AEGIS_NSH="
+set "AEGIS_SVSH="
 ```
 
 ### 11.2 Case G1 — Main fails → rollback runs → marker file written
@@ -1984,7 +1984,7 @@ Quick smoke (sanity check in this guide): install 7-Zip from Block E → agent `
 
 ### 17.2 UC-19 — HKU per-user parity + on-demand `inventory refresh`
 
-As of 2026-11-02 the agent also enumerates `HKEY_USERS\<SID>\...\Uninstall` (native + WOW6432Node) for every LOADED user hive. Per-user installs (Chrome, Teams, Zoom, Spotify) now report with `hive = HKU\<SID>` or `HKU\<SID>\WOW6432Node`. See `tester-guide-patching.md` UC-19A–E for full matrix. The `inventory refresh` NSH verb (dev tool, capped at 100 targets) forces a fresh send regardless of change state.
+As of 2026-11-02 the agent also enumerates `HKEY_USERS\<SID>\...\Uninstall` (native + WOW6432Node) for every LOADED user hive. Per-user installs (Chrome, Teams, Zoom, Spotify) now report with `hive = HKU\<SID>` or `HKU\<SID>\WOW6432Node`. See `tester-guide-patching.md` UC-19A–E for full matrix. The `inventory refresh` SVSH verb (dev tool, capped at 100 targets) forces a fresh send regardless of change state.
 
 ---
 
@@ -1992,7 +1992,7 @@ As of 2026-11-02 the agent also enumerates `HKEY_USERS\<SID>\...\Uninstall` (nat
 
 ### 18.1 Prepare once (Block UE)
 
-1. **Copy fixtures to BOTH machines** — the `docs/fixtures/softdist/` folder from the repo must land at `C:\temp\AegisSoftDistTests\` on the endpoint VM AND on the mockserver host. Keep `server/`, `endpoint/`, payload scripts, and `.nsh` files together.
+1. **Copy fixtures to BOTH machines** — the `docs/fixtures/softdist/` folder from the repo must land at `C:\temp\AegisSoftDistTests\` on the endpoint VM AND on the mockserver host. Keep `server/`, `endpoint/`, payload scripts, and `.svsh` files together.
 2. **Replace binaries** — endpoint: stop service, swap `AegisOneClient.exe` (or use MSI). Mockserver: Ctrl+C, swap `mockserver.exe`.
 3. **Open two CMDs** — Admin CMD on the endpoint; CMD in `C:\temp\mock` on the mockserver host.
 4. These fixtures are DUMMY registry products — they validate routing/detection and script execution, NOT real vendor acceptance.
@@ -2005,7 +2005,7 @@ For test number `NN` (01-34):
 2. **Endpoint**: `call C:\temp\AegisSoftDistTests\endpoint-setup.cmd NN`.
    This resets ONLY the Aegis test registrations and marker files for THIS test. Earlier tests don't contaminate.
 3. **Mockserver**: `call C:\temp\AegisSoftDistTests\server-test.cmd NN`.
-   This clears stale SoftDist/NSH env vars and starts normal server mode. Keep your existing TLS/enrollment.
+   This clears stale SoftDist/SVSH env vars and starts normal server mode. Keep your existing TLS/enrollment.
 4. **Wait** for the intended endpoint to connect and reach a terminal `SUCCESS` / `FAILED` / `NOT_APPLICABLE`. `QUEUED` or `RUNNING` is NOT a final result. If the agent doesn't reconnect, restart its service.
 5. **Endpoint**: `call C:\temp\AegisSoftDistTests\endpoint-check.cmd NN`.
    PASS requires BOTH the expected server status AND the endpoint check output matching.
@@ -2048,8 +2048,8 @@ For test number `NN` (01-34):
 | 30 | Required publisher signature rejects unsigned script | FAILED; publisher signature check failed |
 | 31 | CMD payload path contains spaces | SUCCESS; verified removed |
 | 32 | Installed but requested version cannot be verified | FAILED; installed version is unknown (target 1.0) |
-| 33 | NSH SoftDist job, parameters + fleet loop | JOB SUCCESS; per-target package/tag/hostname output |
-| 34 | NSH job propagates native script failure | JOB FAILED; native command exit_code=7 |
+| 33 | SVSH SoftDist job, parameters + fleet loop | JOB SUCCESS; per-target package/tag/hostname output |
+| 34 | SVSH job propagates native script failure | JOB FAILED; native command exit_code=7 |
 
 ### 18.4 Walk-through for UE-01 (template for all 34)
 
@@ -2135,7 +2135,7 @@ rem (or just do not set it — defaults to false)
 mockserver.exe
 ```
 
-Dispatch via NSH or let mock auto-send; agent runs the install.
+Dispatch via SVSH or let mock auto-send; agent runs the install.
 
 **Expected on endpoint:**
 ```
@@ -2485,4 +2485,4 @@ Copy this table into a Google Sheet / Excel / your QA tool. Mark one row per cas
 
 Hand this guide + the `dist/` folder's binaries + the fixtures at `docs/fixtures/softdist/` to the tester. They should NOT need any other document to run the full matrix.
 
-Report back the Record Sheet + any FAIL evidence to the agent-track owner (Vijay). Blocks UC-18/UC-19 and the inventory NSH verb details are covered in detail in `tester-guide-patching.md` and `tester-guide-nsh.md` respectively.
+Report back the Record Sheet + any FAIL evidence to the agent-track owner (Vijay). Blocks UC-18/UC-19 and the inventory SVSH verb details are covered in detail in `tester-guide-patching.md` and `tester-guide-svsh.md` respectively.

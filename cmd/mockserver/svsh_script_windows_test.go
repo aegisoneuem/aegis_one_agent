@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/svsh"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
@@ -26,7 +26,7 @@ func TestNativePowerShellScriptUsesCommandContract(t *testing.T) {
 			if err != nil {
 				t.Skip("interpreter not installed")
 			}
-			s := &nshSession{}
+			s := &svshSession{}
 			e := newScriptEngine(s)
 			e.vars["TAG"] = "daily-23oct"
 			content := e.expand("Write-Host \"tag=${TAG} on $env:COMPUTERNAME\"\n# comment\n\nWrite-Host \"env tag = $env:AEGIS_PARAM_TAG\"\nWrite-Output 'quote \" preserved — नमस्ते'\nexit 7")
@@ -50,7 +50,7 @@ func TestNativePowerShellScriptUsesCommandContract(t *testing.T) {
 	}
 }
 
-// Dispatch through the real NSH foreach/HEREDOC parser and command correlation,
+// Dispatch through the real SVSH foreach/HEREDOC parser and command correlation,
 // executing native PowerShell with the same -Command contract as the agent.
 type scriptExecutionStream struct {
 	pb.AgentControlPlane_ConnectServer
@@ -105,7 +105,7 @@ func TestG2ForeachHeredocParametersAndUnhandledErrors(t *testing.T) {
 				streams = append(streams, stream)
 				srv.liveAgents[id] = &liveAgent{deviceID: id, stream: stream}
 			}
-			sess := &nshSession{srv: srv, timeout: 20, shell: "cmd"}
+			sess := &svshSession{srv: srv, timeout: 20, shell: "cmd"}
 			sess.targets = []string{"vm-b"}
 			sess.engine = newScriptEngine(sess)
 			body := `Write-Output "host=${host}, region=${REGION}, env=$env:AEGIS_PARAM_REGION"`
@@ -134,7 +134,7 @@ func TestG2ForeachHeredocParametersAndUnhandledErrors(t *testing.T) {
 	}
 }
 
-func TestNSHWorkingDirectoryPersistsPerDevice(t *testing.T) {
+func TestSVSHWorkingDirectoryPersistsPerDevice(t *testing.T) {
 	for _, shell := range []string{"cmd", "powershell"} {
 		t.Run(shell, func(t *testing.T) {
 			srv := &server{byID: make(map[string]*deviceRecord), liveAgents: make(map[string]*liveAgent), pending: make(map[string]chan *pb.ActionStatus)}
@@ -147,7 +147,7 @@ func TestNSHWorkingDirectoryPersistsPerDevice(t *testing.T) {
 			if err := os.MkdirAll(child, 0755); err != nil {
 				t.Fatal(err)
 			}
-			sess := &nshSession{srv: srv, timeout: 20, shell: shell, targets: []string{"vm-a"}}
+			sess := &svshSession{srv: srv, timeout: 20, shell: shell, targets: []string{"vm-a"}}
 			sess.engine = newScriptEngine(sess)
 			sess.verbCD(`"` + dir + `"`)
 			if !strings.EqualFold(sess.workingDirs["vm-a"], dir) {
@@ -185,7 +185,7 @@ func TestSharedJobRunnerExecutesNativePowerShellPerTarget(t *testing.T) {
 		srv.liveAgents[id] = &liveAgent{deviceID: id, stream: &scriptExecutionStream{server: srv, device: id}}
 	}
 	script := "use powershell\nforeach host in *\nscript powershell until END\nWrite-Output 'target=${host}, tag=${TAG}'\nWrite-Output $env:AEGIS_PARAM_TAG\nEND\nend\n"
-	result := newMockNSHRunner(srv).Run(context.Background(), nsh.Job{ID: "native-job", Kind: "software_distribution", Targets: []string{"vm-a", "vm-b"}, Parameters: map[string]string{"TAG": "job-native"}, Script: script})
+	result := newMockSVSHRunner(srv).Run(context.Background(), svsh.Job{ID: "native-job", Kind: "software_distribution", Targets: []string{"vm-a", "vm-b"}, Parameters: map[string]string{"TAG": "job-native"}, Script: script})
 	if result.Status != "success" || result.TotalActions != 2 {
 		t.Fatalf("%+v", result)
 	}

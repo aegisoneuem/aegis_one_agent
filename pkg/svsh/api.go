@@ -1,6 +1,6 @@
-// Package nsh is the shared NSH interpreter for terminals and non-interactive
+// Package svsh is the shared SVSH interpreter for terminals and non-interactive
 // jobs. It has no agent transport, console login or process-global I/O.
-package nsh
+package svsh
 
 import (
 	"bufio"
@@ -180,8 +180,8 @@ func (e *Engine) fail(err error) {
 	e.mu.Lock()
 	e.lastError = err
 	e.mu.Unlock()
-	e.println("nsh:", err)
-	e.RecordResult(ActionResult{Type: "nsh", ExitCode: 1, Reason: err.Error()})
+	e.println("svsh:", err)
+	e.RecordResult(ActionResult{Type: "svsh", ExitCode: 1, Reason: err.Error()})
 }
 func (e *Engine) stopping() bool  { e.mu.Lock(); defer e.mu.Unlock(); return e.stopScript }
 func (e *Engine) cancelled() bool { return e.ctx.Err() != nil }

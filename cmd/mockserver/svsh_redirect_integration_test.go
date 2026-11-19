@@ -9,15 +9,15 @@ import (
 	"testing"
 )
 
-// B.6 integration test — exercise the WIRED path: a real nshSession,
+// B.6 integration test — exercise the WIRED path: a real svshSession,
 // real s.exec(), real runWithRedirect flow. We use the `help` verb
 // because it is pure stdout, no dispatch to agents, no live stream
 // required.
 
-func newTestSession(t *testing.T, out io.Writer) *nshSession {
+func newTestSession(t *testing.T, out io.Writer) *svshSession {
 	t.Helper()
 	srv := &server{}
-	return &nshSession{
+	return &svshSession{
 		srv:    srv,
 		shell:  "cmd",
 		output: out,
@@ -26,7 +26,7 @@ func newTestSession(t *testing.T, out io.Writer) *nshSession {
 
 // Local-to-mock redirect: `help > C:\tmp\help.txt`. The file on disk
 // must contain the help text; the terminal (out) must stay quiet.
-func TestNSHRedirect_Integration_LocalFile(t *testing.T) {
+func TestSVSHRedirect_Integration_LocalFile(t *testing.T) {
 	tmp := t.TempDir()
 	dst := filepath.Join(tmp, "help.txt")
 
@@ -57,7 +57,7 @@ func TestNSHRedirect_Integration_LocalFile(t *testing.T) {
 }
 
 // Append mode: run twice, file length grows.
-func TestNSHRedirect_Integration_AppendGrows(t *testing.T) {
+func TestSVSHRedirect_Integration_AppendGrows(t *testing.T) {
 	tmp := t.TempDir()
 	dst := filepath.Join(tmp, "log.txt")
 	s := newTestSession(t, io.Discard)
@@ -76,7 +76,7 @@ func TestNSHRedirect_Integration_AppendGrows(t *testing.T) {
 }
 
 // Overwrite mode: run twice, file length stable.
-func TestNSHRedirect_Integration_OverwriteStable(t *testing.T) {
+func TestSVSHRedirect_Integration_OverwriteStable(t *testing.T) {
 	tmp := t.TempDir()
 	dst := filepath.Join(tmp, "stable.txt")
 	s := newTestSession(t, io.Discard)
@@ -97,7 +97,7 @@ func TestNSHRedirect_Integration_OverwriteStable(t *testing.T) {
 // BREAK: redirect with empty verb output produces an empty file, not a
 // crash. The `hosts` verb with no connected agents prints a header
 // line, so use `pwd` (prints the current working dir which may be empty).
-func TestNSHRedirect_Integration_Break_EmptyOutputCreatesFile(t *testing.T) {
+func TestSVSHRedirect_Integration_Break_EmptyOutputCreatesFile(t *testing.T) {
 	tmp := t.TempDir()
 	dst := filepath.Join(tmp, "empty.txt")
 	s := newTestSession(t, io.Discard)
@@ -109,25 +109,25 @@ func TestNSHRedirect_Integration_Break_EmptyOutputCreatesFile(t *testing.T) {
 	}
 }
 
-// BREAK: `cat ... > ...` is exempt from the NSH pre-parser — the cat
+// BREAK: `cat ... > ...` is exempt from the SVSH pre-parser — the cat
 // verb's own parser handles it. We can't test the full cat path here
 // without agents, but we CAN assert that the pre-parser returns
 // Redirect=false so the cat verb gets the raw line.
-func TestNSHRedirect_Integration_Break_CatBypassesPreparser(t *testing.T) {
+func TestSVSHRedirect_Integration_Break_CatBypassesPreparser(t *testing.T) {
 	// Direct parser test (already covered) but also verify at the exec
 	// layer by observing that no destination file is created for the
-	// NSH pre-parser's handling — only cat's own handling would (and
+	// SVSH pre-parser's handling — only cat's own handling would (and
 	// it fails without a configured agent).
 	tmp := t.TempDir()
 	dst := filepath.Join(tmp, "cat-handled.txt")
 	s := newTestSession(t, io.Discard)
 	_ = s.execInputLine("cat C:\\nonexistent-src.txt > " + dst)
 	// Since no agent is configured, cat's remote read fails; what we
-	// are asserting here is that the NSH pre-parser did NOT create an
+	// are asserting here is that the SVSH pre-parser did NOT create an
 	// empty destination file via its own path. If it had, the file
 	// would exist (even if empty).
 	if _, err := os.Stat(dst); err == nil {
-		t.Errorf("NSH pre-parser handled a cat line (dst file created); cat should own its own redirect semantics")
+		t.Errorf("SVSH pre-parser handled a cat line (dst file created); cat should own its own redirect semantics")
 	}
 }
 

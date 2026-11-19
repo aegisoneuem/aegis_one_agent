@@ -30,8 +30,8 @@ MOCKSERVER - open a fresh CMD from Start. Use the existing TLS settings, then:
 
 ```cmd
 cd /d C:\temp\mock
-set "AEGIS_NSH="
-set "AEGIS_NSH_SCRIPT="
+set "AEGIS_SVSH="
+set "AEGIS_SVSH_SCRIPT="
 set "AEGIS_DEPLOY_CONTENT_ID="
 set "AEGIS_DEPLOY_PRODUCT_CODE="
 set "AEGIS_DEPLOY_UNINSTALL_KEY="

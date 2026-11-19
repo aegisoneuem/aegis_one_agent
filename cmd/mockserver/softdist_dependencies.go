@@ -120,7 +120,7 @@ func (s *server) beginDependencyPlan(ctx context.Context, connection *liveAgent,
 	}
 	s.planAttempted[connection.deviceID] = true
 	s.pendingMu.Unlock()
-	jobID := "softdist-plan-" + nshRandomID()
+	jobID := "softdist-plan-" + svshRandomID()
 	mainContent, dependencyContent := os.Getenv("AEGIS_SERVE_SOFTWARE"), os.Getenv("AEGIS_DEPENDENCY_SERVE_FILE")
 	dependencyID := dep.PackageId
 	go func() {

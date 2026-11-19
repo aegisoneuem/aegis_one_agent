@@ -1,4 +1,4 @@
-package nsh
+package svsh
 
 import (
 	"bytes"
@@ -146,15 +146,15 @@ func TestIncompleteInvalidAndRecursiveSourceFail(t *testing.T) {
 		}
 	}
 	runner := testRunner()
-	runner.LoadFile = func(context.Context, string) ([]byte, error) { return []byte("source recursive.nsh\n"), nil }
-	result := runner.Run(context.Background(), Job{Targets: []string{"a"}, ScriptFile: "recursive.nsh"})
+	runner.LoadFile = func(context.Context, string) ([]byte, error) { return []byte("source recursive.svsh\n"), nil }
+	result := runner.Run(context.Background(), Job{Targets: []string{"a"}, ScriptFile: "recursive.svsh"})
 	if result.Status != "failed" || !strings.Contains(result.Error, "depth") {
 		t.Fatalf("recursive source %+v", result)
 	}
 }
 func TestSourceAliasAndNativeExecUseSameState(t *testing.T) {
 	b := &testBackend{targets: []string{"a"}, allowed: map[string]bool{"a": true}}
-	files := map[string]string{"vars.nsh": "let REGION = apac\nalias hi = echo ${REGION}\n", "check.ps1": "Write-Host '${REGION}'\n# comment\n\nWrite-Output done"}
+	files := map[string]string{"vars.svsh": "let REGION = apac\nalias hi = echo ${REGION}\n", "check.ps1": "Write-Host '${REGION}'\n# comment\n\nWrite-Output done"}
 	e := New(b, Options{LoadFile: func(_ context.Context, name string) ([]byte, error) {
 		data, ok := files[name]
 		if !ok {
@@ -162,7 +162,7 @@ func TestSourceAliasAndNativeExecUseSameState(t *testing.T) {
 		}
 		return []byte(data), nil
 	}})
-	result := e.Run(context.Background(), strings.NewReader("source vars.nsh\nhi\nexec check.ps1\n"))
+	result := e.Run(context.Background(), strings.NewReader("source vars.svsh\nhi\nexec check.ps1\n"))
 	want, shell := BuildShellCommand("powershell", strings.ReplaceAll(files["check.ps1"], "${REGION}", "apac"))
 	if result.Status != "success" || len(b.commands) != 2 || b.commands[0].Text != "echo apac" || b.commands[1].Text != want || b.commands[1].Shell != shell {
 		t.Fatalf("source/exec mismatch: %+v %+v", result, b.commands)

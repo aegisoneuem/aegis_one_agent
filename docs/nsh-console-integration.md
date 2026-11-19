@@ -1,18 +1,18 @@
-# NSH: Live Dashboard, device actions and Software Distribution
+# SVSH: Live Dashboard, device actions and Software Distribution
 
 Server/console handoff, 24 October 2026. Current agent capabilities and proposed
 production work are distinguished below. Bandwidth throttling stays in backlog.
 
 ## Console entry points and identity
 
-Add an **NSH** tab inside **Live Dashboard** and a device context-menu action
-**Open NSH**. Both use the same terminal engine. Right-click opens a session
+Add an **SVSH** tab inside **Live Dashboard** and a device context-menu action
+**Open SVSH**. Both use the same terminal engine. Right-click opens a session
 preselected by immutable device_id; display hostname and computer_id to the
 operator. The dashboard tab can start without a target and offer an authorized
 device picker. Do not run commands or enable automatic capture just by opening it.
 
 Use the existing console login/session for operator identity and tenant scope;
-no second NSH password prompt. Check permission to open a session and permission
+no second SVSH password prompt. Check permission to open a session and permission
 for every action/target, including foreach/fanout. Never trust a browser-supplied
 user/tenant ID as authentication. Keep signing keys and agent certificates on
 the server. Two operators need isolated target lists, variables, aliases and I/O.
@@ -22,11 +22,11 @@ execution is LocalSystem, not the logged-in console user's endpoint/domain
 account. Console credentials authorize operations and audit them; do not forward
 passwords to the agent. Run-as/user-context execution is separate future work.
 
-## NSH versus persistent endpoint shell
+## SVSH versus persistent endpoint shell
 
 | Mode | Current contract | State |
 |---|---|---|
-| NSH commands/workflows | Server interpreter sends signed run_command / collect_file | NSH variables, aliases, target and configured working_dir persist; each native command creates a new OS process |
+| SVSH commands/workflows | Server interpreter sends signed run_command / collect_file | SVSH variables, aliases, target and configured working_dir persist; each native command creates a new OS process |
 | Persistent endpoint shell | Signed open_shell, then ShellSession bidirectional RPC | One live cmd.exe retains directory, environment and process state until closed |
 
 Agent open_shell/ShellSession handlers already exist. Remaining production work:
@@ -37,14 +37,14 @@ one-use session_id with issued_at/TTL; match the connecting agent to that pendin
 session. Never connect an arbitrary operator to someone else's stream.
 
 The mock's shell verb is informational. Its legacy ShellSession stdin bridge is
-reference code, not a finished console UI; it must not share a production NSH
+reference code, not a finished console UI; it must not share a production SVSH
 session's stdin. Agent transcripts are local under SKVC/logs/shell; server-side
 collection/storage must be wired and verified. V1 uses plain pipes. ConPTY for
 arrow keys/colors/full terminal behavior is later work.
 
 ## Clean terminal and fleet responsiveness
 
-Opening a browser NSH tab must attach to the already-running server, not restart
+Opening a browser SVSH tab must attach to the already-running server, not restart
 it. A mockserver.exe restart drops its connections and agents reconnect on their
 normal backoff; an initially empty online list is a cold-start observation,
 not a requirement to wait for every device before any command can run.
@@ -70,8 +70,8 @@ transfer messages belong in server logs. Put online status in a separate UI
 indicator. Never subscribe each operator terminal to the entire fleet event feed.
 
 The mock routes background events to logs/mockserver.log only in explicit
-`mockserver.exe nsh` or `mockserver.exe script <file>` mode; AEGIS_MOCK_LOG_FILE overrides the log path. NSH output
-stays in the current window. A second CMD window is unnecessary. Without NSH,
+`mockserver.exe svsh` or `mockserver.exe script <file>` mode; AEGIS_MOCK_LOG_FILE overrides the log path. SVSH output
+stays in the current window. A second CMD window is unnecessary. Without SVSH,
 normal mock console logging remains. This is reference logging, not a production
 retention/rotation implementation.
 
@@ -88,48 +88,48 @@ authorized target set for a job and report progress per host. The mock's foreach
 is serial and fanout is unbounded; it is not proof of 10k/50k-device capacity.
 Production scheduling and load tests are server work, independent of heartbeats.
 
-NSH now implements bounded hosts/search output (20 rows by default, maximum 100),
+SVSH now implements bounded hosts/search output (20 rows by default, maximum 100),
 ONLINE/OFFLINE filtering and pagination; do not call a full inventory dump when
 opening a device terminal. Right-click binds the known device_id directly. A
 search picker may query authorized inventory by name/computer_id with page
 cursors; it does not require the operator to remember hostnames. See
-[NSH file operations and search](nsh-file-operations.md) for syntax, the new
+[SVSH file operations and search](svsh-file-operations.md) for syntax, the new
 file_operation/v1 relay contract, bounds and source/destination permissions.
 File-operation UI must use the operator's file read/write/delete rights rather
-than treating permission to open an NSH tab as unrestricted filesystem access.
+than treating permission to open an SVSH tab as unrestricted filesystem access.
 
-`mockserver.exe script <file.nsh>` runs a script at mock startup. foreach * snapshots currently connected
+`mockserver.exe script <file.svsh>` runs a script at mock startup. foreach * snapshots currently connected
 agents; it does not wait for the fleet. For deterministic manual G2 testing,
-start interactive NSH, check hosts, then source the local .nsh file. Production
+start interactive SVSH, check hosts, then source the local .svsh file. Production
 jobs must explicitly resolve target availability instead of copying this race.
 
-## NSH script execution in all console entry points
+## SVSH script execution in all console entry points
 
-Offer NSH beside PowerShell/Python/shell as a **script interpreter**. It must be
+Offer SVSH beside PowerShell/Python/shell as a **script interpreter**. It must be
 usable in Script Jobs and Software Distribution script actions/pre/post steps,
-with inline text or a saved versioned .nsh file, parameters and selected targets.
-The same language also powers right-click Open NSH and the Live Configuration /
-Live Dashboard general NSH terminal. Scripts may perform any authorized NSH
+with inline text or a saved versioned .svsh file, parameters and selected targets.
+The same language also powers right-click Open SVSH and the Live Configuration /
+Live Dashboard general SVSH terminal. Scripts may perform any authorized SVSH
 operations; they are not limited to package deployment workflows.
 
-An .nsh file is a **server-side orchestration workflow**. The server interprets
+An .svsh file is a **server-side orchestration workflow**. The server interprets
 let/source/foreach/if/exec/script and sends signed native tasks to agents. Do not
-send .nsh to cmd.exe/PowerShell as an installer or add an endpoint NSH/SSH listener.
+send .svsh to cmd.exe/PowerShell as an installer or add an endpoint SVSH/SSH listener.
 In the mock, source and exec read server-local files. In production resolve
 approved tenant/operator-scoped script-library IDs and versions; do not expose
 unrestricted server filesystem access through browser-authored paths.
 
-The shared `pkg/nsh` interpreter and Runner now implement this server-side
-execution path. Script Jobs use Kind=script_job; Software Distribution NSH script
+The shared `pkg/svsh` interpreter and Runner now implement this server-side
+execution path. Script Jobs use Kind=script_job; Software Distribution SVSH script
 actions use Kind=software_distribution. Both execute the same language and
-isolate per-run state. See [script jobs](nsh-script-jobs.md) for API and mock tests.
+isolate per-run state. See [script jobs](svsh-script-jobs.md) for API and mock tests.
 Console UI, scheduling, login/RBAC and durable job orchestration still need
 server/console binding. There is no new package-deploy verb in this scope.
 
-Current native deploy types remain MSI/EXE/PS1/BAT/CMD/Python/VBS/command. An .nsh
+Current native deploy types remain MSI/EXE/PS1/BAT/CMD/Python/VBS/command. An .svsh
 script is interpreted on the server, not passed to the agent as an installer.
 Native package jobs retain their existing hash/cache/detection/version/verification
-behavior. NSH script outcomes report its executed actions; they do not implicitly
+behavior. SVSH script outcomes report its executed actions; they do not implicitly
 perform MSI product detection or turn arbitrary scripts into package installs.
 
 Check package/device permissions even inside scripts. Record operator, workflow
@@ -141,11 +141,11 @@ limits are not implemented by this handoff.
 ## Parameters, failure and artifacts
 
 Import server process environment explicitly: let REGION = ${env:REGION}.
-CMD set REGION=apac alone does not define an NSH variable. Console jobs should
-supply validated named parameters directly. NSH ${env:NAME} refers to the server;
+CMD set REGION=apac alone does not define an SVSH variable. Console jobs should
+supply validated named parameters directly. SVSH ${env:NAME} refers to the server;
 native PowerShell $env:NAME refers to the endpoint's process environment.
 
-NSH exec/HEREDOC PowerShell scripts now default to terminating unhandled errors
+SVSH exec/HEREDOC PowerShell scripts now default to terminating unhandled errors
 and a nonzero catch exit. Scripts may handle expected exceptions explicitly.
 on-error continue controls workflow continuation; it does not label failed
 endpoint tasks successful. Do not infer success from stdout or treat every
@@ -155,7 +155,7 @@ Interactive capture defaults off. set capture on saves stdout; grab/pull request
 artifacts explicitly. An empty stdout artifact can be legitimate on a failed
 command. Upload integrity only verifies transferred bytes, not command success.
 Mock layout: uploads/<computer_id>/<output-dir>/<hostname>/<filename>, default
-output-dir=nsh. Repeated explicit filenames get suffixes. Production artifact
+output-dir=svsh. Repeated explicit filenames get suffixes. Production artifact
 access must enforce tenant/device/operator authorization and retain immutable
 job/action metadata alongside human-readable names.
 
@@ -172,7 +172,7 @@ job/action metadata alongside human-readable names.
 - Persistent shell state, close, limits, disconnect and transcript audit are tested.
 - Bounded large jobs are separately load-tested for cancellation/backpressure.
 
-References: nsh-test-plan.md, testing-use-cases.md, cmd/mockserver/nsh.go,
-pkg/nsh, cmd/mockserver/nsh_engine.go, nsh_jobs.go, cmd/agent/runcommand.go,
+References: svsh-test-plan.md, testing-use-cases.md, cmd/mockserver/svsh.go,
+pkg/svsh, cmd/mockserver/svsh_engine.go, svsh_jobs.go, cmd/agent/runcommand.go,
 collect.go, shell*.go and
 the shared ../aegis_one_proto/grpc/agent.proto contracts.

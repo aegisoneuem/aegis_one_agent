@@ -1,4 +1,4 @@
-# Aegis One NSH — Full Test Plan (Hand-over Draft)
+# Aegis One SVSH — Full Test Plan (Hand-over Draft)
 
 **Audience:** Vijay for VM verification, then the server team as the acceptance
 checklist for the real console/server implementation.
@@ -10,19 +10,19 @@ checklist for the real console/server implementation.
 
 ## REPL recap
 
-**REPL = Read-Eval-Print Loop.** An interactive prompt (`nsh>`) where you type
+**REPL = Read-Eval-Print Loop.** An interactive prompt (`svsh>`) where you type
 one command, the engine reads + evaluates it, prints the result, and loops.
 Everything in this doc runs in that prompt — the same engine runs in
-**non-interactive script mode** with `mockserver.exe script <file.nsh>`. The engine behaves identically either way, so these tests also validate
+**non-interactive script mode** with `mockserver.exe script <file.svsh>`. The engine behaves identically either way, so these tests also validate
 console-authored tasks.
 
 Start interactive:
 ```
-mockserver.exe nsh
+mockserver.exe svsh
 ```
 Start scripted:
 ```
-set AEGIS_NSH_SCRIPT=C:\tests\<name>.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\<name>.svsh
 mockserver.exe script
 ```
 
@@ -35,7 +35,7 @@ anything else is a FAIL to flag.
 
 ### A1 — `hosts` lists known devices with connection status
 ```
-nsh> hosts
+svsh> hosts
 ```
 **PASS:** known devices appear with HOST, DEVICE_ID, COMPUTER_ID and STATUS
 (ONLINE/OFFLINE). Inventory can be listed before agents reconnect after a server
@@ -44,7 +44,7 @@ wait for the full fleet before selecting a known target.
 
 ### A2 — `cd \\<host>` sets a single target
 ```
-nsh> cd \\win11-vm
+svsh> cd \\win11-vm
 win11-vm> hostname
 ```
 **PASS:** prompt becomes `win11-vm>`; output block prints the host's hostname
@@ -52,11 +52,11 @@ and `OK (exit=0, <ms>)` footer.
 
 ### A3 — `cd *` targets every online agent (block single-command execution)
 ```
-nsh> cd *
+svsh> cd *
 [1 hosts]> hostname
 ```
 **PASS:** REPL refuses `hostname` with
-`nsh: N targets selected; use fanout <cmd> for multi-target`.
+`svsh: N targets selected; use fanout <cmd> for multi-target`.
 
 ### A4 — `fanout` runs the same command on every target, aggregated
 ```
@@ -66,13 +66,13 @@ nsh> cd *
 
 ### A5 — Unknown target is caught cleanly
 ```
-nsh> cd \\does-not-exist
+svsh> cd \\does-not-exist
 ```
-**PASS:** `nsh: unknown device: does-not-exist`. Existing selection is preserved.
+**PASS:** `svsh: unknown device: does-not-exist`. Existing selection is preserved.
 
 ### A6 — `use` switches interpreter
 ```
-nsh> cd \\win11-vm
+svsh> cd \\win11-vm
 win11-vm> use powershell
 win11-vm> Get-Service wuauserv | Select-Object -ExpandProperty Status
 ```
@@ -100,7 +100,7 @@ phase `NOT_APPLICABLE`.
 ### A9 — Endpoint directory navigation persists across commands and host switches
 Requires an existing C:\temp folder on the selected Windows endpoint.
 ```
-nsh> cd \\win11-vm
+svsh> cd \\win11-vm
 win11-vm> use powershell
 win11-vm> cd C:\temp
 win11-vm> pwd
@@ -113,13 +113,13 @@ and `dir`. Relative paths and quoted paths containing spaces work. A nonexistent
 directory fails and retains the previous CWD. Switch to another host: it has its
 own CWD, not the first host's directory. Switch back: the first CWD is retained.
 `cd` without arguments displays the selected endpoint's CWD; `cd \\` clears
-targets and returns to nsh>. Each OS command remains a fresh process: this
+targets and returns to svsh>. Each OS command remains a fresh process: this
 persists the configured working_dir, not arbitrary environment/process state.
 
 ### A10 — Known offline target selection does not wait for fleet connections
 After a mock restart with an existing mockserver-devices.json registry, run:
 ```
-nsh> cd \\win11-vm
+svsh> cd \\win11-vm
 win11-vm> hostname
 ```
 **PASS:** selection succeeds even if the device is OFFLINE. Its command is
@@ -135,18 +135,18 @@ Windows refuses `bash`/`sh`/`zsh` commands as `NOT_APPLICABLE`; they do not
 execute or upload stdout. The footer must show the refusal reason.
 
 Uploads are saved on the **mockserver machine**, relative to the directory
-from which `mockserver.exe` was started. NSH files live under
-`uploads/<computer_id>/<output-dir>/<host>/` (default output-dir: `nsh`).
+from which `mockserver.exe` was started. SVSH files live under
+`uploads/<computer_id>/<output-dir>/<host>/` (default output-dir: `svsh`).
 Action IDs remain in logs, not folder names. Repeated explicit filenames get
 numbered suffixes to preserve earlier files. Auto capture uses timestamps.
 
 ### B1 — `grab` saves stdout as a server-side file
 ```
-nsh> cd \\win11-vm
+svsh> cd \\win11-vm
 win11-vm> use cmd
 win11-vm> grab \out\winini.txt type C:\Windows\win.ini
 ```
-**PASS:** footer line `---- saved to uploads/<computer_id>/nsh/win11-vm/out/winini.txt`.
+**PASS:** footer line `---- saved to uploads/<computer_id>/svsh/win11-vm/out/winini.txt`.
 File exists on the mock host at that path, contains the `win.ini` text.
 
 ### B2 — `set capture on` auto-saves every subsequent command
@@ -156,25 +156,25 @@ win11-vm> use cmd
 win11-vm> echo capture-check
 ```
 **PASS:** output contains `capture-check` and footer
-`saved to uploads/<cid>/nsh/win11-vm/<ts>-echo_capture-check.out`.
+`saved to uploads/<cid>/svsh/win11-vm/<ts>-echo_capture-check.out`.
 Then try `tasklist` (or `tasklist | findstr /i AegisOneClient`).
 `findstr skvc` can match no process: the executable is `AegisOneClient.exe`.
 
 ### B3 — Multi-host capture → per-host files, no collision
 Requires two agents online.
 ```
-nsh> cd *
-nsh> set capture on
+svsh> cd *
+svsh> set capture on
 [2 hosts]> fanout hostname
 ```
 **PASS:** table lists both hosts, each `SAVED` column shows a DIFFERENT path
-(`uploads/<cid-A>/nsh/<hostA>/...` and `uploads/<cid-B>/nsh/<hostB>/...`).
+(`uploads/<cid-A>/svsh/<hostA>/...` and `uploads/<cid-B>/svsh/<hostB>/...`).
 
 ### B4 — `pull` fetches an endpoint file verbatim
 ```
 win11-vm> pull C:\Windows\System32\drivers\etc\hosts \hosts.txt
 ```
-**PASS:** `hosts.txt` lands at `uploads/<cid>/nsh/win11-vm/hosts.txt` and matches
+**PASS:** `hosts.txt` lands at `uploads/<cid>/svsh/win11-vm/hosts.txt` and matches
 the endpoint file byte-for-byte. `pull` uses signed `collect_file`, independent
 of the selected shell. Try a binary file and a quoted path containing spaces
 too: `pull "C:\temp\with spaces.bin" copy.bin`. Missing files report no match.
@@ -182,12 +182,12 @@ One source file per pull; wildcard paths are refused.
 
 ### B5 — `set output-dir` changes the default save prefix
 ```
-nsh> set output-dir reports\daily
-nsh> set capture on
+svsh> set output-dir reports\daily
+svsh> set capture on
 win11-vm> hostname
 ```
 **PASS:** file lands under `uploads/<cid>/reports/daily/win11-vm/*.out`.
-Reset `set output-dir nsh` after this test if you want the default layout.
+Reset `set output-dir svsh` after this test if you want the default layout.
 
 ---
 
@@ -195,8 +195,8 @@ Reset `set output-dir nsh` after this test if you want the default layout.
 
 ### C1 — `let` + `${VAR}` substitutes on the console side before send
 ```
-nsh> let TAG = prod-fleet
-nsh> cd \\win11-vm
+svsh> let TAG = prod-fleet
+svsh> cd \\win11-vm
 win11-vm> echo tag is ${TAG}
 ```
 **PASS:** output contains literal `tag is prod-fleet`. The command sent to
@@ -204,8 +204,8 @@ the agent is already resolved — the agent did not need to know `${TAG}`.
 
 ### C2 — `${env:NAME}` picks up a mock-side env var
 ```
-nsh> let USR = ${env:USERNAME}
-nsh> vars
+svsh> let USR = ${env:USERNAME}
+svsh> vars
 ```
 **PASS:** `USR = <your-windows-user>`.
 
@@ -217,14 +217,14 @@ win11-vm> vars
 **PASS:** `vars` lists `exit=0`, `stdout=marker`, `host=win11-vm`, non-zero
 `duration`, `reason` set.
 
-### C4 — NSH vars become `AEGIS_PARAM_<NAME>` env vars on the endpoint
+### C4 — SVSH vars become `AEGIS_PARAM_<NAME>` env vars on the endpoint
 ```
-nsh> let CUSTOMER = acme
+svsh> let CUSTOMER = acme
 win11-vm> use powershell
 win11-vm> Write-Host "customer env = $env:AEGIS_PARAM_CUSTOMER"
 ```
 **PASS:** output `customer env = acme`. This is the pattern a pre-staged
-.ps1 on the endpoint uses to read NSH-authored params without touching the
+.ps1 on the endpoint uses to read SVSH-authored params without touching the
 command string.
 
 ---
@@ -234,14 +234,14 @@ command string.
 ### D1 — `foreach host in *` iterates every online host
 Requires 2 agents.
 ```
-nsh> use powershell
-nsh> foreach host in *
+svsh> use powershell
+svsh> foreach host in *
 ...>   log "checking ${host}"
 ...>   grab status.txt Get-Service wuauserv
 ...> end
 ```
 **PASS:** both hosts show their log line; two different `SAVED` paths; no
-collision; prompt returns to `nsh>` after `end`.
+collision; prompt returns to `svsh>` after `end`.
 
 ### D2 — `if $exit != 0` branches on failure
 ```
@@ -258,7 +258,7 @@ branch flips to `OK`.
 
 ### D3 — Nested blocks replay cleanly
 ```
-nsh> for X in 1 2 3
+svsh> for X in 1 2 3
 ...>   foreach host in *
 ...>     log "X=${X} host=${host}"
 ...>   end
@@ -269,7 +269,7 @@ across the fanout it may be concurrent.
 
 ### D4 — `break` / `continue` work inside a loop
 ```
-nsh> for X in 1 2 3 4
+svsh> for X in 1 2 3 4
 ...>   if $X == 3
 ...>     log "break at 3"
 ...>     break
@@ -280,15 +280,15 @@ nsh> for X in 1 2 3 4
 **PASS:** prints `X=1`, `X=2`, `break at 3`. Nothing after.
 
 ### D5 — `on-error continue` keeps a script running past a failure
-Save to `C:\tests\on-error.nsh`:
-```nsh
+Save to `C:\tests\on-error.svsh`:
+```svsh
 on-error continue
 cd \\win11-vm
 dir Z:\nope
 log "survived (exit was $exit)"
 hostname
 ```
-Run: `set AEGIS_NSH_SCRIPT=C:\tests\on-error.nsh & mockserver.exe script`.
+Run: `set AEGIS_SVSH_SCRIPT=C:\tests\on-error.svsh & mockserver.exe script`.
 **PASS:** both the `log` line and `hostname` output appear.
 
 ---
@@ -297,40 +297,40 @@ Run: `set AEGIS_NSH_SCRIPT=C:\tests\on-error.nsh & mockserver.exe script`.
 
 ### E1 — `alias` creates a reusable verb
 ```
-nsh> use powershell
-nsh> alias def = Get-MpComputerStatus | Select-Object AMEngineVersion
-nsh> cd \\win11-vm
+svsh> use powershell
+svsh> alias def = Get-MpComputerStatus | Select-Object AMEngineVersion
+svsh> cd \\win11-vm
 win11-vm> def
 ```
 **PASS:** PowerShell runs the expansion; output has an `AMEngineVersion`
 line.
 
-### E2 — `source` includes another .nsh (vars/aliases survive)
-`C:\tests\vars.nsh`:
-```nsh
+### E2 — `source` includes another .svsh (vars/aliases survive)
+`C:\tests\vars.svsh`:
+```svsh
 let REGION = us-east-1
 alias def = Get-MpComputerStatus
 ```
 Interactive:
 ```
-nsh> source C:\tests\vars.nsh
-nsh> vars
-nsh> echo region=${REGION}
+svsh> source C:\tests\vars.svsh
+svsh> vars
+svsh> echo region=${REGION}
 ```
 **PASS:** `vars` lists `REGION`; echo prints `region=us-east-1`.
 
 ### E3 — `history` lists recent commands
 ```
-nsh> history
+svsh> history
 ```
 **PASS:** numbered list of the last few commands typed.
 
 ### E4 — `set session-log` writes every REPL line to a file
 ```
-nsh> set session-log C:\tests\nsh-session.log
-nsh> hostname
+svsh> set session-log C:\tests\svsh-session.log
+svsh> hostname
 ```
-**PASS:** `C:\tests\nsh-session.log` grows with each line typed and a
+**PASS:** `C:\tests\svsh-session.log` grows with each line typed and a
 timestamped `=== session resumed ===` header on open.
 
 ---
@@ -346,8 +346,8 @@ Get-Service wuauserv | Select-Object Status
 ```
 Interactive:
 ```
-nsh> let TAG = daily-21oct
-nsh> cd \\win11-vm
+svsh> let TAG = daily-21oct
+svsh> cd \\win11-vm
 win11-vm> exec C:\tests\check.ps1
 ```
 **PASS:** output includes `tag=daily-21oct on <HOSTNAME>` and
@@ -361,7 +361,7 @@ echo running on %COMPUTERNAME%
 echo tag env is %AEGIS_PARAM_TAG%
 ```
 ```
-nsh> exec C:\tests\check.bat
+svsh> exec C:\tests\check.bat
 ```
 **PASS:** output shows the computer name and `tag env is daily-21oct`.
 
@@ -372,7 +372,7 @@ import os
 print("py tag =", os.environ.get("AEGIS_PARAM_TAG"))
 ```
 ```
-nsh> exec python C:\tests\check.py
+svsh> exec python C:\tests\check.py
 ```
 **PASS (if python on PATH):** `py tag = daily-21oct`.
 **PASS (if python NOT installed):** honest error `python.exe is not
@@ -380,9 +380,9 @@ recognized ...` and non-zero exit — not a crash.
 
 ### F4 — `exec <nonexistent file>` is caught
 ```
-nsh> exec C:\does\not\exist.ps1
+svsh> exec C:\does\not\exist.ps1
 ```
-**PASS:** `nsh: exec: read C:\does\not\exist.ps1: ...`.
+**PASS:** `svsh: exec: read C:\does\not\exist.ps1: ...`.
 
 ---
 
@@ -396,8 +396,8 @@ No local file needs to be created for these tests.
 
 ### G1 — PowerShell inline block with `${VAR}` substitution
 ```
-nsh> let REGION = us-west-1
-nsh> cd \\win11-vm
+svsh> let REGION = us-west-1
+svsh> cd \\win11-vm
 win11-vm> script powershell until EOT
           Write-Host "REGION=${REGION}"
           Write-Host "HOST=$env:COMPUTERNAME"
@@ -409,8 +409,8 @@ status line. No file was dropped on the endpoint (confirm nothing new under
 `C:\Windows\Temp\`).
 
 ### G2 — HEREDOC inside a `foreach` block runs per host
-Requires 2 agents. Save `C:\tests\fleet-herdoc.nsh`:
-```nsh
+Requires 2 agents. Save `C:\tests\fleet-herdoc.svsh`:
+```svsh
 let REGION = ${env:REGION}
 use powershell
 on-error continue
@@ -425,14 +425,14 @@ end
 ```
 ```
 set REGION=apac
-set AEGIS_NSH_SCRIPT=C:\tests\fleet-herdoc.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\fleet-herdoc.svsh
 mockserver.exe script
 ```
 **PASS:** every host prints its name + the engine version; per-host files
-land under `uploads/<cid>/nsh/<host>/*.out` without collision.
+land under `uploads/<cid>/svsh/<host>/*.out` without collision.
 
 `REGION` above is imported explicitly from the **mockserver process** environment;
-`set REGION=apac` alone does not create an NSH variable. For interactive testing,
+`set REGION=apac` alone does not create an SVSH variable. For interactive testing,
 use `let REGION = apac`. Ensure the names are `Get-MpComputerStatus` and
 `AMEngineVersion`. A missing cmdlet or other unhandled PowerShell error must
 produce `FAIL` with nonzero exit, even when a later command would succeed.
@@ -460,7 +460,7 @@ win11-vm> script powershell until END
           END
 ```
 **PASS:** PowerShell runs; output is `after blank`. The blank line and
-`#` comment were preserved inside the heredoc (they are NOT NSH comments
+`#` comment were preserved inside the heredoc (they are NOT SVSH comments
 there — the PowerShell parser treats `#` as its own comment).
 
 ---
@@ -470,7 +470,7 @@ there — the PowerShell parser treats `#` as its own comment).
 ### H1 — `run_command` transcripts land under SKVC
 After running a few commands:
 ```
-dir "C:\Program Files\AegisOne\Client\SKVC\logs\nsh\"
+dir "C:\Program Files\AegisOne\Client\SKVC\logs\svsh\"
 ```
 **PASS:** one `.transcript` file per command, each containing a header
 with `shell=`, `exit=`, `<ms>`, followed by `CMD:`, `--- STDOUT ---`,
@@ -506,7 +506,7 @@ After `cd C:\temp`, commands use C:\temp (which must already exist on endpoint).
 
 ### I1 — Output caps enforced
 ```
-nsh> set max-output 1024
+svsh> set max-output 1024
 win11-vm> type C:\Windows\win.ini
 ```
 **PASS:** inline output is capped at ~1024 bytes; `truncated` is reported
@@ -515,22 +515,22 @@ when `grab` / `set capture on` is active.
 
 ### I2 — Per-command timeout
 ```
-nsh> set timeout 2
+svsh> set timeout 2
 win11-vm> ping -n 10 localhost
 ```
 **PASS:** command killed after 2s; `reason=timeout`; non-zero exit.
 
 ### I3 — Honest refusal when the agent disconnects mid-run
 Pull the agent service while a long command runs.
-**PASS:** `nsh: timed out waiting for <action_id>`; mock does not hang.
+**PASS:** `svsh: timed out waiting for <action_id>`; mock does not hang.
 
 ---
 
 ## J. Non-interactive script mode (future console task simulation)
 
 ### J1 — Full fleet-check script
-Save `C:\tests\fleet-check.nsh`:
-```nsh
+Save `C:\tests\fleet-check.svsh`:
+```svsh
 # Fleet-wide defender posture check
 let TAG = daily-${env:USERNAME}
 set output-dir reports\${TAG}
@@ -551,7 +551,7 @@ end
 log "all done"
 ```
 ```
-set AEGIS_NSH_SCRIPT=C:\tests\fleet-check.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\fleet-check.svsh
 mockserver.exe script
 ```
 **PASS:** mock exits after the script runs; session log at
@@ -560,8 +560,8 @@ mockserver.exe script
 mock console shows `all done`.
 
 ### J2 — Script with HEREDOC + variable + conditional + loop
-Save `C:\tests\pack.nsh`:
-```nsh
+Save `C:\tests\pack.svsh`:
+```svsh
 let PATH_PREFIX = C:\temp\report
 set output-dir reports\pack
 on-error continue
@@ -581,7 +581,7 @@ foreach host in *
 end
 ```
 ```
-set AEGIS_NSH_SCRIPT=C:\tests\pack.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\pack.svsh
 mockserver.exe script
 ```
 **PASS:** every host prints a `wrote on ...: C:\temp\report-<HOSTNAME>.txt`
@@ -591,17 +591,17 @@ line; files exist on the endpoints.
 
 ## K — Native file jobs and bounded inventory search
 
-See [nsh-file-operations.md](nsh-file-operations.md) for the full manual and
+See [svsh-file-operations.md](svsh-file-operations.md) for the full manual and
 acceptance cases. Use disposable test folders and updated agent + mockserver.
 
 ```text
 search win11
 hosts --status offline --page 1 --limit 20
 hosts --page 2
-mkdir \\vm1,vm2\c\temp\nsh-test
-copy \\srv1\c\temp\loop.txt \\vm1,vm2\c\temp\nsh-test\
-touch \\vm1,vm2\c\temp\nsh-test\empty.txt
-delete \\vm1,vm2\c\temp\nsh-test\empty.txt
+mkdir \\vm1,vm2\c\temp\svsh-test
+copy \\srv1\c\temp\loop.txt \\vm1,vm2\c\temp\svsh-test\
+touch \\vm1,vm2\c\temp\svsh-test\empty.txt
+delete \\vm1,vm2\c\temp\svsh-test\empty.txt
 ```
 
 **PASS:** host list is bounded (default 20, max 100 rows); status and total/next
@@ -613,8 +613,8 @@ be managed agents. A no-target right-click/session open must not print any list.
 
 ## Hand-off note for the server team
 
-The shared engine is `pkg/nsh`; mockserver adapters are
-`cmd/mockserver/nsh_engine.go` + `cmd/mockserver/nsh_jobs.go`. The agent-side
+The shared engine is `pkg/svsh`; mockserver adapters are
+`cmd/mockserver/svsh_engine.go` + `cmd/mockserver/svsh_jobs.go`. The agent-side
 contract is `RunCommandSpec` + `RunCommandResult` in `grpc/agent.proto`
 and the handler at `cmd/agent/runcommand.go`. The console UI team should
 reuse the engine verbatim (verb set, variable substitution, loop/if

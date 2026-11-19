@@ -122,7 +122,7 @@ terminal result. An admin-provided pre-staged ZIP is not owned and is preserved.
 The server's package catalog/source is unchanged by endpoint cleanup.
 
 For a retained custom package, expose explicit file/folder cleanup actions using
-the existing signed SYSTEM command facility or the user's NSH workflow. Examples:
+the existing signed SYSTEM command facility or the user's SVSH workflow. Examples:
 
 ```cmd
 del /Q "C:\AegisPackages\FinanceApp\config.xml"

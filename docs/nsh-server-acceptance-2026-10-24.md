@@ -1,6 +1,6 @@
-# NSH server-team acceptance — 24 October 2026
+# SVSH server-team acceptance — 24 October 2026
 
-Vijay reports today's NSH tests passed. Replay the cases below against this
+Vijay reports today's SVSH tests passed. Replay the cases below against this
 handoff before implementing the console integration. This document covers the
 existing interactive/file-operation build; the reusable Script Job executor is
 the next coding block and is not a prerequisite for these tests.
@@ -20,8 +20,8 @@ mockserver process's local filesystem.
 
 In CMD on the server, before starting mockserver:
 ```bat
-set AEGIS_NSH_SCRIPT=
-mockserver.exe nsh
+set AEGIS_SVSH_SCRIPT=
+mockserver.exe svsh
 ```
 
 Background connection/heartbeat/scan/upload events belong in
@@ -80,8 +80,8 @@ selected-host prompt must be restored, not the last host visited in the loop.
 
 ## 3. PowerShell exec/HEREDOC and G2 (positive and negative)
 
-Save this server-local file as C:\tests\fleet-herdoc.nsh:
-```nsh
+Save this server-local file as C:\tests\fleet-herdoc.svsh:
+```svsh
 let REGION = apac
 use powershell
 on-error continue
@@ -95,9 +95,9 @@ foreach host in *
 end
 ```
 
-In NSH, run `source C:\tests\fleet-herdoc.nsh` after intended agents are online.
+In SVSH, run `source C:\tests\fleet-herdoc.svsh` after intended agents are online.
 PASS: both names, region=apac and AMEngineVersion print; per-host terminal status
-is OK; captures are separate under uploads/<cid>/nsh/<host>/. Defender must be
+is OK; captures are separate under uploads/<cid>/svsh/<host>/. Defender must be
 available for its cmdlet to succeed. Correct spellings are Get-MpComputerStatus
 and AMEngineVersion. Blank lines/comments inside HEREDOC must survive.
 
@@ -110,15 +110,15 @@ delimiter alone; continuation prompt shows the expected delimiter.
 
 ## 4. Prepare disposable file-operation data
 
-All file tests below use C:\temp\AegisNSH-20261024. Do not substitute existing
-application/data folders. In NSH:
+All file tests below use C:\temp\AegisSVSH-20261024. Do not substitute existing
+application/data folders. In SVSH:
 ```text
 set capture off
 cd \\WIN-TUES4V46T7I
 use powershell
-mkdir C:\temp\AegisNSH-20261024
-Set-Content -LiteralPath C:\temp\AegisNSH-20261024\loop.txt -Value 'NSH transfer check'
-mkdir \\WIN-TUES4V46T7I,mockserver\c\temp\AegisNSH-20261024\out
+mkdir C:\temp\AegisSVSH-20261024
+Set-Content -LiteralPath C:\temp\AegisSVSH-20261024\loop.txt -Value 'SVSH transfer check'
+mkdir \\WIN-TUES4V46T7I,mockserver\c\temp\AegisSVSH-20261024\out
 ```
 
 PASS: both managed endpoints create the requested folders; file lives on the
@@ -128,10 +128,10 @@ SHA-256 after each copy. Native shell actions run as LocalSystem.
 ## 5. Single, bulk, binary, directory and overwrite copy
 
 ```text
-copy \\WIN-TUES4V46T7I\c\temp\AegisNSH-20261024\loop.txt \\mockserver\c\temp\AegisNSH-20261024\out\
-copy \\WIN-TUES4V46T7I\c\temp\AegisNSH-20261024\loop.txt \\mockserver\c\temp\AegisNSH-20261024\out\
-copy --overwrite \\WIN-TUES4V46T7I\c\temp\AegisNSH-20261024\loop.txt \\mockserver\c\temp\AegisNSH-20261024\out\
-copy \\WIN-TUES4V46T7I\c\temp\AegisNSH-20261024\loop.txt \\WIN-TUES4V46T7I,mockserver\c\temp\AegisNSH-20261024\out2\
+copy \\WIN-TUES4V46T7I\c\temp\AegisSVSH-20261024\loop.txt \\mockserver\c\temp\AegisSVSH-20261024\out\
+copy \\WIN-TUES4V46T7I\c\temp\AegisSVSH-20261024\loop.txt \\mockserver\c\temp\AegisSVSH-20261024\out\
+copy --overwrite \\WIN-TUES4V46T7I\c\temp\AegisSVSH-20261024\loop.txt \\mockserver\c\temp\AegisSVSH-20261024\out\
+copy \\WIN-TUES4V46T7I\c\temp\AegisSVSH-20261024\loop.txt \\WIN-TUES4V46T7I,mockserver\c\temp\AegisSVSH-20261024\out2\
 ```
 
 PASS: first succeeds with identical bytes; second fails without overwriting;
@@ -142,7 +142,7 @@ an empty directory. Directory copy requires -r and preserves its tree under the
 destination. Source exported once for distribution; default destination workers
 are four, configurable via set file-workers 1..32.
 
-Device paths are NSH paths via managed agents, not SMB share access. c/c$ means
+Device paths are SVSH paths via managed agents, not SMB share access. c/c$ means
 C: on that endpoint. Byte/file caps fail clearly rather than silently truncating
 files. Defaults: 500 MiB/bundle, 10k entries, 2 MiB manifest bound. See full manual
 for set file-max-bytes / file-max-files. Rate throttling remains backlog.
@@ -151,7 +151,7 @@ for set file-max-bytes / file-max-files. Rate throttling remains backlog.
 
 Create a disposable move-me.txt beside loop.txt on the source. Run:
 ```text
-move \\WIN-TUES4V46T7I\c\temp\AegisNSH-20261024\move-me.txt \\mockserver\c\temp\AegisNSH-20261024\moved\
+move \\WIN-TUES4V46T7I\c\temp\AegisSVSH-20261024\move-me.txt \\mockserver\c\temp\AegisSVSH-20261024\moved\
 ```
 
 PASS: destination hash matches and source is removed only after verified copy.
@@ -162,26 +162,26 @@ removal. Treat partial failures honestly; cross-device move is not transactional
 ## 7. Bulk mkdir/touch/delete and failures
 
 ```text
-mkdir \\WIN-TUES4V46T7I,mockserver\c\temp\AegisNSH-20261024\cleanup
-touch \\WIN-TUES4V46T7I,mockserver\c\temp\AegisNSH-20261024\cleanup\empty.txt
-delete \\WIN-TUES4V46T7I,mockserver\c\temp\AegisNSH-20261024\cleanup\empty.txt
-delete -r \\WIN-TUES4V46T7I,mockserver\c\temp\AegisNSH-20261024\cleanup
+mkdir \\WIN-TUES4V46T7I,mockserver\c\temp\AegisSVSH-20261024\cleanup
+touch \\WIN-TUES4V46T7I,mockserver\c\temp\AegisSVSH-20261024\cleanup\empty.txt
+delete \\WIN-TUES4V46T7I,mockserver\c\temp\AegisSVSH-20261024\cleanup\empty.txt
+delete -r \\WIN-TUES4V46T7I,mockserver\c\temp\AegisSVSH-20261024\cleanup
 ```
 
 PASS: actions occur on both endpoints, per-host results are visible, and $exit
 is nonzero if any task fails. An existing touch target must not be truncated.
 Deleting directories without -r is refused. Missing files/permissions/offline
 targets report failure. Check basic native commands still work; use `run copy`
-or `run del` for native Windows flags rather than NSH's flags.
+or `run del` for native Windows flags rather than SVSH's flags.
 
 ## 8. Capture and audit checks
 
 set capture off disables automatic stdout saving; grab/pull still save requested
 artifacts. pull must copy bytes, not run type on a quoted path. Empty stdout on a
 failed command is not a successful file copy. run_command audit transcripts stay
-under SKVC/logs/nsh. File-operation accepted/finished logs identify action IDs,
+under SKVC/logs/svsh. File-operation accepted/finished logs identify action IDs,
 operation, source/destination and terminal status. Console identity/RBAC/job audit
 is real server/console integration work; the mock does not implement login/RBAC.
 
-References: nsh-test-plan.md (full suite), nsh-file-operations.md (syntax/contract),
-nsh-console-integration.md (console entry points, identity and execution modes).
+References: svsh-test-plan.md (full suite), svsh-file-operations.md (syntax/contract),
+svsh-console-integration.md (console entry points, identity and execution modes).

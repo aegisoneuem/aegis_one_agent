@@ -189,22 +189,22 @@ paths are reported as `no match` — not an error for the files that do exist.
   device, expose it to the console per computer. No extra agent-side API is
   needed — this RPC **is** the channel.
 
-## 10. NSH (console operator REPL) + `run_command` task
+## 10. SVSH (console operator REPL) + `run_command` task
 
-The NSH is the console-side REPL for ad-hoc operator work: list devices, pick
+The SVSH is the console-side REPL for ad-hoc operator work: list devices, pick
 targets, run commands, grab output as server-side files, fan out across many
-hosts, run non-interactive scripts. BladeLogic NSH / BigFix WebUI equivalent,
+hosts, run non-interactive scripts. BladeLogic SVSH / BigFix WebUI equivalent,
 without the relevance-language learning curve.
 
 ### Start it
 
 ```
-mockserver.exe nsh
+mockserver.exe svsh
 ```
-Only `mockserver.exe nsh` opens the REPL; plain `mockserver.exe` stays in normal server mode. For scripted
+Only `mockserver.exe svsh` opens the REPL; plain `mockserver.exe` stays in normal server mode. For scripted
 (non-interactive) mode:
 ```
-set AEGIS_NSH_SCRIPT=C:\checks\daily.nsh
+set AEGIS_SVSH_SCRIPT=C:\checks\daily.svsh
 mockserver.exe script
 ```
 
@@ -225,13 +225,13 @@ mockserver.exe script
 | `set timeout <sec>` | Per-command timeout (default 300) |
 | `set max-output <bytes>` | Inline capture cap (default 1 MiB) |
 | `set capture on/off` | Auto-save every command's stdout (default off) |
-| `set output-dir <path>` | Default server-side save prefix (default `nsh`) |
+| `set output-dir <path>` | Default server-side save prefix (default `svsh`) |
 | `script run <file>` | Non-interactive batch (same engine, capture=on) |
 | `history` | Recent commands |
 | `shell` | Drop into persistent interactive shell (open_shell) |
 | `exit` / `quit` | Close REPL |
 
-**Scripting (variables + control flow — in REPL and in `.nsh` files):**
+**Scripting (variables + control flow — in REPL and in `.svsh` files):**
 
 | Keyword | What it does |
 |---|---|
@@ -247,7 +247,7 @@ mockserver.exe script
 | `on-error continue\|stop` | Script error policy (default stop) |
 | `log <message>` | Explicit script output marker |
 | `alias NAME = <expansion>` | Reusable command |
-| `source <file>` | Include another .nsh (vars/aliases) |
+| `source <file>` | Include another .svsh (vars/aliases) |
 | `wait <sec>` | Sleep |
 | `vars` | List defined variables |
 | `set format table\|json\|csv` | Fanout output format |
@@ -256,7 +256,7 @@ mockserver.exe script
 **Last-result variables** (updated after each command, usable in `if` / substitution):
 `$exit`, `$stdout`, `$stderr`, `$host`, `$duration`, `$reason`
 
-**Running NATIVE scripts (.ps1 / .bat / .cmd / .py / .sh) with NSH vars inside**
+**Running NATIVE scripts (.ps1 / .bat / .cmd / .py / .sh) with SVSH vars inside**
 
 Two patterns — BigFix's "action script with embedded relevance" is covered by #1:
 
@@ -267,7 +267,7 @@ Two patterns — BigFix's "action script with embedded relevance" is covered by 
    powershell, `.bat`/`.cmd` → cmd, `.py` → python, `.sh` → bash), or named
    explicitly. PowerShell is sent as `-EncodedCommand` (UTF-16LE+base64) so
    complex multi-line scripts with any quoting pass safely. Example:
-   ```nsh
+   ```svsh
    let TAG = prod
    let REGION = us-east-1
    cd *
@@ -278,9 +278,9 @@ Two patterns — BigFix's "action script with embedded relevance" is covered by 
    substitution model).
 
 2. **Script lives on the AGENT** (pre-staged via softdist, or in SKVC\download)
-   NSH vars become `AEGIS_PARAM_<NAME>` env vars on the child process — the
+   SVSH vars become `AEGIS_PARAM_<NAME>` env vars on the child process — the
    .ps1/.bat/.py reads `$env:AEGIS_PARAM_TAG` to pick them up. Example:
-   ```nsh
+   ```svsh
    let BATCH = daily-$(get-date-slug)
    cd *
    powershell -File C:\scripts\check.ps1 -Batch "${BATCH}"
@@ -290,17 +290,17 @@ Two patterns — BigFix's "action script with embedded relevance" is covered by 
 
 **Cross-platform promise:** when the agent targets Linux/macOS, `exec` ships
 `.sh` as `bash -c "echo <b64> | base64 -d | bash"` — same wrapping idea,
-same NSH substitution. No code change needed on the console side.
+same SVSH substitution. No code change needed on the console side.
 
 ### Example session
 
 ```
-nsh> hosts
+svsh> hosts
 HOST                DEVICE_ID                   COMPUTER_ID
 win11-vm            c8371223-abb8-420c...       7315850516
 srv2022             4421938271-...              4421938271
 
-nsh> cd \\win11-vm
+svsh> cd \\win11-vm
 win11-vm> hostname
 ---- win11-vm $ hostname
 win11-vm
@@ -321,7 +321,7 @@ win11-vm> grab \logs\hosts.txt type C:\Windows\System32\drivers\etc\hosts
 ---- saved to uploads/7315850516/\logs\hosts.txt
 ---- win11-vm OK  (exit=0, 18ms)
 
-nsh> cd *
+svsh> cd *
 targets: 2 online host(s)
 [2 hosts]> fanout tasklist /svc | findstr defender
 HOST                RESULT      FIRST LINE
@@ -331,14 +331,14 @@ win11-vm            ok (0)      MsMpEng.exe   3460 WinDefend
 
 ### Non-interactive script mode (for console-authored tasks)
 
-A `.nsh` file is just REPL lines. Capture is on by default so every command's
+A `.svsh` file is just REPL lines. Capture is on by default so every command's
 stdout is saved to the server. `#` lines are comments.
 
-```nsh
-# daily-defender-check.nsh — fleet-wide check with per-host output
+```svsh
+# daily-defender-check.svsh — fleet-wide check with per-host output
 let REPORT_DIR = \defender\${env:USERNAME}
 set output-dir ${REPORT_DIR}
-set session-log C:\logs\nsh-daily.log
+set session-log C:\logs\svsh-daily.log
 use powershell
 on-error continue
 
@@ -355,7 +355,7 @@ end
 log "done"
 ```
 
-Run: `set AEGIS_NSH_SCRIPT=daily-defender-check.nsh & mockserver.exe script` — fans
+Run: `set AEGIS_SVSH_SCRIPT=daily-defender-check.svsh & mockserver.exe script` — fans
 out across all online endpoints, outputs land under
 `uploads/<computer_id>/\defender\<user>\...` for a WebUI report later.
 
@@ -371,7 +371,7 @@ out across all online endpoints, outputs land under
 - Default upload location: `uploads/<computer_id>/<output-dir>/<host>/<ts>-<slug>.out`.
   Override per command (`grab \my\path\x.out ...`) or globally
   (`set output-dir \reports`).
-- Agent transcript of every `run_command` goes to `SKVC\logs\nsh\<action_id>.transcript`
+- Agent transcript of every `run_command` goes to `SKVC\logs\svsh\<action_id>.transcript`
   on the endpoint (future hardening; v1 relies on server-side ActionStatus log).
 
 ### Cross-platform promise
@@ -385,7 +385,7 @@ never silently coerced to another shell.
 
 > `AEGIS_SHELL=1` auto-trigger from the per-connect block was removed. The
 > interactive persistent shell is for the deep-investigation case (BladeLogic
-> interactive nexec); 90% of ad-hoc work goes through `run_command` via the NSH
+> interactive nexec); 90% of ad-hoc work goes through `run_command` via the SVSH
 > REPL (§10). The console UI (future) will wire a web terminal (xterm.js) to
 > `open_shell` + `ShellSession`. Today the plumbing is tested, but the mock no
 > longer wires its own stdin to it.

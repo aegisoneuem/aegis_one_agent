@@ -5,7 +5,7 @@
 
 This guide is **self-contained**. You do not need to open any other document in the repository to execute it.
 
-> `mockserver.exe` is the **reference server** — not the production backend. It drives the agent exactly the way the real server must, prints every message it receives, and takes operator commands from a built-in NSH (Network Shell) REPL. The production server team builds the real backend; the agent-side behavior is what you verify here.
+> `mockserver.exe` is the **reference server** — not the production backend. It drives the agent exactly the way the real server must, prints every message it receives, and takes operator commands from a built-in SVSH (Network Shell) REPL. The production server team builds the real backend; the agent-side behavior is what you verify here.
 
 ---
 
@@ -46,7 +46,7 @@ All of these are under `dist/` in the repo:
 |---|---|
 | `AegisOneClient.msi` | Agent installer (MSI, interactive or silent). Installs the `AegisOneClient` Windows service. |
 | `AegisOneClient.exe` | Agent binary (also embedded in the MSI). For reference / manual swap. |
-| `mockserver.exe` | Reference server. Drives the agent; prints what it receives. Hosts the NSH REPL. |
+| `mockserver.exe` | Reference server. Drives the agent; prints what it receives. Hosts the SVSH REPL. |
 | `certgen.exe` | Generates the dev mTLS certificate set. |
 
 All are **Windows x64**. Run everything **as Administrator**.
@@ -126,7 +126,7 @@ Still on the dev machine:
 set AEGIS_ENROLL_TOKEN=tenant-abc-123
 mockserver.exe
 ```
-The mock listens on `:50051` (all interfaces → LAN-reachable). The NSH REPL is a separate invocation (see 3.5).
+The mock listens on `:50051` (all interfaces → LAN-reachable). The SVSH REPL is a separate invocation (see 3.5).
 
 > The mock reads `AEGIS_*` env vars at startup and sends matching commands when the agent connects. **To run a new scenario: Ctrl+C the mock, `set` new vars, start it again.** This is deliberate — the test cases below each list the env vars to set.
 
@@ -153,13 +153,13 @@ sc stop AegisOneClient & sc start AegisOneClient
 ```
 Without this file UC-10 / UC-11 cannot run — the agent logs a clear error ("cab not present").
 
-### 3.5 Start the NSH REPL (dev operator shell)
+### 3.5 Start the SVSH REPL (dev operator shell)
 
-NSH is the mockserver's built-in operator REPL — the equivalent of a BigFix WebUI / BladeLogic nexec session, pure text. On the **dev machine**, in a SECOND window:
+SVSH is the mockserver's built-in operator REPL — the equivalent of a BigFix WebUI / BladeLogic nexec session, pure text. On the **dev machine**, in a SECOND window:
 ```cmd
-mockserver.exe nsh
+mockserver.exe svsh
 ```
-You get a `nsh>` prompt. **This is the right invocation.** Do NOT set `AEGIS_NSH=1` — that was wrong guidance from an earlier version of this guide; use the `nsh` subcommand.
+You get a `svsh>` prompt. **This is the right invocation.** Do NOT set `AEGIS_SVSH=1` — that was wrong guidance from an earlier version of this guide; use the `svsh` subcommand.
 
 ### 3.6 Verify the agent is enrolled and connected
 
@@ -222,14 +222,14 @@ C:\Program Files\AegisOne\Client\SKVC\logs\agent-YYYY-MM-DD.log
 |---|---|
 | `C:\>` | Windows CMD on the dev machine or VM — regular shell |
 | `mockserver>` or raw mockserver output | the mockserver console (started in 3.2) |
-| `nsh>` | NSH REPL with no target selected |
-| `<hostname>>` | NSH REPL with a single device target (after `cd <hostname>` or `cd \<hostname>`) |
-| `[N hosts]>` | NSH REPL with multiple device targets (after `cd \some-group`) |
-| `... [DELIM]>` | NSH heredoc continuation (inside a `script ... until DELIM` block) |
+| `svsh>` | SVSH REPL with no target selected |
+| `<hostname>>` | SVSH REPL with a single device target (after `cd <hostname>` or `cd \<hostname>`) |
+| `[N hosts]>` | SVSH REPL with multiple device targets (after `cd \some-group`) |
+| `... [DELIM]>` | SVSH heredoc continuation (inside a `script ... until DELIM` block) |
 
-### Target selection in NSH
+### Target selection in SVSH
 
-- `cd \` — clear targets, return to `nsh>` prompt.
+- `cd \` — clear targets, return to `svsh>` prompt.
 - `cd <hostname>` — single target by hostname (what the VM reports as `hostname`).
 - `cd \<group>` — group root (if the mock has a fleet group defined).
 
@@ -637,14 +637,14 @@ sc stop AegisOneClient & sc start AegisOneClient
 set AEGIS_ENROLL_TOKEN=tenant-abc-123
 mockserver.exe
 ```
-Open the NSH REPL in a second window:
+Open the SVSH REPL in a second window:
 ```cmd
-mockserver.exe nsh
+mockserver.exe svsh
 ```
 
-**NSH REPL:**
+**SVSH REPL:**
 ```
-nsh> cd <vm-hostname>
+svsh> cd <vm-hostname>
 <vm-hostname>> inventory refresh
 <vm-hostname>> inventory apps
 <vm-hostname>> inventory apps chrome
@@ -675,8 +675,8 @@ Wait one `AEGIS_DEVICE_STATE_INTERVAL` cycle (set `30` seconds for test).
 
 **UC-18F** — multi-device fleet summary (requires ≥ 2 live agents on the mock):
 ```
-nsh> cd \                      # clear targets (no cd)
-nsh> inventory apps            # fleet-wide summary: HOST | INVENTORY_SIZE | LAST_REPORT_AT
+svsh> cd \                      # clear targets (no cd)
+svsh> inventory apps            # fleet-wide summary: HOST | INVENTORY_SIZE | LAST_REPORT_AT
 ```
 Both agents listed with their most recent inventory count. Skip if only one VM is online.
 
@@ -698,7 +698,7 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
    - Spotify desktop.
    - Any MSI with: `msiexec /i file.msi ALLUSERS=""` (empty = per-user).
 3. Wait one `AEGIS_DEVICE_STATE_INTERVAL`.
-4. NSH:
+4. SVSH:
    ```
    <vm-hostname>> inventory refresh
    <vm-hostname>> inventory apps <name>
@@ -710,7 +710,7 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
 
 #### UC-19B — On-demand refresh without any change
 
-**STEPS:** change nothing on the device. From NSH:
+**STEPS:** change nothing on the device. From SVSH:
 ```
 <vm-hostname>> inventory refresh
 ```
@@ -725,7 +725,7 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
 
 **STEPS:**
 1. On the VM: `sc stop AegisOneClient`.
-2. NSH: `inventory refresh`.
+2. SVSH: `inventory refresh`.
 
 **EXPECTED (immediate, no 5-second wait):** `OFFLINE (no live stream) — refresh skipped`.
 
@@ -733,7 +733,7 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
 
 #### UC-19D — `--timeout` flag parsing
 
-**STEPS from NSH:**
+**STEPS from SVSH:**
 1. `inventory refresh --timeout 15` → succeeds against a healthy target with `waiting up to 15s`.
 2. `inventory refresh --timeout abc` → `--timeout expects a positive integer (seconds)`.
 3. `inventory refresh --fast` → `unknown argument "--fast"`.
@@ -746,9 +746,9 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
 
 **EXPECTED:** `refuses more than 100 targets ... use the server-side scheduled fleet refresh instead`.
 
-**PASS CRITERIA:** cap enforced. On single-VM test setups this case is verified by code review of `cmd/mockserver/nsh.go` (`maxTargets = 100`) rather than execution.
+**PASS CRITERIA:** cap enforced. On single-VM test setups this case is verified by code review of `cmd/mockserver/svsh.go` (`maxTargets = 100`) rather than execution.
 
-> NSH is a **dev/admin tool**, not a fleet-ops surface. Fleet-wide refresh belongs in a server-side scheduled operation that batches waves and rate-limits. The agent handler is identical, only the dispatcher differs.
+> SVSH is a **dev/admin tool**, not a fleet-ops surface. Fleet-wide refresh belongs in a server-side scheduled operation that batches waves and rate-limits. The agent handler is identical, only the dispatcher differs.
 
 ---
 
@@ -758,7 +758,7 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
 |---|---|
 | `FAST-LANE patch-state: CHANGED -> sending ... build=.. reboot_pending=.. installed_apps=..` | fast-lane report sent (something changed) |
 | `FAST-LANE patch-state: no change this cycle (skip send)` (DEBUG) | fast-lane tick, suppressed by fingerprint (set `AEGIS_LOG_LEVEL=debug` to see) |
-| `FAST-LANE patch-state: on-demand refresh requested — resetting fingerprint` | NSH `inventory refresh` triggered |
+| `FAST-LANE patch-state: on-demand refresh requested — resetting fingerprint` | SVSH `inventory refresh` triggered |
 | `FULL-SCAN (cab): running at startup / periodic / triggered` | heavy cab scan + why it ran |
 | `FULL-SCAN (cab): result buffered ... kbs=[..]` | missing KBs from the scan |
 | `action status ... type=patch_install phase=..` | unified per-action lifecycle |
@@ -768,7 +768,7 @@ Both agents listed with their most recent inventory count. Skip if only one VM i
 | `deploy: running DISM/wusa command=..` (DEBUG) | exact command text per stage |
 | `deploy: DISM attempt failed ... exit_code=50 ... — handled by the wusa fallback` | UC-14b auto-fallback |
 
-Mockserver side prints: `Enroll OK`, `Agent connected!`, `patch state report`, `patch scan result`, `action status`, `CACHE-FULL report`, and (NSH) the inventory tables.
+Mockserver side prints: `Enroll OK`, `Agent connected!`, `patch state report`, `patch scan result`, `action status`, `CACHE-FULL report`, and (SVSH) the inventory tables.
 
 ---
 
@@ -868,7 +868,7 @@ Fill one row per sub-case per OS. Attach the agent log excerpt on any FAIL.
 | UC-19 | B refresh no-change | Win11 |  |  |  |  |
 | UC-19 | C offline | Win11 |  |  |  |  |
 | UC-19 | D --timeout | Win11 |  |  |  |  |
-| UC-19 | E 100-cap | n/a | n/a | n/a | by code review | `cmd/mockserver/nsh.go` maxTargets = 100 |
+| UC-19 | E 100-cap | n/a | n/a | n/a | by code review | `cmd/mockserver/svsh.go` maxTargets = 100 |
 
 ---
 
@@ -1114,6 +1114,6 @@ If a case FAILs with no clear classification in the agent log, capture:
 1. The exact mockserver env vars you set.
 2. The mockserver console output from start to the failure.
 3. The agent log file for the day (`agent-YYYY-MM-DD.log`).
-4. The VM OS build (`winver` → screenshot).
+4. The VM OS build (`winver` → screesvshot).
 
 Email the bundle to the dev team.

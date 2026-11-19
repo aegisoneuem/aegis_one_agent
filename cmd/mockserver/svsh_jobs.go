@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/svsh"
 )
 
-func newMockNSHRunner(srv *server) nsh.Runner {
-	return nsh.Runner{LoadFile: localNSHFile, LookupEnv: os.Getenv, NewBackend: func(ctx context.Context, job nsh.Job, output io.Writer) (nsh.Backend, error) {
+func newMockSVSHRunner(srv *server) svsh.Runner {
+	return svsh.Runner{LoadFile: localSVSHFile, LookupEnv: os.Getenv, NewBackend: func(ctx context.Context, job svsh.Job, output io.Writer) (svsh.Backend, error) {
 		allowed := make(map[string]bool, len(job.Targets))
 		for _, id := range job.Targets {
 			srv.mu.Lock()
@@ -26,19 +26,19 @@ func newMockNSHRunner(srv *server) nsh.Runner {
 			}
 			allowed[id] = true
 		}
-		s := &nshSession{srv: srv, ctx: ctx, shell: "cmd", timeout: 300, maxOutput: 1 << 20, outputDir: "nsh/jobs/" + slugify(job.ID), output: output, errorOutput: output, allowedTargets: allowed, jobMode: true}
-		return &mockNSHBackend{s: s}, nil
+		s := &svshSession{srv: srv, ctx: ctx, shell: "cmd", timeout: 300, maxOutput: 1 << 20, outputDir: "svsh/jobs/" + slugify(job.ID), output: output, errorOutput: output, allowedTargets: allowed, jobMode: true}
+		return &mockSVSHBackend{s: s}, nil
 	}}
 }
-func (s *nshSession) verbJob(rest string) error {
-	args, err := splitNSHArgs(rest)
+func (s *svshSession) verbJob(rest string) error {
+	args, err := splitSVSHArgs(rest)
 	if err != nil {
 		return err
 	}
 	if len(args) < 2 || args[0] != "run" {
-		return fmt.Errorf("usage: job run <file.nsh> [--param NAME=value] [--kind script_job|software_distribution] [--timeout seconds] [--capture]")
+		return fmt.Errorf("usage: job run <file.svsh> [--param NAME=value] [--kind script_job|software_distribution] [--timeout seconds] [--capture]")
 	}
-	job := nsh.Job{ID: "nsh-job-" + nshRandomID(), Kind: "script_job", ScriptFile: args[1], Targets: append([]string(nil), s.targets...), Parameters: map[string]string{}}
+	job := svsh.Job{ID: "svsh-job-" + svshRandomID(), Kind: "script_job", ScriptFile: args[1], Targets: append([]string(nil), s.targets...), Parameters: map[string]string{}}
 	timeout := 1800
 	for i := 2; i < len(args); i++ {
 		if args[i] == "--capture" {
@@ -80,23 +80,23 @@ func (s *nshSession) verbJob(rest string) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
-	result := newMockNSHRunner(s.srv).Run(ctx, job)
+	result := newMockSVSHRunner(s.srv).Run(ctx, job)
 	s.print(result.Output)
 	s.printf("---- JOB %s %s: actions=%d failed=%d\n", result.ID, strings.ToUpper(result.Status), result.TotalActions, result.FailedActions)
 	if result.Error != "" {
 		s.println("     reason:", result.Error)
 	}
-	if path, err := writeNSHJobResult(result); err != nil {
+	if path, err := writeSVSHJobResult(result); err != nil {
 		return err
 	} else {
 		s.println("     result:", path)
 	}
-	s.recordAction(nsh.ActionResult{Type: "nsh_job", ActionID: job.ID, ExitCode: result.ExitCode, Reason: result.Status, Summary: true})
+	s.recordAction(svsh.ActionResult{Type: "svsh_job", ActionID: job.ID, ExitCode: result.ExitCode, Reason: result.Status, Summary: true})
 	return nil
 }
-func writeNSHJobResult(result nsh.Result) (string, error) {
-	path := filepath.Join("logs", "nsh-jobs", result.ID+".json")
-	if override := strings.TrimSpace(os.Getenv("AEGIS_NSH_JOB_RESULT")); override != "" {
+func writeSVSHJobResult(result svsh.Result) (string, error) {
+	path := filepath.Join("logs", "svsh-jobs", result.ID+".json")
+	if override := strings.TrimSpace(os.Getenv("AEGIS_SVSH_JOB_RESULT")); override != "" {
 		path = override
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -108,13 +108,13 @@ func writeNSHJobResult(result nsh.Result) (string, error) {
 	}
 	return path, os.WriteFile(path, data, 0600)
 }
-func runEnvironmentNSHJob(srv *server, path string) {
-	s := &nshSession{srv: srv}
+func runEnvironmentSVSHJob(srv *server, path string) {
+	s := &svshSession{srv: srv}
 	var ids []string
-	for _, token := range splitCSV(os.Getenv("AEGIS_NSH_TARGETS")) {
+	for _, token := range splitCSV(os.Getenv("AEGIS_SVSH_TARGETS")) {
 		id, err := srv.resolveKnownTarget(token)
 		if err != nil {
-			s.println("nsh job:", err)
+			s.println("svsh job:", err)
 			return
 		}
 		ids = append(ids, id)
@@ -126,22 +126,22 @@ func runEnvironmentNSHJob(srv *server, path string) {
 		}
 		srv.liveMu.Unlock()
 	}
-	job := nsh.Job{ID: "nsh-job-" + nshRandomID(), Kind: getenv("AEGIS_NSH_JOB_KIND", "script_job"), ScriptFile: path, Targets: ids, Parameters: parseParams(os.Getenv("AEGIS_NSH_JOB_PARAMS")), Capture: truthy(getenv("AEGIS_NSH_JOB_CAPTURE", "true"))}
-	seconds, _ := strconv.Atoi(getenv("AEGIS_NSH_JOB_TIMEOUT_SECONDS", "1800"))
+	job := svsh.Job{ID: "svsh-job-" + svshRandomID(), Kind: getenv("AEGIS_SVSH_JOB_KIND", "script_job"), ScriptFile: path, Targets: ids, Parameters: parseParams(os.Getenv("AEGIS_SVSH_JOB_PARAMS")), Capture: truthy(getenv("AEGIS_SVSH_JOB_CAPTURE", "true"))}
+	seconds, _ := strconv.Atoi(getenv("AEGIS_SVSH_JOB_TIMEOUT_SECONDS", "1800"))
 	if seconds <= 0 {
-		s.println("nsh job: timeout must be positive")
+		s.println("svsh job: timeout must be positive")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
 	defer cancel()
-	result := newMockNSHRunner(srv).Run(ctx, job)
+	result := newMockSVSHRunner(srv).Run(ctx, job)
 	s.print(result.Output)
 	s.printf("---- JOB %s %s\n", job.ID, strings.ToUpper(result.Status))
 	if result.Error != "" {
 		s.println("     reason:", result.Error)
 	}
-	if path, err := writeNSHJobResult(result); err != nil {
-		s.println("nsh job result:", err)
+	if path, err := writeSVSHJobResult(result); err != nil {
+		s.println("svsh job result:", err)
 	} else {
 		s.println("     result:", path)
 	}

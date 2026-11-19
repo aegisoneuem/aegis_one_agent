@@ -33,14 +33,14 @@ import (
 //	              (overwrite OR append)
 //	dst local  -> write / append to the mock-local file
 //
-// nshCatMaxBytes is the mock-side soft cap for a single `cat` operation.
+// svshCatMaxBytes is the mock-side soft cap for a single `cat` operation.
 // Phase-1b uses a native `file_operation.write_bytes` dispatch — no
 // PowerShell, no cmd-line limit — so this ceiling is now dictated by the
 // agent's endpoint cap (AEGIS_FILE_WRITE_MAX_BYTES, default 100 MB) rather
 // than Windows CreateProcess bounds. Keep the mock-side value at 100 MB
 // so the operator sees a clean error before the dispatch when they ask for
 // something larger; the agent is the authoritative enforcer.
-const nshCatMaxBytes = 100 * 1024 * 1024
+const svshCatMaxBytes = 100 * 1024 * 1024
 
 // catEndpoint represents one parsed side of a redirection.
 type catEndpoint struct {
@@ -49,13 +49,13 @@ type catEndpoint struct {
 }
 
 // verbCat implements `cat <src> > <dst>` / `cat <src> >> <dst>`.
-func (s *nshSession) verbCat(rest string) {
+func (s *svshSession) verbCat(rest string) {
 	src, dst, appendMode, err := parseCatRedirect(rest)
 	if err != nil {
-		s.printf("nsh: %v\n", err)
-		s.println(`nsh: usage: cat <src> > <dst>  OR  cat <src> >> <dst>`)
-		s.println(`nsh:   <src>/<dst> may be local path or UNC form \\<host>\<drive>\<path>`)
-		s.println(`nsh:   with a cd \\host target set, paths without \\<host>\ prefix resolve on that target`)
+		s.printf("svsh: %v\n", err)
+		s.println(`svsh: usage: cat <src> > <dst>  OR  cat <src> >> <dst>`)
+		s.println(`svsh:   <src>/<dst> may be local path or UNC form \\<host>\<drive>\<path>`)
+		s.println(`svsh:   with a cd \\host target set, paths without \\<host>\ prefix resolve on that target`)
 		return
 	}
 	// Implicit-target rule: when `cd \\host` set a single target, bare
@@ -68,15 +68,15 @@ func (s *nshSession) verbCat(rest string) {
 	dst = s.resolveImplicitCatTarget(dst)
 	bytes, srcDescr, err := s.catReadSource(src)
 	if err != nil {
-		s.printf("nsh: cat read src failed: %v\n", err)
+		s.printf("svsh: cat read src failed: %v\n", err)
 		return
 	}
-	if len(bytes) > nshCatMaxBytes {
-		s.printf("nsh: cat refuses %d bytes (soft cap %d; endpoint AEGIS_FILE_WRITE_MAX_BYTES is authoritative). Raise the cap or use a smaller transfer.\n", len(bytes), nshCatMaxBytes)
+	if len(bytes) > svshCatMaxBytes {
+		s.printf("svsh: cat refuses %d bytes (soft cap %d; endpoint AEGIS_FILE_WRITE_MAX_BYTES is authoritative). Raise the cap or use a smaller transfer.\n", len(bytes), svshCatMaxBytes)
 		return
 	}
 	if err := s.catWriteDest(dst, bytes, appendMode); err != nil {
-		s.printf("nsh: cat write dst failed: %v\n", err)
+		s.printf("svsh: cat write dst failed: %v\n", err)
 		return
 	}
 	mode := "overwrite"
@@ -163,7 +163,7 @@ func catPathDescr(e catEndpoint) string {
 }
 
 // catReadSource fetches the bytes for the src endpoint.
-func (s *nshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
+func (s *svshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
 	if src.host == "" {
 		data, err := os.ReadFile(src.path)
 		if err != nil {
@@ -175,14 +175,14 @@ func (s *nshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
 	if devID == "" {
 		return nil, catPathDescr(src), fmt.Errorf("unknown host %q (no connected agent with that hostname)", src.host)
 	}
-	// Use the standard "_nsh-transfer/" prefix so the UploadContent handler
+	// Use the standard "_svsh-transfer/" prefix so the UploadContent handler
 	// stores a fileReceipt we can look up by action_id — avoids guessing
 	// the on-disk path.
-	up := "_nsh-transfer/" + nshRandomID() + "/cat-src.bin"
+	up := "_svsh-transfer/" + svshRandomID() + "/cat-src.bin"
 	st, cmdID := s.sendTask(devID, "collect_file", &pb.CollectFileSpec{
 		Paths:         []string{src.path},
-		MaxBytesEach:  int64(nshCatMaxBytes + 1),
-		MaxTotalBytes: int64(nshCatMaxBytes + 1),
+		MaxBytesEach:  int64(svshCatMaxBytes + 1),
+		MaxTotalBytes: int64(svshCatMaxBytes + 1),
 	}, up)
 	if st == nil || st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
 		reason := "collect_file did not complete"
@@ -206,7 +206,7 @@ func (s *nshSession) catReadSource(src catEndpoint) ([]byte, string, error) {
 // Phase 1b: remote writes use the native file_operation write_bytes op —
 // no PowerShell, no cmd-line limit, works even when the endpoint has
 // PowerShell execution policy locked down.
-func (s *nshSession) catWriteDest(dst catEndpoint, data []byte, appendMode bool) error {
+func (s *svshSession) catWriteDest(dst catEndpoint, data []byte, appendMode bool) error {
 	if dst.host == "" {
 		if appendMode {
 			f, err := os.OpenFile(dst.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
@@ -254,7 +254,7 @@ func (s *nshSession) catWriteDest(dst catEndpoint, data []byte, appendMode bool)
 //   - multiple cd targets        -> leave as-is (ambiguous; let caller fail)
 //   - single cd target + absolute path  -> use target host, keep absolute path
 //   - single cd target + relative path  -> use target host + its workingDir
-func (s *nshSession) resolveImplicitCatTarget(e catEndpoint) catEndpoint {
+func (s *svshSession) resolveImplicitCatTarget(e catEndpoint) catEndpoint {
 	if e.host != "" {
 		return e
 	}

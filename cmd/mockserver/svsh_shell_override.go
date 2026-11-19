@@ -3,7 +3,7 @@ package main
 import "strings"
 
 // parseShellOverride extracts a trailing "/shell <X>" or "--shell <X>"
-// per-command shell selector from an NSH run/exec/fanout command line.
+// per-command shell selector from an SVSH run/exec/fanout command line.
 // Returns the overridden shell name (lowercased) and the command text
 // with the selector stripped. When no valid trailing selector is found,
 // returns ("", original) — the caller then uses the session default.

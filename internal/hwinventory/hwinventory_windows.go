@@ -186,7 +186,7 @@ func cpuFromRegistry() (vendor, model string) {
 }
 
 // physicalCoreCount uses GetLogicalProcessorInformation to count physical
-// cores (relationship = ProcessorCore). On any failure, returns 0 — the
+// cores (relatiosvship = ProcessorCore). On any failure, returns 0 — the
 // server treats 0 as unknown, logical count is still reported.
 func physicalCoreCount(logical int32) int32 {
 	modkernel32 := windows.NewLazySystemDLL("kernel32.dll")
@@ -197,7 +197,7 @@ func physicalCoreCount(logical int32) int32 {
 	if retLen == 0 {
 		return 0
 	}
-	const entrySize = 32 // sizeof SYSTEM_LOGICAL_PROCESSOR_INFORMATION on amd64 (ULONG_PTR + Relationship + union); we only read Relationship so this is defensive.
+	const entrySize = 32 // sizeof SYSTEM_LOGICAL_PROCESSOR_INFORMATION on amd64 (ULONG_PTR + Relatiosvship + union); we only read Relatiosvship so this is defensive.
 	count := retLen / entrySize
 	if count == 0 {
 		return 0
@@ -208,15 +208,15 @@ func physicalCoreCount(logical int32) int32 {
 	if r1 == 0 {
 		return 0
 	}
-	// Each entry: ULONG_PTR ProcessorMask (8) + LOGICAL_PROCESSOR_RELATIONSHIP Relationship (4) + 20 bytes union = 32 bytes on amd64.
+	// Each entry: ULONG_PTR ProcessorMask (8) + LOGICAL_PROCESSOR_RELATIOSVSHIP Relatiosvship (4) + 20 bytes union = 32 bytes on amd64.
 	var cores int32
 	for i := uint32(0); i < count; i++ {
 		off := int(i) * entrySize
 		if off+12 > len(buf) {
 			break
 		}
-		relationship := uint32(buf[off+8]) | uint32(buf[off+9])<<8 | uint32(buf[off+10])<<16 | uint32(buf[off+11])<<24
-		if relationship == 0 { // RelationProcessorCore
+		relatiosvship := uint32(buf[off+8]) | uint32(buf[off+9])<<8 | uint32(buf[off+10])<<16 | uint32(buf[off+11])<<24
+		if relatiosvship == 0 { // RelationProcessorCore
 			cores++
 		}
 	}

@@ -39,10 +39,10 @@ func TestRecordAudit_EmitsAcceptedAndRejected(t *testing.T) {
 		sigOK bool
 		dec   string
 	}{
-		{"nsh-1", "run_command", true, "accepted"},
-		{"nsh-2", "file_operation", true, "accepted"},
-		{"nsh-3", "run_command", false, "rejected"},
-		{"nsh-4", "install_patch", true, "accepted"},
+		{"svsh-1", "run_command", true, "accepted"},
+		{"svsh-2", "file_operation", true, "accepted"},
+		{"svsh-3", "run_command", false, "rejected"},
+		{"svsh-4", "install_patch", true, "accepted"},
 		{"server-5", "software_deploy", true, "accepted"},
 	}
 	for _, c := range cmds {
@@ -51,7 +51,7 @@ func TestRecordAudit_EmitsAcceptedAndRejected(t *testing.T) {
 			reason = "signature verification failed"
 		}
 		recordAudit(ctx, outbox, "dev-test", &pb.Command{
-			CommandId: c.id, Type: c.typ, Actor: "nsh:test@localhost", Source: "mockserver.nsh",
+			CommandId: c.id, Type: c.typ, Actor: "svsh:test@localhost", Source: "mockserver.svsh",
 		}, c.sigOK, c.dec, reason)
 	}
 
@@ -108,8 +108,8 @@ func TestRecordAudit_IncludesPayloadDetails(t *testing.T) {
 
 	spec := &pb.RunCommandSpec{Shell: "powershell", Command: "Get-Process"}
 	payload, _ := proto.Marshal(spec)
-	cmd := &pb.Command{CommandId: "nsh-xyz", Type: "run_command", Payload: payload,
-		Actor: "nsh:tester@localhost", Source: "mockserver.nsh"}
+	cmd := &pb.Command{CommandId: "svsh-xyz", Type: "run_command", Payload: payload,
+		Actor: "svsh:tester@localhost", Source: "mockserver.svsh"}
 	recordAudit(ctx, outbox, "dev-integ", cmd, true, "accepted", "")
 	close(outbox)
 

@@ -68,7 +68,7 @@ func loadSignKey() ed25519.PrivateKey {
 // commandsign package.
 func sign(cmd *pb.Command) *pb.Command {
 	// Backfill attribution so the agent always sees a value. Dispatchers
-	// that know who the operator is (NSH REPL, console UI) populate Actor
+	// that know who the operator is (SVSH REPL, console UI) populate Actor
 	// / Source BEFORE calling sign; this fallback covers env-var-driven
 	// mock dispatches, scheduled auto-tasks, and tests.
 	if strings.TrimSpace(cmd.Actor) == "" {
@@ -125,7 +125,7 @@ type server struct {
 	shellMu      sync.Mutex
 	shellPending map[string]*shellSession
 
-	// liveAgents is the connected-agent registry the NSH REPL targets. Keyed by
+	// liveAgents is the connected-agent registry the SVSH REPL targets. Keyed by
 	// device_id (the cert CN); carries the Connect stream so the REPL can push
 	// signed commands directly. Register on Connect, deregister on return.
 	liveMu     sync.Mutex
@@ -137,7 +137,7 @@ type server struct {
 	// prints normally.
 	pendingMu     sync.Mutex
 	pending       map[string]chan *pb.ActionStatus
-	nshUploads    map[string]nshUploadTarget // protected by pendingMu
+	svshUploads    map[string]svshUploadTarget // protected by pendingMu
 	fileReceipts  map[string]fileReceipt     // protected by pendingMu
 	fileContent   map[string]fileContent     // protected by pendingMu; destination-bound
 	planPending   map[string]*planWait       // protected by pendingMu; device-bound terminal results
@@ -145,7 +145,7 @@ type server struct {
 	planAttempted map[string]bool            // one configured startup plan per device/process; no reconnect replay
 
 	// lastInventory caches the most recent DeviceStateReport per device so the
-	// NSH `inventory apps` verb can answer ad-hoc operator queries about which
+	// SVSH `inventory apps` verb can answer ad-hoc operator queries about which
 	// third-party apps the endpoint reported (and at which versions). The server
 	// team's real catalog match runs server-side; this cache is a dev/testing
 	// convenience, not a durable store.
@@ -153,7 +153,7 @@ type server struct {
 	lastInventory     map[string]*pb.DeviceStateReport
 	// lastFullInventory caches the most recent Tier-3 FullInventoryReport
 	// per device (HW + SW snapshot sent every 6-12 h or on reconnect).
-	// Mock-side convenience for NSH queries about the HW inventory.
+	// Mock-side convenience for SVSH queries about the HW inventory.
 	lastFullInventory map[string]*pb.FullInventoryReport
 
 }
@@ -587,7 +587,7 @@ func (s *server) FetchContent(req *pb.ContentRequest, stream pb.AgentControlPlan
 	}
 	var path string
 	switch req.Kind {
-	case "nsh-file":
+	case "svsh-file":
 		s.pendingMu.Lock()
 		content, ok := s.fileContent[req.Id]
 		s.pendingMu.Unlock()
@@ -700,16 +700,16 @@ func (s *server) UploadContent(stream pb.AgentControlPlane_UploadContentServer) 
 			return err
 		}
 		if f == nil {
-			// NSH destinations are chosen by the operator and bound to this device.
+			// SVSH destinations are chosen by the operator and bound to this device.
 			// Other collection tasks retain the action-ID storage layout.
 			actionID = sanitizePathSeg(chunk.ActionId)
 			name := sanitizePathSeg(chunk.Name)
 			dir := filepath.Join("uploads", folder, actionID)
 			s.pendingMu.Lock()
-			target, nsh := s.nshUploads[chunk.ActionId]
+			target, svsh := s.svshUploads[chunk.ActionId]
 			s.pendingMu.Unlock()
-			if nsh && target.deviceID == device {
-				rel, err := safeNSHUploadPath(target.path)
+			if svsh && target.deviceID == device {
+				rel, err := safeSVSHUploadPath(target.path)
 				if err != nil {
 					return stream.SendAndClose(&pb.UploadAck{Error: err.Error()})
 				}
@@ -745,8 +745,8 @@ func (s *server) UploadContent(stream pb.AgentControlPlane_UploadContentServer) 
 	ok := wantSha != "" && strings.EqualFold(got, wantSha)
 	if ok {
 		s.pendingMu.Lock()
-		target, exists := s.nshUploads[actionID]
-		if exists && target.deviceID == device && strings.HasPrefix(target.path, "_nsh-transfer/") {
+		target, exists := s.svshUploads[actionID]
+		if exists && target.deviceID == device && strings.HasPrefix(target.path, "_svsh-transfer/") {
 			if s.fileReceipts == nil {
 				s.fileReceipts = make(map[string]fileReceipt)
 			}
@@ -930,7 +930,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 	connectedDevice := clientCertCN(stream.Context())
 	mockPrintf("Agent connected! device: %s\n", connectedDevice)
 
-	// Register this connection in the live-agent registry so the NSH REPL can
+	// Register this connection in the live-agent registry so the SVSH REPL can
 	// target it by hostname / device_id / computer_id. Deregister on return.
 	connection := s.registerLiveAgent(connectedDevice, stream)
 	defer s.deregisterLiveAgent(connectedDevice)
@@ -1585,8 +1585,8 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 		}
 
 		// NOTE: shell / run_command / collect_file are no longer triggered from
-		// this per-connect block. They are driven on-demand from the NSH REPL
-		// (see runNSH / mockserver.exe nsh) — the real console pattern. Env
+		// this per-connect block. They are driven on-demand from the SVSH REPL
+		// (see runSVSH / mockserver.exe svsh) — the real console pattern. Env
 		// triggers for soft deploy, collect_file, baseline etc. stay (regression
 		// tests the server team already relies on).
 
@@ -1716,7 +1716,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			// ActionStatus), forward it as a synthetic terminal FAILED status
 			// so the REPL fails FAST (< 1s) instead of waiting 310s for an
 			// ActionStatus that will never come. Also fed to the normal print
-			// path when NOT NSH-matched.
+			// path when NOT SVSH-matched.
 			synth := &pb.ActionStatus{
 				ActionId: result.CommandId, DeviceId: connectedDevice,
 				Phase:  pb.ActionPhase_ACTION_PHASE_FAILED,
@@ -1740,7 +1740,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			if s.deliverPlanStatus(connectedDevice, st) {
 				continue
 			}
-			// Forward to any NSH REPL waiting on this action_id — the REPL
+			// Forward to any SVSH REPL waiting on this action_id — the REPL
 			// consumes terminal phases quietly so command output is clean.
 			if s.deliverActionStatus(st) {
 				continue
@@ -1752,7 +1752,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 			}
 			if st.ActionType == "audit_query" {
 				// Pretty-print the returned audit events one per line instead of the
-				// raw JSON array, so the standalone (non-NSH) audit test is readable.
+				// raw JSON array, so the standalone (non-SVSH) audit test is readable.
 				printAuditEvents(st.Detail)
 			} else if st.Detail != "" {
 				mockPrintf("  detail: %s\n", st.Detail)
@@ -1765,7 +1765,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 				mockPrintf(" (sources=%v, awaiting_kbs=%v)", ds.RebootPendingSources, ds.RebootPendingKbs)
 			}
 			mockPrintln()
-			// Cache the most recent inventory per device so NSH `inventory apps`
+			// Cache the most recent inventory per device so SVSH `inventory apps`
 			// can query it ad-hoc. Writes are small (a snapshot pointer swap);
 			// reads happen from the REPL goroutine so a mutex is enough.
 			s.inventoryMu.Lock()
@@ -1856,7 +1856,7 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					float64(d.FreeBytes)/(1024*1024*1024))
 			}
 			// Driver inventory: print the first few so a tester can eyeball the
-			// OEM driver coverage; full list is cached for NSH inspection.
+			// OEM driver coverage; full list is cached for SVSH inspection.
 			shownDrivers := fi.GetDrivers()
 			for i, d := range shownDrivers {
 				if i >= 15 {
@@ -1967,7 +1967,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	mode, err := parseMockMode(os.Args[1:], os.Getenv("AEGIS_NSH_SCRIPT"))
+	mode, err := parseMockMode(os.Args[1:], os.Getenv("AEGIS_SVSH_SCRIPT"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mockModeUsage)
@@ -1977,7 +1977,7 @@ func main() {
 		fmt.Print(mockModeUsage)
 		return
 	}
-	serverLog, err := configureMockLogging(mode.nsh)
+	serverLog, err := configureMockLogging(mode.svsh)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mockserver: cannot open server log: %v\n", err)
 		os.Exit(1)
@@ -2062,13 +2062,13 @@ func main() {
 	pb.RegisterAgentControlPlaneServer(s, srv)
 	mockPrintf("Mock server listening on :50051 (single port: mTLS ops + enrollment; token=%s)\n", maskToken(os.Getenv("AEGIS_ENROLL_TOKEN")))
 
-	// NSH REPL: start the console operator shell in-process when asked. The real
+	// SVSH REPL: start the console operator shell in-process when asked. The real
 	// console UI will drive the same engine from a web terminal; here the REPL
 	// uses the mockserver's own stdin for ad-hoc operator work and script runs.
-	if mode.nsh {
-		go runNSH(srv, mode.script)
+	if mode.svsh {
+		go runSVSH(srv, mode.script)
 	} else {
-		mockPrintln("Normal server mode: NSH is not running; agent and action logs appear here.")
+		mockPrintln("Normal server mode: SVSH is not running; agent and action logs appear here.")
 	}
 
 	if err := s.Serve(lis); err != nil {

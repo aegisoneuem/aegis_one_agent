@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-func TestNSHUploadPaths(t *testing.T) {
-	got, err := safeNSHUploadPath(`reports\daily\win11\status.txt`)
+func TestSVSHUploadPaths(t *testing.T) {
+	got, err := safeSVSHUploadPath(`reports\daily\win11\status.txt`)
 	if err != nil || got != filepath.Join("reports", "daily", "win11", "status.txt") {
 		t.Fatalf("path=%q err=%v", got, err)
 	}
 	for _, name := range []string{`../outside`, `reports/../../outside`, `C:\temp\file`, `reports/file:stream`, `reports/.. /file`, ""} {
-		if _, err := safeNSHUploadPath(name); err == nil {
+		if _, err := safeSVSHUploadPath(name); err == nil {
 			t.Errorf("accepted %q", name)
 		}
 	}

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// NSH REPL-wide output redirection (`> dst` / `>> dst`) — extends UC-22
+// SVSH REPL-wide output redirection (`> dst` / `>> dst`) — extends UC-22
 // cat semantics to ANY verb that produces stdout. The pre-parser runs
 // BEFORE verb dispatch: it strips the trailing redirect from the input
 // line and tells the caller where to write the captured output.
@@ -24,31 +24,31 @@ import (
 //     error so the caller can surface a usage line rather than silently
 //     dropping output into the void.
 
-// nshRedirectResult describes what the pre-parser found. When Redirect
+// svshRedirectResult describes what the pre-parser found. When Redirect
 // is true, StrippedLine is the verb+args with the redirect removed and
 // Destination + Append describe where output should go. When Redirect
 // is false, StrippedLine == original line.
-type nshRedirectResult struct {
+type svshRedirectResult struct {
 	Redirect     bool
 	StrippedLine string
 	Destination  catEndpoint // reused from UC-22 cat parser
 	Append       bool
 }
 
-// parseNSHRedirect runs the pre-parser on one full NSH input line. It
+// parseSVSHRedirect runs the pre-parser on one full SVSH input line. It
 // returns the result + any usage error (empty destination or bad path).
 // Caller passes the FIRST verb word so we can exempt `cat`.
-func parseNSHRedirect(line string) (nshRedirectResult, error) {
+func parseSVSHRedirect(line string) (svshRedirectResult, error) {
 	line = strings.TrimRight(line, " \t")
 	if line == "" {
-		return nshRedirectResult{StrippedLine: line}, nil
+		return svshRedirectResult{StrippedLine: line}, nil
 	}
 
 	// First word = verb. If it's `cat`, skip parsing — cat owns its own
 	// redirect semantics.
 	verb := firstWord(line)
 	if strings.EqualFold(verb, "cat") {
-		return nshRedirectResult{StrippedLine: line}, nil
+		return svshRedirectResult{StrippedLine: line}, nil
 	}
 
 	// Locate the LAST whitespace-bounded `>>` or `>` — the trailing
@@ -65,23 +65,23 @@ func parseNSHRedirect(line string) (nshRedirectResult, error) {
 	case iGT >= 0:
 		tokIdx, tokLen, appendMode = iGT, 1, false
 	default:
-		return nshRedirectResult{StrippedLine: line}, nil
+		return svshRedirectResult{StrippedLine: line}, nil
 	}
 
 	left := strings.TrimRight(line[:tokIdx], " \t")
 	right := strings.TrimSpace(line[tokIdx+tokLen:])
 	if left == "" {
-		return nshRedirectResult{StrippedLine: line}, fmt.Errorf("NSH redirect: verb side is empty (did you mean `cat <src> > <dst>`?)")
+		return svshRedirectResult{StrippedLine: line}, fmt.Errorf("SVSH redirect: verb side is empty (did you mean `cat <src> > <dst>`?)")
 	}
 	if right == "" {
 		sep := ">"
 		if appendMode {
 			sep = ">>"
 		}
-		return nshRedirectResult{StrippedLine: line}, fmt.Errorf("NSH redirect: `%s` has no destination path", sep)
+		return svshRedirectResult{StrippedLine: line}, fmt.Errorf("SVSH redirect: `%s` has no destination path", sep)
 	}
 
-	return nshRedirectResult{
+	return svshRedirectResult{
 		Redirect:     true,
 		StrippedLine: left,
 		Destination:  parseCatEndpoint(right),
@@ -91,7 +91,7 @@ func parseNSHRedirect(line string) (nshRedirectResult, error) {
 
 // lastIndexToken returns the index of the LAST whitespace-bounded tok
 // in s, or -1 when absent. Companion to catIndexToken (first-match)
-// which cat uses; the NSH pre-parser needs last-match so shell-style
+// which cat uses; the SVSH pre-parser needs last-match so shell-style
 // `a > b > c` reads as redirect to c.
 func lastIndexToken(s, tok string) int {
 	best := -1
@@ -131,11 +131,11 @@ func firstWord(s string) string {
 	return s[:i]
 }
 
-// nshRedirectMaxBytes is the soft cap on captured output per verb
+// svshRedirectMaxBytes is the soft cap on captured output per verb
 // invocation. Mirrors the cat soft cap so an operator pointing a verb at
 // a UNC destination gets the same ceiling. The agent's write_bytes path
 // enforces its own AEGIS_FILE_WRITE_MAX_BYTES cap on UNC writes.
-const nshRedirectMaxBytes = 100 * 1024 * 1024
+const svshRedirectMaxBytes = 100 * 1024 * 1024
 
 // cappedBuffer is a bytes buffer with a hard ceiling. When full, further
 // writes return the bytes consumed but drop the overflow so a runaway
@@ -180,7 +180,7 @@ func newCappedBuffer(max int) *cappedBuffer { return &cappedBuffer{buf: make([]b
 // path missed the pre-parser, which is why redirect fell through to
 // the verbs' own argument handling (e.g. `inventory apps > apps.txt`
 // treated the redirect as a filter string).
-func (s *nshSession) execInputLine(line string) bool {
+func (s *svshSession) execInputLine(line string) bool {
 	// dispatch selects the real runtime (engine when present) or the
 	// per-verb exec() fallback (used by test harnesses that don't stand
 	// up a full scripting engine). Pre-parser runs BEFORE either.
@@ -190,9 +190,9 @@ func (s *nshSession) execInputLine(line string) bool {
 		}
 		return s.exec(l)
 	}
-	red, err := parseNSHRedirect(line)
+	red, err := parseSVSHRedirect(line)
 	if err != nil {
-		s.printf("nsh: %v\n", err)
+		s.printf("svsh: %v\n", err)
 		return true
 	}
 	if !red.Redirect {
@@ -202,7 +202,7 @@ func (s *nshSession) execInputLine(line string) bool {
 	if werr := s.runWithRedirect(red.Destination, red.Append, func() {
 		keepGoing = dispatch(red.StrippedLine)
 	}); werr != nil {
-		s.printf("nsh: redirect write failed: %v\n", werr)
+		s.printf("svsh: redirect write failed: %v\n", werr)
 	}
 	return keepGoing
 }
@@ -215,15 +215,15 @@ func (s *nshSession) execInputLine(line string) bool {
 // Append mode and destination (local vs UNC) are handled by catWriteDest
 // which is already battle-tested through UC-22. Caller holds the
 // stripped line and dispatches it; this helper is agnostic.
-func (s *nshSession) runWithRedirect(dst catEndpoint, appendMode bool, dispatch func()) error {
-	capBuf := newCappedBuffer(nshRedirectMaxBytes)
+func (s *svshSession) runWithRedirect(dst catEndpoint, appendMode bool, dispatch func()) error {
+	capBuf := newCappedBuffer(svshRedirectMaxBytes)
 	savedOutput := s.output
 	s.output = capBuf
 	dispatch()
 	s.output = savedOutput
 
 	if capBuf.Overflowed() {
-		s.printf("nsh: redirect output exceeded %d bytes — captured bytes truncated at the cap before writing\n", nshRedirectMaxBytes)
+		s.printf("svsh: redirect output exceeded %d bytes — captured bytes truncated at the cap before writing\n", svshRedirectMaxBytes)
 	}
 	if capBuf.Size() == 0 {
 		// Nothing to write. Treat as a successful no-op and still touch

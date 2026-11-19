@@ -15,7 +15,7 @@ type hostRow struct{ host, id, cid, status string }
 
 func parseHostQuery(rest string) (hostQuery, error) {
 	q := hostQuery{page: 1, limit: 20, status: "all"}
-	args, err := splitNSHArgs(rest)
+	args, err := splitSVSHArgs(rest)
 	if err != nil {
 		return q, err
 	}
@@ -100,10 +100,10 @@ func (s *server) hostPageScoped(q hostQuery, allowed map[string]bool) ([]hostRow
 	}
 	return rows[start:end], total
 }
-func (s *nshSession) printHosts(rest string) {
+func (s *svshSession) printHosts(rest string) {
 	q, err := parseHostQuery(rest)
 	if err != nil {
-		s.println("nsh:", err)
+		s.println("svsh:", err)
 		return
 	}
 	rows, total := s.srv.hostPageScoped(q, s.allowedTargets)

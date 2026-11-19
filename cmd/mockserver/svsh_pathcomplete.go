@@ -11,7 +11,7 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// NSH path tab-completion (Phase 1b)
+// SVSH path tab-completion (Phase 1b)
 // -----------------------------------------------------------------------------
 //
 // Previously only the top-level verbs auto-completed on Tab. Phase 1b adds
@@ -23,7 +23,7 @@ import (
 // Caching: a one-shot Tab press from an operator exploring a directory
 // should not cost multiple round-trips to the agent. A small 5-second TTL
 // cache per (device, directory) absorbs rapid Tabs. Cache is per-session
-// so a new NSH REPL always starts cold.
+// so a new SVSH REPL always starts cold.
 //
 // Fallback: if the agent is offline, times out, or returns an error, path
 // completion returns nothing and the Tab becomes a no-op. Verb completion
@@ -46,7 +46,7 @@ func verbTakesPath(verb string) bool {
 // liner library will offer the user. On any failure (no target, offline,
 // agent error, timeout) returns nil — the Tab becomes a no-op, which is
 // the right fallback for an interactive REPL.
-func (s *nshSession) completePathArg(prefix, head, rest string) []string {
+func (s *svshSession) completePathArg(prefix, head, rest string) []string {
 	if len(s.targets) != 1 {
 		return nil
 	}
@@ -152,7 +152,7 @@ func (c *listDirCache) put(devID, dir string, entries []fileops.Entry) {
 // using the shared 5-second cache. On a miss it dispatches a
 // file_operation list_directory to the agent synchronously (short timeout
 // so a slow / offline agent does not freeze the REPL Tab).
-func (s *nshSession) listDirectoryCached(devID, dir string) ([]fileops.Entry, bool) {
+func (s *svshSession) listDirectoryCached(devID, dir string) ([]fileops.Entry, bool) {
 	if dir == "" {
 		dir = s.workingDirs[devID]
 		if dir == "" {

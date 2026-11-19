@@ -326,7 +326,7 @@ func (d *dispatcher) handleScanNowCmd(ctx context.Context, _ pb.AgentControlPlan
 // cached state for devices that have not changed recently. This command resets
 // the agent's fingerprint cache and triggers an immediate run — the server
 // sees a fresh DeviceStateReport within one cycle regardless of change state.
-// Used by the console / NSH "inventory refresh" to pull a snapshot on demand.
+// Used by the console / SVSH "inventory refresh" to pull a snapshot on demand.
 func (d *dispatcher) handleReportDeviceStateCmd(ctx context.Context, _ pb.AgentControlPlaneClient, cmd *pb.Command) {
 	slog.Info("report_device_state: on-demand inventory refresh requested", "command_id", cmd.CommandId)
 	signalDrain(d.deviceStateTrigger)

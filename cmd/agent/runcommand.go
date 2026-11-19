@@ -16,7 +16,7 @@ import (
 )
 
 // truncateForLog shortens s to at most max bytes with a visible truncation
-// marker, so a long NSH command still shows the shape in the log without
+// marker, so a long SVSH command still shows the shape in the log without
 // flooding the file. Used by the run_command "accepted" line so an operator
 // can tell what actually ran — not just the command_id.
 func truncateForLog(s string, max int) string {
@@ -51,7 +51,7 @@ const (
 
 // handleRunCommandCmd is the entry for a signed "run_command" task — a one-shot
 // command execution that returns stdout+stderr+exit as ActionStatus. This is
-// the BigFix WebUI / BladeLogic Type-1 equivalent and the atom the mock's NSH
+// the BigFix WebUI / BladeLogic Type-1 equivalent and the atom the mock's SVSH
 // REPL (and future console-authored tasks) fire for every ad-hoc query. Runs
 // on its own goroutine so a slow command never blocks the receiver, and never
 // touches the softdist/patch install gate (nothing to install here).
@@ -118,7 +118,7 @@ func (d *dispatcher) runCommandWorker(ctx context.Context, client pb.AgentContro
 	out.DurationMs = time.Since(started).Milliseconds()
 
 	// Local transcript — append-only audit record of every run_command on this
-	// endpoint. Lives under SKVC\logs\nsh so the console can collect it later
+	// endpoint. Lives under SKVC\logs\svsh so the console can collect it later
 	// via collect_file if needed. Best-effort; a failure here does not change
 	// the command result.
 	writeRunCommandTranscript(d.cfg.SecureDir, cmdID, expanded, out)
@@ -182,12 +182,12 @@ func (d *dispatcher) runCommandWorker(ctx context.Context, client pb.AgentContro
 }
 
 // writeRunCommandTranscript appends an audit record of a run_command execution
-// under <SKVC>\logs\nsh. Format: single line header with action_id, timestamp,
+// under <SKVC>\logs\svsh. Format: single line header with action_id, timestamp,
 // shell, exit, duration — followed by the command text, stdout, stderr. The
 // FULL stdout (not just inline cap) is captured when it was buffered to disk.
 // Best-effort — never breaks the command result.
 func writeRunCommandTranscript(secureDir, cmdID, commandText string, out runCommandOutput) {
-	dir := filepath.Join(secureDir, "logs", "nsh")
+	dir := filepath.Join(secureDir, "logs", "svsh")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}

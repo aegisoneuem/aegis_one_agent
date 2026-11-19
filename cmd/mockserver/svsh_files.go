@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/aegisoneuem/aegis_one_agent/internal/fileops"
-	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/svsh"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
@@ -23,7 +23,7 @@ type endpointPath struct {
 
 // Windows backslashes stay literal. Quoting groups paths with spaces without
 // applying POSIX shell escaping to drive/UNC paths.
-func splitNSHArgs(line string) ([]string, error) {
+func splitSVSHArgs(line string) ([]string, error) {
 	var args []string
 	var b strings.Builder
 	var quote rune
@@ -63,7 +63,7 @@ func splitNSHArgs(line string) ([]string, error) {
 	return args, nil
 }
 
-func (s *nshSession) endpointPaths(raw string) ([]endpointPath, error) {
+func (s *svshSession) endpointPaths(raw string) ([]endpointPath, error) {
 	var ids []string
 	path := raw
 	if strings.HasPrefix(raw, `\\`) {
@@ -119,18 +119,18 @@ func (s *nshSession) endpointPaths(raw string) ([]endpointPath, error) {
 	}
 	return paths, nil
 }
-func (s *nshSession) fileSpec(op string) fileops.Spec {
+func (s *svshSession) fileSpec(op string) fileops.Spec {
 	return fileops.Spec{Version: 1, Operation: op, MaxBytes: s.fileMaxBytes, MaxFiles: s.fileMaxFiles, TimeoutSeconds: int(s.timeout)}
 }
-func (s *nshSession) fileTask(id string, spec fileops.Spec, upload string) (*pb.ActionStatus, string) {
+func (s *svshSession) fileTask(id string, spec fileops.Spec, upload string) (*pb.ActionStatus, string) {
 	spec.WorkingDir = s.workingDirs[id]
 	payload, err := json.Marshal(spec)
 	if err != nil {
-		s.println("nsh:", err)
+		s.println("svsh:", err)
 		return nil, ""
 	}
 	if len(payload) > fileops.MaxManifestBytes {
-		s.println("nsh: file manifest exceeds 2 MiB; use smaller batches")
+		s.println("svsh: file manifest exceeds 2 MiB; use smaller batches")
 		return nil, ""
 	}
 	return s.sendTaskPayload(id, "file_operation", payload, upload)
@@ -138,7 +138,7 @@ func (s *nshSession) fileTask(id string, spec fileops.Spec, upload string) (*pb.
 func fileSucceeded(st *pb.ActionStatus) bool {
 	return st != nil && st.Phase == pb.ActionPhase_ACTION_PHASE_SUCCESS
 }
-func (s *nshSession) takeReceipt(id string) (fileReceipt, bool) {
+func (s *svshSession) takeReceipt(id string) (fileReceipt, bool) {
 	s.srv.pendingMu.Lock()
 	defer s.srv.pendingMu.Unlock()
 	r, ok := s.srv.fileReceipts[id]
@@ -146,10 +146,10 @@ func (s *nshSession) takeReceipt(id string) (fileReceipt, bool) {
 	return r, ok
 }
 
-func (s *nshSession) verbFile(op, rest string) {
-	args, err := splitNSHArgs(rest)
+func (s *svshSession) verbFile(op, rest string) {
+	args, err := splitSVSHArgs(rest)
 	if err != nil {
-		s.println("nsh:", err)
+		s.println("svsh:", err)
 		return
 	}
 	spec := s.fileSpec(op)
@@ -162,7 +162,7 @@ func (s *nshSession) verbFile(op, rest string) {
 			spec.Overwrite = true
 		default:
 			if strings.HasPrefix(a, "--") {
-				s.println("nsh: unknown file option", a)
+				s.println("svsh: unknown file option", a)
 				return
 			}
 			paths = append(paths, a)
@@ -173,12 +173,12 @@ func (s *nshSession) verbFile(op, rest string) {
 		need = 2
 	}
 	if len(paths) != need {
-		s.printf("nsh: %s expects %d path(s); quote paths with spaces\n", op, need)
+		s.printf("svsh: %s expects %d path(s); quote paths with spaces\n", op, need)
 		return
 	}
 	sources, err := s.endpointPaths(paths[0])
 	if err != nil {
-		s.println("nsh:", err)
+		s.println("svsh:", err)
 		return
 	}
 	if need == 1 {
@@ -193,11 +193,11 @@ func (s *nshSession) verbFile(op, rest string) {
 	}
 	destinations, err := s.endpointPaths(paths[1])
 	if err != nil {
-		s.println("nsh:", err)
+		s.println("svsh:", err)
 		return
 	}
 	if op == "move" && (len(sources) != 1 || len(destinations) != 1) {
-		s.println("nsh: move requires exactly one source host and one destination host; use copy for distribution")
+		s.println("svsh: move requires exactly one source host and one destination host; use copy for distribution")
 		return
 	}
 	ok := true
@@ -216,26 +216,26 @@ func (s *nshSession) verbFile(op, rest string) {
 		pack := spec
 		pack.Operation = "pack"
 		pack.Source = source.path
-		st, id := s.fileTask(source.device, pack, "_nsh-transfer/"+nshRandomID()+"/bundle.zip")
+		st, id := s.fileTask(source.device, pack, "_svsh-transfer/"+svshRandomID()+"/bundle.zip")
 		receipt, exists := s.takeReceipt(id)
 		if !fileSucceeded(st) || !exists || receipt.deviceID != source.device {
 			if exists {
 				_ = os.Remove(receipt.path)
 			}
 			s.printFileResult(source.device, st)
-			s.println("nsh: source export did not produce a verified transfer artifact")
+			s.println("svsh: source export did not produce a verified transfer artifact")
 			ok = false
 			continue
 		}
 		var manifest fileops.Result
 		if err = json.Unmarshal([]byte(st.Detail), &manifest); err != nil || manifest.SHA256 != receipt.sha256 {
 			os.Remove(receipt.path)
-			s.println("nsh: source manifest/archive digest mismatch")
+			s.println("svsh: source manifest/archive digest mismatch")
 			ok = false
 			continue
 		}
 		copied := s.runFileJobs(destinations, func(dest endpointPath) bool {
-			contentID := nshRandomID()
+			contentID := svshRandomID()
 			s.srv.pendingMu.Lock()
 			if s.srv.fileContent == nil {
 				s.srv.fileContent = make(map[string]fileContent)
@@ -276,25 +276,25 @@ func (s *nshSession) verbFile(op, rest string) {
 	}
 	s.recordFileExit(ok)
 }
-func (s *nshSession) printFileResult(id string, st *pb.ActionStatus) {
+func (s *svshSession) printFileResult(id string, st *pb.ActionStatus) {
 	if st == nil {
-		s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Type: "file_operation", ExitCode: 1, Reason: "not sent/no terminal reply"})
+		s.recordAction(svsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Type: "file_operation", ExitCode: 1, Reason: "not sent/no terminal reply"})
 		s.printf("---- %s FILE FAILED (not sent/no terminal reply)\n", s.srv.hostnameOf(id))
 		return
 	}
 	s.recordStatus(id, st)
 	s.printf("---- %s %s: %s\n", s.srv.hostnameOf(id), phaseWord(st.Phase), st.Reason)
 }
-func (s *nshSession) recordFileExit(ok bool) {
+func (s *svshSession) recordFileExit(ok bool) {
 	exit := 0
 	reason := "file job completed"
 	if !ok {
 		exit = 1
 		reason = "one or more file operations failed"
 	}
-	s.recordAction(nsh.ActionResult{Type: "file_job", Reason: reason, ExitCode: exit, Summary: true})
+	s.recordAction(svsh.ActionResult{Type: "file_job", Reason: reason, ExitCode: exit, Summary: true})
 }
-func (s *nshSession) runFileJobs(paths []endpointPath, job func(endpointPath) bool) bool {
+func (s *svshSession) runFileJobs(paths []endpointPath, job func(endpointPath) bool) bool {
 	workers := s.fileWorkers
 	if workers <= 0 {
 		workers = 4
@@ -327,26 +327,26 @@ func (s *nshSession) runFileJobs(paths []endpointPath, job func(endpointPath) bo
 	s.recordFileExit(ok)
 	return ok
 }
-func (s *nshSession) setFileOption(key, value string) bool {
+func (s *svshSession) setFileOption(key, value string) bool {
 	switch key {
 	case "file-workers":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || n > 32 {
-			s.println("nsh: file-workers must be 1..32")
+			s.println("svsh: file-workers must be 1..32")
 			return true
 		}
 		s.fileWorkers = n
 	case "file-max-bytes":
 		n, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || n < 1 {
-			s.println("nsh: file-max-bytes must be positive")
+			s.println("svsh: file-max-bytes must be positive")
 			return true
 		}
 		s.fileMaxBytes = n
 	case "file-max-files":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 {
-			s.println("nsh: file-max-files must be positive")
+			s.println("svsh: file-max-files must be positive")
 			return true
 		}
 		s.fileMaxFiles = n

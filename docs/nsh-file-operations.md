@@ -1,4 +1,4 @@
-# NSH file operations and host search
+# SVSH file operations and host search
 
 24 October 2026. Requires the updated **agent and mockserver**; old agents do not
 implement file_operation. These commands run as the agent's service identity
@@ -35,7 +35,7 @@ a page; production needs indexed/paginated authorized inventory queries. The
 \\*\c\temp\drop\
 ```
 
-These are **NSH managed-device paths**, not SMB share access. c/c$ means C:,
+These are **SVSH managed-device paths**, not SMB share access. c/c$ means C:,
 d/d$ means D:. Hosts must be enrolled agents known to the server. A comma list
 targets those devices; * snapshots currently online devices. Local drive or
 relative paths apply to the currently selected target(s) and per-device CWD.
@@ -86,13 +86,13 @@ delete -r \\vm1,vm2\c\temp\obsolete-folder
 md aliases mkdir; del/rm alias delete. mkdir creates missing parents. touch
 creates a new empty file and refuses an existing file. Directory deletion
 requires --recursive. File/glob matches and per-host results are explicit;
-missing files and permission failures report FAILED. File jobs update NSH $exit
-with the aggregate result. Copy does not execute an EXE/script/NSH file.
+missing files and permission failures report FAILED. File jobs update SVSH $exit
+with the aggregate result. Copy does not execute an EXE/script/SVSH file.
 
 Native shell commands remain available: Get-ChildItem, Copy-Item, Remove-Item,
 echo text > file, etc. Use `run copy /Y ...` or `run del /Q ...` if you want the
-Windows command's own syntax rather than NSH's copy/delete flags. Native UNC
-access uses the selected endpoint's service credentials; it is not the NSH relay.
+Windows command's own syntax rather than SVSH's copy/delete flags. Native UNC
+access uses the selected endpoint's service credentials; it is not the SVSH relay.
 
 ## Bounds and transfer contract (server team)
 
@@ -104,7 +104,7 @@ set timeout 300
 ```
 
 Defaults: 4 destination workers (configurable 1..32), 500 MiB uncompressed data
-per bundle, 10,000 entries, existing NSH command timeout. Signed manifest metadata
+per bundle, 10,000 entries, existing SVSH command timeout. Signed manifest metadata
 must fit 2 MiB; larger sets fail and require smaller batches. Rate throttling
 remains backlog. Recursive/glob copy needs no user-authored foreach loop.
 
@@ -117,7 +117,7 @@ post-copy move step only. Local copy/move use native staging on that endpoint.
 
 Cross-agent flow: signed pack -> source ZIP upload -> server-verified upload
 receipt -> temporary destination-bound content ID -> signed unpack -> existing
-mTLS FetchContent(kind=nsh-file) -> archive SHA-256 and signed per-file hashes
+mTLS FetchContent(kind=svsh-file) -> archive SHA-256 and signed per-file hashes
 verified -> destination publish -> optional source removal. Entry names, sizes,
 counts, hashes, path traversal and link destinations are validated. No-clobber is
 the default. Server never trusts a client-provided server filesystem path as the
@@ -131,7 +131,7 @@ is not transactional. Transfer artifacts must be tenant-scoped in production.
 
 Mockserver has no console operator RBAC. The real server must authorize every
 source read and destination write/delete, including expanded wildcard targets;
-an NSH-open permission alone must not grant unrestricted file writes. Audit the
+an SVSH-open permission alone must not grant unrestricted file writes. Audit the
 operator, parent job, source/destination device IDs/paths, recursion/overwrite,
 child action IDs, bytes and results. Reuse the console login identity for these
 checks; endpoint execution still remains LocalSystem. Apply quotas and bounded

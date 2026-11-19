@@ -19,7 +19,7 @@ import (
 	"github.com/peterh/liner"
 	"time"
 
-	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/svsh"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
@@ -49,7 +49,7 @@ func (s *server) deregisterLiveAgent(deviceID string) {
 
 // ===== ActionStatus correlation (REPL waits on terminal phase for a cmd id) =====
 
-type nshUploadTarget struct {
+type svshUploadTarget struct {
 	deviceID string
 	path     string
 }
@@ -64,7 +64,7 @@ func (s *server) waitFor(commandID string) <-chan *pb.ActionStatus {
 
 func (s *server) cancelWait(commandID string) {
 	s.pendingMu.Lock()
-	delete(s.nshUploads, commandID)
+	delete(s.svshUploads, commandID)
 	if ch, ok := s.pending[commandID]; ok {
 		delete(s.pending, commandID)
 		close(ch)
@@ -91,7 +91,7 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 		st.Phase == pb.ActionPhase_ACTION_PHASE_FAILED ||
 		st.Phase == pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE {
 		delete(s.pending, st.ActionId)
-		delete(s.nshUploads, st.ActionId)
+		delete(s.svshUploads, st.ActionId)
 		close(ch)
 	}
 	s.pendingMu.Unlock()
@@ -100,13 +100,13 @@ func (s *server) deliverActionStatus(st *pb.ActionStatus) bool {
 
 // ===== REPL entrypoint =====
 
-// nshSession is the REPL state (per-process). The console (future web UI) will
+// svshSession is the REPL state (per-process). The console (future web UI) will
 // keep this per logged-in operator; the mock has one.
-// nshActor returns the attribution string identifying who is dispatching
-// a command from THIS NSH session. Format: "nsh:<os-user>@<host>" so an
+// svshActor returns the attribution string identifying who is dispatching
+// a command from THIS SVSH session. Format: "svsh:<os-user>@<host>" so an
 // agent log line pinpoints exactly which operator (and which workstation
 // the mock REPL was running on) initiated a command.
-func (s *nshSession) nshActor() string {
+func (s *svshSession) svshActor() string {
 	if s.cachedActor != "" {
 		return s.cachedActor
 	}
@@ -121,15 +121,15 @@ func (s *nshSession) nshActor() string {
 	if err != nil || host == "" {
 		host = "mockserver"
 	}
-	s.cachedActor = "nsh:" + user + "@" + host
+	s.cachedActor = "svsh:" + user + "@" + host
 	return s.cachedActor
 }
 
-type nshSession struct {
+type svshSession struct {
 	srv                 *server
-	// cachedActor stores the computed "nsh:<user>@<host>" attribution so
+	// cachedActor stores the computed "svsh:<user>@<host>" attribution so
 	// every signed dispatch does not re-stat the OS env. Set lazily on
-	// first nshActor() call.
+	// first svshActor() call.
 	cachedActor         string
 	targets             []string          // device_ids resolved from `cd \\host`
 	workingDirs         map[string]string // endpoint CWD per device (unset = SKVC\tmp)
@@ -147,43 +147,43 @@ type nshSession struct {
 	ctx                 context.Context
 	output, errorOutput io.Writer
 	parameters          map[string]string
-	emit                func(nsh.ActionResult)
+	emit                func(svsh.ActionResult)
 	allowedTargets      map[string]bool
 	jobMode             bool
 }
 
-// runNSH starts the interactive REPL on stdin (or non-interactive from a
+// runSVSH starts the interactive REPL on stdin (or non-interactive from a
 // script file explicitly selected by the startup mode). Runs alongside the
 // gRPC server — not a separate process (console will embed the same engine).
-func runNSH(srv *server, scriptPath string) {
-	sess := &nshSession{
+func runSVSH(srv *server, scriptPath string) {
+	sess := &svshSession{
 		srv:       srv,
 		shell:     "cmd",
 		timeout:   300,
 		maxOutput: 1 << 20,
 		capture:   false,
-		outputDir: "nsh",
+		outputDir: "svsh",
 		out:       bufio.NewWriter(os.Stdout),
 	}
 	sess.engine = newScriptEngine(sess)
 	defer sess.engine.core.Close()
 	// Non-interactive script mode (same engine, no prompt).
 	if scriptPath != "" {
-		runEnvironmentNSHJob(srv, scriptPath)
+		runEnvironmentSVSHJob(srv, scriptPath)
 		return
 	}
 	sess.printBanner()
 	sess.readLoop(os.Stdin, true)
 }
 
-func (s *nshSession) printBanner() {
+func (s *svshSession) printBanner() {
 	s.println("")
-	s.println("Aegis One NSH v1 — console operator REPL")
+	s.println("Aegis One SVSH v1 — console operator REPL")
 	s.println("  type `help` for verbs, `hosts` to list devices, `exit` to quit")
 	s.println("")
 }
 
-func (s *nshSession) prompt() string {
+func (s *svshSession) prompt() string {
 	if s.engine != nil && s.engine.core.State().InHeredoc {
 		return "... [" + s.engine.core.State().Delimiter + "]> "
 	}
@@ -192,7 +192,7 @@ func (s *nshSession) prompt() string {
 		dots := strings.Repeat("..", s.engine.core.State().BlockDepth)
 		return dots + "> "
 	}
-	tag := "nsh"
+	tag := "svsh"
 	if len(s.targets) == 1 {
 		tag = s.srv.hostnameOf(s.targets[0])
 	} else if len(s.targets) > 1 {
@@ -201,7 +201,7 @@ func (s *nshSession) prompt() string {
 	return tag + "> "
 }
 
-func (s *nshSession) readLoop(src io.Reader, interactive bool) {
+func (s *svshSession) readLoop(src io.Reader, interactive bool) {
 	// Interactive mode uses peterh/liner for Tab completion + line editing.
 	// Tab on a prefix completes the verb if there is exactly one match, or
 	// prints the candidate list if there are several (plain prefix echo on
@@ -234,10 +234,10 @@ func (s *nshSession) readLoop(src io.Reader, interactive bool) {
 	}
 }
 
-// nshVerbNames lists every top-level verb the REPL dispatcher recognizes, used
+// svshVerbNames lists every top-level verb the REPL dispatcher recognizes, used
 // for Tab completion. Keep it alphabetical so the candidate list a user sees
 // after `inv<Tab>` is predictable.
-var nshVerbNames = []string{
+var svshVerbNames = []string{
 	"audit", "cat", "cd", "copy", "cp", "delete", "del", "exec", "exit", "fanout",
 	"grab", "help", "history", "hosts", "inventory", "mkdir", "md", "move",
 	"mv", "pull", "pwd", "quit", "rm", "run", "script", "search", "set",
@@ -250,7 +250,7 @@ var nshVerbNames = []string{
 // candidate list under the prompt (liner prints them automatically). History
 // is kept per-process (not persisted) — a REPL session's history dies with
 // the process, matching the mock's dev-tool scope.
-func (s *nshSession) interactiveLoop() {
+func (s *svshSession) interactiveLoop() {
 	line := liner.NewLiner()
 	defer line.Close()
 	line.SetCtrlCAborts(true)
@@ -270,11 +270,11 @@ func (s *nshSession) interactiveLoop() {
 		if head == "" || rest == "" {
 			// Verb completion branch.
 			if head == "" {
-				return nshVerbNames
+				return svshVerbNames
 			}
 			lower := strings.ToLower(head)
 			var out []string
-			for _, v := range nshVerbNames {
+			for _, v := range svshVerbNames {
 				if strings.HasPrefix(v, lower) {
 					out = append(out, v+prefix[len(head):])
 				}
@@ -295,7 +295,7 @@ func (s *nshSession) interactiveLoop() {
 			return
 		}
 		if err != nil {
-			s.printf("nsh: input error: %v\n", err)
+			s.printf("svsh: input error: %v\n", err)
 			return
 		}
 		input = strings.TrimRight(input, "\r\n")
@@ -311,7 +311,7 @@ func (s *nshSession) interactiveLoop() {
 
 // exec (legacy direct path) is kept for callers that bypass the engine during
 // a block replay. Routes to the verb, returns false on `exit`.
-func (s *nshSession) exec(line string) bool {
+func (s *svshSession) exec(line string) bool {
 	line = strings.TrimSpace(line)
 	verb, rest := splitFirst(line)
 	switch strings.ToLower(verb) {
@@ -372,7 +372,7 @@ func (s *nshSession) exec(line string) bool {
 
 // ===== Verbs =====
 
-func (s *nshSession) verbHelp(_ string) {
+func (s *svshSession) verbHelp(_ string) {
 	s.print(`
 TARGETING
   hosts [filter]            known devices + ONLINE/OFFLINE (20 rows by default)
@@ -391,16 +391,16 @@ TARGETING
   cd *                      target all online
   cd C:\temp | cd ..        change selected endpoint's working directory
   cd | pwd                  show endpoint working directory
-  cd \\                     clear targets (return to nsh prompt)
+  cd \\                     clear targets (return to svsh prompt)
 
 EXECUTION
-  job run <file.nsh> [--param NAME=value] [--kind script_job|software_distribution]
+  job run <file.svsh> [--param NAME=value] [--kind script_job|software_distribution]
       non-interactive execution with isolated state on selected targets
   copy|cp [-r] [--overwrite] <src> <dest>  native local/cross-host copy
   move|mv [-r] [--overwrite] <src> <dest>  copy-verify-remove (one destination)
   mkdir|md <path> | touch <path> | delete|del|rm [-r] <path>
      Paths: selected-host C:\path or \\host[,host]\c\path; \\* targets online hosts.
-     Cross-host paths are NSH device paths, not Windows SMB shares.
+     Cross-host paths are SVSH device paths, not Windows SMB shares.
      set file-workers 4 | file-max-bytes 524288000 | file-max-files 10000
   <cmd> | run <cmd>         run on current target(s) (bare line = run)
   run <cmd> /shell <X>      one-off per-command shell override (X: cmd|powershell|pwsh|ps|bash|sh|zsh)
@@ -431,11 +431,11 @@ SESSION
   set timeout <sec>         per-command timeout (default 300)
   set max-output <bytes>    inline capture cap (default 1 MiB)
   set capture on|off        auto-save every command's stdout
-  set output-dir <path>     default server-side save prefix (default "nsh")
+  set output-dir <path>     default server-side save prefix (default "svsh")
   set format table|json|csv fanout output format
   set session-log <path>    append full REPL to a file (off to disable)
   script run <file>         non-interactive batch (capture=on by default)
-  source <file>             include another .nsh (vars/aliases)
+  source <file>             include another .svsh (vars/aliases)
   exec [shell] <file>       read a local .ps1/.bat/.cmd/.py/.sh, substitute
                             ${vars}, send to current target(s) as one command
                             (BigFix "action script with embedded relevance"
@@ -457,7 +457,7 @@ LAST-RESULT VARS (after each command, usable in if-conditions / substitution)
 `)
 }
 
-func (s *nshSession) verbHosts(filter string) {
+func (s *svshSession) verbHosts(filter string) {
 	s.printHosts(filter)
 }
 
@@ -470,10 +470,10 @@ func (s *nshSession) verbHosts(filter string) {
 // This is a DEV / TESTING convenience. The production catalog match (which app
 // is outdated, what version is latest, which fixlet-equivalent to dispatch) is
 // server-team work.
-func (s *nshSession) verbInventory(rest string) {
+func (s *svshSession) verbInventory(rest string) {
 	parts := strings.Fields(strings.TrimSpace(rest))
 	if len(parts) == 0 {
-		s.printf("nsh: inventory apps [filter] | inventory refresh — see help for details\n")
+		s.printf("svsh: inventory apps [filter] | inventory refresh — see help for details\n")
 		return
 	}
 	if strings.EqualFold(parts[0], "refresh") {
@@ -481,7 +481,7 @@ func (s *nshSession) verbInventory(rest string) {
 		return
 	}
 	if !strings.EqualFold(parts[0], "apps") {
-		s.printf("nsh: inventory apps [filter] | inventory refresh — unknown sub-verb %q\n", parts[0])
+		s.printf("svsh: inventory apps [filter] | inventory refresh — unknown sub-verb %q\n", parts[0])
 		return
 	}
 	filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(rest, parts[0])))
@@ -545,35 +545,35 @@ func (s *nshSession) verbInventory(rest string) {
 // targets completes in <timeout> seconds total, not 50 × <timeout>. Default
 // timeout is 5s; override with "inventory refresh --timeout <seconds>" for
 // cross-WAN fleets or slow agents.
-func (s *nshSession) refreshInventory(args []string) {
+func (s *svshSession) refreshInventory(args []string) {
 	timeout := 5 * time.Second
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if (a == "--timeout" || a == "-t") && i+1 < len(args) {
 			n, err := strconv.Atoi(args[i+1])
 			if err != nil || n <= 0 {
-				s.printf("nsh: inventory refresh: --timeout expects a positive integer (seconds)\n")
+				s.printf("svsh: inventory refresh: --timeout expects a positive integer (seconds)\n")
 				return
 			}
 			timeout = time.Duration(n) * time.Second
 			i++
 			continue
 		}
-		s.printf("nsh: inventory refresh: unknown argument %q (use --timeout <seconds>)\n", a)
+		s.printf("svsh: inventory refresh: unknown argument %q (use --timeout <seconds>)\n", a)
 		return
 	}
 	if len(s.targets) == 0 {
-		s.printf("nsh: inventory refresh requires a cd target (or -t <host>)\n")
+		s.printf("svsh: inventory refresh requires a cd target (or -t <host>)\n")
 		return
 	}
-	// Hard cap: NSH is a dev / admin tool, not a fleet operations surface.
+	// Hard cap: SVSH is a dev / admin tool, not a fleet operations surface.
 	// Fleet-wide refresh (hundreds-to-thousands of endpoints) belongs in a
 	// server-side scheduled operation that batches waves and rate-limits
 	// — the agent handler is the same, only the dispatcher differs.
 	const maxTargets = 100
 	if len(s.targets) > maxTargets {
-		s.printf("nsh: inventory refresh refuses more than %d targets (you have %d). "+
-			"NSH is a dev/admin tool. Use the server-side scheduled fleet refresh instead "+
+		s.printf("svsh: inventory refresh refuses more than %d targets (you have %d). "+
+			"SVSH is a dev/admin tool. Use the server-side scheduled fleet refresh instead "+
 			"— the agent handler is identical; only the dispatcher batches waves.\n",
 			maxTargets, len(s.targets))
 		return
@@ -603,10 +603,10 @@ func (s *nshSession) refreshInventory(args []string) {
 			beforeAt = rep.CollectedAt
 		}
 		s.srv.inventoryMu.Unlock()
-		cmdID := "nsh-refresh-" + nshRandomID()
+		cmdID := "svsh-refresh-" + svshRandomID()
 		msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 			CommandId: cmdID, Type: "report_device_state",
-			Actor: s.nshActor(), Source: "mockserver.nsh",
+			Actor: s.svshActor(), Source: "mockserver.svsh",
 		})}}
 		if err := la.send(msg); err != nil {
 			s.printf("%s: send failed: %v\n", host, err)
@@ -617,7 +617,7 @@ func (s *nshSession) refreshInventory(args []string) {
 	if len(fleet) == 0 {
 		return
 	}
-	s.printf("nsh: refresh dispatched to %d target(s), waiting up to %s (shared deadline)...\n", len(fleet), timeout)
+	s.printf("svsh: refresh dispatched to %d target(s), waiting up to %s (shared deadline)...\n", len(fleet), timeout)
 
 	// Shared deadline across the whole fleet. Poll every 100ms for fresh
 	// reports until every target lands or the deadline passes.
@@ -646,7 +646,7 @@ func (s *nshSession) refreshInventory(args []string) {
 			timedOut++
 		}
 	}
-	s.printf("nsh: refresh complete — %d/%d received, %d timed out — run `inventory apps` to view\n",
+	s.printf("svsh: refresh complete — %d/%d received, %d timed out — run `inventory apps` to view\n",
 		len(done), len(fleet), timedOut)
 }
 
@@ -667,7 +667,7 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-func (s *nshSession) verbCD(rest string) {
+func (s *svshSession) verbCD(rest string) {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		if len(s.targets) == 1 {
@@ -706,7 +706,7 @@ func (s *nshSession) verbCD(rest string) {
 		}
 		id, err := s.srv.resolveKnownTarget(p)
 		if err != nil {
-			s.printf("nsh: %v\n", err)
+			s.printf("svsh: %v\n", err)
 			return // preserve selection rather than partially selecting a list
 		}
 		resolved = append(resolved, id)
@@ -714,19 +714,19 @@ func (s *nshSession) verbCD(rest string) {
 	s.targets = resolved
 	for _, id := range resolved {
 		if !s.srv.isOnline(id) {
-			s.printf("nsh: %s selected (OFFLINE); commands require this endpoint to reconnect\n", s.srv.hostnameOf(id))
+			s.printf("svsh: %s selected (OFFLINE); commands require this endpoint to reconnect\n", s.srv.hostnameOf(id))
 		}
 	}
 	if len(resolved) == 0 {
-		s.println("nsh: no targets selected")
+		s.println("svsh: no targets selected")
 	}
 }
 
 // Validate/resolve the directory on the endpoint. Never use the mockserver's
 // local filesystem, and retain the old CWD if the endpoint rejects the change.
-func (s *nshSession) changeWorkingDir(path string) {
+func (s *svshSession) changeWorkingDir(path string) {
 	if len(s.targets) != 1 {
-		s.println("nsh: cd/pwd needs exactly one selected endpoint")
+		s.println("svsh: cd/pwd needs exactly one selected endpoint")
 		return
 	}
 	if strings.HasPrefix(strings.ToLower(path), "/d ") {
@@ -734,7 +734,7 @@ func (s *nshSession) changeWorkingDir(path string) {
 	}
 	path = strings.Trim(strings.TrimSpace(path), `"`)
 	if strings.ContainsAny(path, "\r\n\x00") {
-		s.println("nsh: invalid directory path")
+		s.println("svsh: invalid directory path")
 		return
 	}
 	text := "cd"
@@ -746,30 +746,30 @@ func (s *nshSession) changeWorkingDir(path string) {
 		}
 	case "", "auto", "cmd":
 		if strings.Contains(path, `"`) {
-			s.println("nsh: invalid directory path")
+			s.println("svsh: invalid directory path")
 			return
 		}
 		if path != "" {
 			text = `cd /d "` + path + `" && cd`
 		}
 	default:
-		s.println("nsh: directory navigation currently supports cmd/powershell/pwsh on Windows")
+		s.println("svsh: directory navigation currently supports cmd/powershell/pwsh on Windows")
 		return
 	}
 	id := s.targets[0]
 	st, _ := s.sendCommand(id, text, "")
 	if st == nil {
-		s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Reason: "command not sent", ExitCode: -1})
+		s.recordAction(svsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Reason: "command not sent", ExitCode: -1})
 		return
 	}
 	s.recordStatus(id, st)
 	if st.Phase != pb.ActionPhase_ACTION_PHASE_SUCCESS {
-		s.printf("nsh: directory unchanged: %s\n%s", st.Reason, parseStderr(st.Detail))
+		s.printf("svsh: directory unchanged: %s\n%s", st.Reason, parseStderr(st.Detail))
 		return
 	}
 	cwd := strings.TrimSpace(parseStdout(st.Detail))
 	if cwd == "" {
-		s.println("nsh: endpoint returned no directory; directory unchanged")
+		s.println("svsh: endpoint returned no directory; directory unchanged")
 		return
 	}
 	if s.workingDirs == nil {
@@ -779,18 +779,18 @@ func (s *nshSession) changeWorkingDir(path string) {
 	s.printf("%s: %s\n", s.srv.hostnameOf(id), cwd)
 }
 
-func (s *nshSession) verbRun(cmdText string, fan bool) {
+func (s *svshSession) verbRun(cmdText string, fan bool) {
 	cmdText = strings.TrimSpace(cmdText)
 	if cmdText == "" {
-		s.println("nsh: nothing to run")
+		s.println("svsh: nothing to run")
 		return
 	}
 	if len(s.targets) == 0 {
-		s.println("nsh: no target — pick one with `cd \\\\<host>`")
+		s.println("svsh: no target — pick one with `cd \\\\<host>`")
 		return
 	}
 	if !fan && len(s.targets) > 1 {
-		s.printf("nsh: %d targets selected; use `fanout <cmd>` for multi-target\n", len(s.targets))
+		s.printf("svsh: %d targets selected; use `fanout <cmd>` for multi-target\n", len(s.targets))
 		return
 	}
 	// Per-command shell override: trailing "/shell <X>" or "--shell <X>"
@@ -810,7 +810,7 @@ func (s *nshSession) verbRun(cmdText string, fan bool) {
 	s.dispatchAndRender(cmdText, "", fan)
 }
 
-func (s *nshSession) verbGrab(rest string) {
+func (s *svshSession) verbGrab(rest string) {
 	path, cmdText := splitFirst(rest)
 	if cmdText == "" {
 		// User passed only a command, no server path — auto-name.
@@ -819,11 +819,11 @@ func (s *nshSession) verbGrab(rest string) {
 	}
 	cmdText = strings.TrimSpace(cmdText)
 	if cmdText == "" {
-		s.println("nsh: usage: grab [server-path] <command>")
+		s.println("svsh: usage: grab [server-path] <command>")
 		return
 	}
 	if len(s.targets) == 0 {
-		s.println("nsh: no target — pick one with `cd \\\\<host>`")
+		s.println("svsh: no target — pick one with `cd \\\\<host>`")
 		return
 	}
 	for _, id := range s.targets {
@@ -837,14 +837,14 @@ func (s *nshSession) verbGrab(rest string) {
 	}
 }
 
-func (s *nshSession) verbPull(rest string) {
+func (s *svshSession) verbPull(rest string) {
 	remote, savePath := splitPullArgs(rest)
 	if remote == "" {
-		s.println("nsh: usage: pull <remote-path> [server-path]")
+		s.println("svsh: usage: pull <remote-path> [server-path]")
 		return
 	}
 	if len(s.targets) == 0 {
-		s.println("nsh: no target — pick one with cd \\\\<host>")
+		s.println("svsh: no target — pick one with cd \\\\<host>")
 		return
 	}
 	for _, id := range s.targets {
@@ -887,31 +887,31 @@ func splitPullArgs(rest string) (string, string) {
 	return p, strings.Trim(name, `"`)
 }
 
-func (s *nshSession) namedUploadPath(id, name string) string {
+func (s *svshSession) namedUploadPath(id, name string) string {
 	return strings.TrimRight(s.outputDir, "/\\") + "/" + slugify(s.srv.hostnameOf(id)) + "/" + strings.TrimLeft(name, "/\\")
 }
 
-func (s *nshSession) verbShell() {
+func (s *svshSession) verbShell() {
 	if len(s.targets) != 1 {
-		s.println("nsh: `shell` needs exactly ONE target — use `cd \\\\<host>` first")
+		s.println("svsh: `shell` needs exactly ONE target — use `cd \\\\<host>` first")
 		return
 	}
-	s.println("nsh: `shell` opens a persistent interactive session — run `mockserver.exe` with AEGIS_SHELL (legacy) or wait for the console UI to wire the terminal.")
+	s.println("svsh: `shell` opens a persistent interactive session — run `mockserver.exe` with AEGIS_SHELL (legacy) or wait for the console UI to wire the terminal.")
 	s.println("     (v1 interactive shell exists on the agent as open_shell/ShellSession; the console UI will carry stdin/stdout to a web terminal.)")
 }
 
-func (s *nshSession) verbUse(rest string) {
+func (s *svshSession) verbUse(rest string) {
 	rest = strings.ToLower(strings.TrimSpace(rest))
 	switch rest {
 	case "cmd", "powershell", "ps", "pwsh", "bash", "sh", "zsh":
 		s.shell = rest
 		s.printf("shell = %s\n", rest)
 	default:
-		s.println("nsh: use <cmd|powershell|pwsh|bash|sh|zsh>")
+		s.println("svsh: use <cmd|powershell|pwsh|bash|sh|zsh>")
 	}
 }
 
-func (s *nshSession) verbSet(rest string) {
+func (s *svshSession) verbSet(rest string) {
 	k, v := splitFirst(rest)
 	v = strings.TrimSpace(v)
 	switch strings.ToLower(k) {
@@ -934,19 +934,19 @@ func (s *nshSession) verbSet(rest string) {
 			s.printf("output-dir = %s\n", v)
 		}
 	default:
-		s.println("nsh: set <timeout|max-output|capture|output-dir> <value>")
+		s.println("svsh: set <timeout|max-output|capture|output-dir> <value>")
 	}
 }
 
-func (s *nshSession) verbScript(rest string) {
+func (s *svshSession) verbScript(rest string) {
 	sub, path := splitFirst(rest)
 	if strings.ToLower(sub) != "run" || path == "" {
-		s.println("nsh: usage: script run <file>")
+		s.println("svsh: usage: script run <file>")
 		return
 	}
 	f, err := os.Open(strings.TrimSpace(path))
 	if err != nil {
-		s.printf("nsh: open %s: %v\n", path, err)
+		s.printf("svsh: open %s: %v\n", path, err)
 		return
 	}
 	defer f.Close()
@@ -962,7 +962,7 @@ func (s *nshSession) verbScript(rest string) {
 // selected target), waits for each terminal ActionStatus, and prints. Each
 // target gets its OWN per-host upload path when capture is on so a multi-host
 // run never collides into one file.
-func (s *nshSession) dispatchAndRender(cmdText, forcedUpload string, fan bool) {
+func (s *svshSession) dispatchAndRender(cmdText, forcedUpload string, fan bool) {
 	pathFor := func(deviceID string) string {
 		if forcedUpload != "" {
 			return forcedUpload // explicit grab/pull path wins
@@ -1008,10 +1008,10 @@ type oneResult struct {
 	saved   string
 }
 
-func (s *nshSession) dispatchQuiet(id, cmdText, uploadAs string) oneResult {
+func (s *svshSession) dispatchQuiet(id, cmdText, uploadAs string) oneResult {
 	st, _ := s.sendCommand(id, cmdText, uploadAs)
 	if st == nil {
-		s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Reason: "no reply", ExitCode: -1})
+		s.recordAction(svsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), Reason: "no reply", ExitCode: -1})
 		return oneResult{status: "no-reply"}
 	}
 	s.recordStatus(id, st)
@@ -1027,13 +1027,13 @@ func (s *nshSession) dispatchQuiet(id, cmdText, uploadAs string) oneResult {
 	}
 }
 
-func (s *nshSession) dispatchOne(id, cmdText, uploadAs string) {
+func (s *svshSession) dispatchOne(id, cmdText, uploadAs string) {
 	host := s.srv.hostnameOf(id)
 	s.printf("---- %s $ %s\n", host, cmdText)
 	st, cmdID := s.sendCommand(id, cmdText, uploadAs)
 	if st == nil {
 		s.printf("     (no reply, action_id=%s)\n", cmdID)
-		s.recordAction(nsh.ActionResult{TargetID: id, Host: host, ActionID: cmdID, Reason: "no reply", ExitCode: -1})
+		s.recordAction(svsh.ActionResult{TargetID: id, Host: host, ActionID: cmdID, Reason: "no reply", ExitCode: -1})
 		return
 	}
 	stdout := parseStdout(st.Detail)
@@ -1060,8 +1060,8 @@ func (s *nshSession) dispatchOne(id, cmdText, uploadAs string) {
 	}
 }
 
-func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.ActionStatus, string) {
-	// Forward NSH variables to the agent as command parameters: the agent
+func (s *svshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.ActionStatus, string) {
+	// Forward SVSH variables to the agent as command parameters: the agent
 	// (a) runs ${name} substitution on the command text (idempotent — the REPL
 	// already substituted known names), and (b) exports every param to the
 	// child process env as AEGIS_PARAM_<NAME> so a pre-staged .ps1/.bat/.py on
@@ -1089,16 +1089,16 @@ func (s *nshSession) sendCommand(deviceID, cmdText, uploadAs string) (*pb.Action
 	return s.sendTask(deviceID, "run_command", spec, uploadAs)
 }
 
-func (s *nshSession) sendTask(deviceID, taskType string, spec proto.Message, uploadAs string) (*pb.ActionStatus, string) {
+func (s *svshSession) sendTask(deviceID, taskType string, spec proto.Message, uploadAs string) (*pb.ActionStatus, string) {
 	payload, err := proto.Marshal(spec)
 	if err != nil {
-		s.printf("nsh: marshal: %v\n", err)
+		s.printf("svsh: marshal: %v\n", err)
 		return nil, ""
 	}
 	return s.sendTaskPayload(deviceID, taskType, payload, uploadAs)
 }
 
-func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, uploadAs string) (*pb.ActionStatus, string) {
+func (s *svshSession) sendTaskPayload(deviceID, taskType string, payload []byte, uploadAs string) (*pb.ActionStatus, string) {
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -1107,40 +1107,40 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 		return nil, ""
 	}
 	if s.allowedTargets != nil && !s.allowedTargets[deviceID] {
-		s.printf("nsh: %s is outside this job's authorized scope\n", deviceID)
+		s.printf("svsh: %s is outside this job's authorized scope\n", deviceID)
 		return nil, ""
 	}
 	s.srv.liveMu.Lock()
 	la, ok := s.srv.liveAgents[deviceID]
 	s.srv.liveMu.Unlock()
 	if !ok {
-		s.printf("nsh: %s is OFFLINE; command not sent (no fleet/heartbeat wait)\n", s.srv.hostnameOf(deviceID))
+		s.printf("svsh: %s is OFFLINE; command not sent (no fleet/heartbeat wait)\n", s.srv.hostnameOf(deviceID))
 		return nil, ""
 	}
 	if uploadAs != "" {
-		if _, err := safeNSHUploadPath(uploadAs); err != nil {
-			s.printf("nsh: %v\n", err)
+		if _, err := safeSVSHUploadPath(uploadAs); err != nil {
+			s.printf("svsh: %v\n", err)
 			return nil, ""
 		}
 	}
-	cmdID := "nsh-" + nshRandomID()
+	cmdID := "svsh-" + svshRandomID()
 	ch := s.srv.waitFor(cmdID)
 	if uploadAs != "" {
 		s.srv.pendingMu.Lock()
-		if s.srv.nshUploads == nil {
-			s.srv.nshUploads = make(map[string]nshUploadTarget)
+		if s.srv.svshUploads == nil {
+			s.srv.svshUploads = make(map[string]svshUploadTarget)
 		}
-		s.srv.nshUploads[cmdID] = nshUploadTarget{deviceID: deviceID, path: uploadAs}
+		s.srv.svshUploads[cmdID] = svshUploadTarget{deviceID: deviceID, path: uploadAs}
 		s.srv.pendingMu.Unlock()
 	}
 	msg := &pb.ServerMessage{Payload: &pb.ServerMessage_Command{Command: sign(&pb.Command{
 		CommandId: cmdID, Type: taskType, Payload: payload,
-		Actor: s.nshActor(), Source: "mockserver.nsh",
+		Actor: s.svshActor(), Source: "mockserver.svsh",
 	})}}
 	err := la.send(msg)
 	if err != nil {
 		s.srv.cancelWait(cmdID)
-		s.printf("nsh: send to %s failed: %v\n", s.srv.hostnameOf(deviceID), err)
+		s.printf("svsh: send to %s failed: %v\n", s.srv.hostnameOf(deviceID), err)
 		return nil, cmdID
 	}
 	timeout := time.Duration(s.timeout+10) * time.Second // small grace over per-command timeout
@@ -1151,7 +1151,7 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 		select {
 		case <-ctx.Done():
 			s.srv.cancelWait(cmdID)
-			s.printf("nsh: job cancelled while waiting for %s\n", cmdID)
+			s.printf("svsh: job cancelled while waiting for %s\n", cmdID)
 			return nil, cmdID
 		case st, open := <-ch:
 			if !open {
@@ -1164,7 +1164,7 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 			}
 		case <-deadline.C:
 			s.srv.cancelWait(cmdID)
-			s.printf("nsh: timed out waiting for %s\n", cmdID)
+			s.printf("svsh: timed out waiting for %s\n", cmdID)
 			return terminal, cmdID
 		}
 	}
@@ -1172,7 +1172,7 @@ func (s *nshSession) sendTaskPayload(deviceID, taskType string, payload []byte, 
 
 // ===== Helpers =====
 
-func (s *nshSession) autoCapturePath(cmdText, host string) string {
+func (s *svshSession) autoCapturePath(cmdText, host string) string {
 	ts := time.Now().Format("20060102-150405.000000000")
 	slug := slugify(cmdText)
 	if host == "" {
@@ -1181,7 +1181,7 @@ func (s *nshSession) autoCapturePath(cmdText, host string) string {
 	return fmt.Sprintf("%s/%s/%s-%s.out", s.outputDir, slugify(host), ts, slug)
 }
 
-func safeNSHUploadPath(name string) (string, error) {
+func safeSVSHUploadPath(name string) (string, error) {
 	name = strings.TrimLeft(strings.ReplaceAll(name, "\\", "/"), "/")
 	parts := strings.Split(name, "/")
 	for _, part := range parts {
@@ -1305,7 +1305,7 @@ func (s *server) resolveKnownTarget(token string) (string, error) {
 	return match, nil
 }
 
-func nshRandomID() string {
+func svshRandomID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)

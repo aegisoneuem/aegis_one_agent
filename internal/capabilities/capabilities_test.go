@@ -51,7 +51,7 @@ func TestListHasCoreTaskTypes(t *testing.T) {
 
 func TestListIsSortedForReadability(t *testing.T) {
 	// We don't REQUIRE alphabetical order; task types are grouped by family
-	// (SoftDist / Patch / Lifecycle / NSH / FeatureFlags). This test just
+	// (SoftDist / Patch / Lifecycle / SVSH / FeatureFlags). This test just
 	// pins that no entry is a trailing whitespace / empty / duplicate.
 	seen := make(map[string]bool, len(supported))
 	for _, s := range supported {

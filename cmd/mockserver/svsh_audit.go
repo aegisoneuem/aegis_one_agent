@@ -25,9 +25,9 @@ type auditQueryPayload struct {
 //
 // Append `rotated` to also scan rotated audit-<ts>.log files. The agent returns
 // metadata only (no secrets); this renders it one event per line, newest-first.
-func (s *nshSession) verbAudit(rest string) {
+func (s *svshSession) verbAudit(rest string) {
 	if len(s.targets) == 0 {
-		s.printf("nsh: no target selected — run `use <host>` first\n")
+		s.printf("svsh: no target selected — run `use <host>` first\n")
 		return
 	}
 	p := auditQueryPayload{Version: 1, Query: auditlog.Query{Mode: "tail", Limit: 20}}
@@ -65,7 +65,7 @@ func (s *nshSession) verbAudit(rest string) {
 			}
 			ms, err := strconv.ParseInt(pos[1], 10, 64)
 			if err != nil {
-				s.printf("nsh: `audit since` needs a unix-millis timestamp\n")
+				s.printf("svsh: `audit since` needs a unix-millis timestamp\n")
 				return
 			}
 			p.Mode = "since"
@@ -79,12 +79,12 @@ func (s *nshSession) verbAudit(rest string) {
 		}
 	}
 	if err := p.Query.Validate(); err != nil {
-		s.printf("nsh: %v\n", err)
+		s.printf("svsh: %v\n", err)
 		return
 	}
 	payload, err := json.Marshal(p)
 	if err != nil {
-		s.printf("nsh: marshal: %v\n", err)
+		s.printf("svsh: marshal: %v\n", err)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (s *nshSession) verbAudit(rest string) {
 }
 
 // renderAuditDetail parses the ActionStatus.Detail event array and prints it.
-func renderAuditDetail(s *nshSession, detail string) {
+func renderAuditDetail(s *svshSession, detail string) {
 	if strings.TrimSpace(detail) == "" {
 		s.printf("  (no matching events)\n")
 		return
@@ -121,7 +121,7 @@ func renderAuditDetail(s *nshSession, detail string) {
 }
 
 // printAuditEvents renders an audit_query ActionStatus.Detail (a JSON event
-// array) for the standalone, non-NSH receive loop. Used by the AEGIS_AUDIT_QUERY
+// array) for the standalone, non-SVSH receive loop. Used by the AEGIS_AUDIT_QUERY
 // env trigger so a tester sees readable rows, not raw JSON.
 func printAuditEvents(detail string) {
 	if strings.TrimSpace(detail) == "" {

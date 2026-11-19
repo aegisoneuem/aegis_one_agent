@@ -1,7 +1,7 @@
-# NSH Test Guide (Tester-Ready)
+# SVSH Test Guide (Tester-Ready)
 
 **Audience:** external QA engineer. No prior Aegis codebase context required.
-**Scope:** Network Shell (NSH) — the operator REPL + non-interactive script
+**Scope:** Network Shell (SVSH) — the operator REPL + non-interactive script
 runner on `mockserver.exe`.
 **Outcome:** every test below should return the stated PASS line. Anything
 else is a FAIL — record it with full stdout/stderr in the Record Sheet.
@@ -14,7 +14,7 @@ else is a FAIL — record it with full stdout/stderr in the Record Sheet.
 
 ## 1. Overview
 
-**NSH = Network Shell.** Yeh ek operator REPL hai jo `mockserver.exe` ke
+**SVSH = Network Shell.** Yeh ek operator REPL hai jo `mockserver.exe` ke
 andar chalta hai. BigFix WebUI / BladeLogic nexec ka equivalent samajh —
 operator ek console (REPL) pe baithta hai, ek ya ek-se-zyada connected
 agents ko ad-hoc commands bhejta hai, aur live stdout/stderr/exit code
@@ -22,37 +22,37 @@ dekhta hai. **Pure text streaming, NO remote-desktop.**
 
 Operator ki saari commands server-side (`mockserver.exe`) interpret hoti
 hain. Agent ko sirf tiny signed `run_command` / `collect_file` /
-`file_operation` tasks milte hain — kabhi `.nsh` script directly agent
+`file_operation` tasks milte hain — kabhi `.svsh` script directly agent
 pe nahi jaata. Yani:
 
 - **Server-side interpreter:** `let`, `foreach`, `if`, `source`, `exec`,
-  `script ... until END`, variables, aliases — sab server (NSH REPL) pe.
+  `script ... until END`, variables, aliases — sab server (SVSH REPL) pe.
 - **Agent-side executor:** server har endpoint-targeted command ko ek
   signed `run_command` ya `file_operation` ya `collect_file` task mein
   pack kar ke bhejta hai; agent apni service identity (LocalSystem) mein
   execute karta hai, output stream kar ke bhejta hai.
 
-Isliye NSH ek **scripting + control** layer hai jo multiple agents ko
+Isliye SVSH ek **scripting + control** layer hai jo multiple agents ko
 coordinate kar sakti hai, lekin har agent se communication kyberically
 signed, mTLS-protected gRPC hi hai.
 
-### NSH ke two modes
+### SVSH ke two modes
 
 | Mode | Launched by | Purpose |
 |---|---|---|
-| **Interactive REPL** | `mockserver.exe nsh` | Operator baithti hai prompt pe, commands type karti hai, output turant dekhti hai |
-| **Non-interactive script** | `mockserver.exe script <file.nsh>` OR `set AEGIS_NSH_SCRIPT=path & mockserver.exe script` | Pre-authored script (same language as REPL) run hota hai, outputs capture hote hain, server exit kar deta hai |
+| **Interactive REPL** | `mockserver.exe svsh` | Operator baithti hai prompt pe, commands type karti hai, output turant dekhti hai |
+| **Non-interactive script** | `mockserver.exe script <file.svsh>` OR `set AEGIS_SVSH_SCRIPT=path & mockserver.exe script` | Pre-authored script (same language as REPL) run hota hai, outputs capture hote hain, server exit kar deta hai |
 
-Dono modes **same engine** chalaate hain (`pkg/nsh` package). Yani
+Dono modes **same engine** chalaate hain (`pkg/svsh` package). Yani
 interactive mein jo kaam karta hai, script mode mein bhi same syntax.
 
-### Why NSH is a dev / admin tool, not a fleet-ops surface
+### Why SVSH is a dev / admin tool, not a fleet-ops surface
 
-NSH **max 100 targets** par cap hai `inventory refresh` jaise commands
+SVSH **max 100 targets** par cap hai `inventory refresh` jaise commands
 mein (reason: parallel polling, bandwidth burst, mock memory). Agar
 50,000-endpoint fleet pe inventory refresh karna ho — woh **server-side
-scheduled operation** hogi (batched waves + rate limiting), NSH se nahi.
-NSH ka purpose: dev debugging, admin ad-hoc, QA testing, ya chhoti scale
+scheduled operation** hogi (batched waves + rate limiting), SVSH se nahi.
+SVSH ka purpose: dev debugging, admin ad-hoc, QA testing, ya chhoti scale
 (sub-100) operator interventions.
 
 ---
@@ -65,36 +65,36 @@ Pull from `dist/` on the handoff repo (or ask Vijay for the latest):
 
 - `AegisOneClient.exe` — agent binary (installed on each endpoint VM)
 - `AegisOneClient.msi` — installer wrapping the agent (preferred install path)
-- `mockserver.exe` — development server + NSH REPL
+- `mockserver.exe` — development server + SVSH REPL
 
 Match versions. Mixing an OLD agent with a NEW mockserver (or vice versa)
-breaks NSH `inventory refresh` / `file_operation` because the signed
+breaks SVSH `inventory refresh` / `file_operation` because the signed
 command types are additive.
 
-### 2.2 How to START NSH — **IMPORTANT**
+### 2.2 How to START SVSH — **IMPORTANT**
 
-> **The CORRECT way is `mockserver.exe nsh` (subcommand).**
+> **The CORRECT way is `mockserver.exe svsh` (subcommand).**
 >
-> There was earlier confusion with an `AEGIS_NSH=1` environment variable
-> — that approach is NOT supported. **Do NOT use any `AEGIS_NSH=1` /
-> `AEGIS_NSH_MODE=interactive` env var.** The `nsh` subcommand on the
+> There was earlier confusion with an `AEGIS_SVSH=1` environment variable
+> — that approach is NOT supported. **Do NOT use any `AEGIS_SVSH=1` /
+> `AEGIS_SVSH_MODE=interactive` env var.** The `svsh` subcommand on the
 > mockserver command line is the only supported start method for
 > interactive mode. Script mode uses the `script` subcommand.
 
 ```bat
 rem Interactive mode — operator sits here:
-mockserver.exe nsh
+mockserver.exe svsh
 
-rem Non-interactive script mode — reads a .nsh file:
-mockserver.exe script C:\tests\myscript.nsh
+rem Non-interactive script mode — reads a .svsh file:
+mockserver.exe script C:\tests\myscript.svsh
 
 rem Or with env var holding the path:
-set AEGIS_NSH_SCRIPT=C:\tests\myscript.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\myscript.svsh
 mockserver.exe script
 ```
 
 Plain `mockserver.exe` (no subcommand) stays in normal server mode and
-does NOT auto-drop into NSH, even if the AEGIS_NSH env vars are set.
+does NOT auto-drop into SVSH, even if the AEGIS_SVSH env vars are set.
 
 ### 2.3 VM / endpoint requirements
 
@@ -106,7 +106,7 @@ does NOT auto-drop into NSH, even if the AEGIS_NSH env vars are set.
 - Admin rights on the VM to:
   - Install the MSI (`msiexec /i AegisOneClient.msi ...`)
   - Start/stop the `AegisOneClient` service (`sc stop/start`)
-  - Create test directories like `C:\temp\AegisNSH-...`
+  - Create test directories like `C:\temp\AegisSVSH-...`
 
 ### 2.4 Mockserver machine requirements
 
@@ -117,7 +117,7 @@ does NOT auto-drop into NSH, even if the AEGIS_NSH env vars are set.
     from the agent VMs
 - A directory to run `mockserver.exe` from. Agent uploads land under
   `<mockserver-launch-dir>/uploads/<computer_id>/<output-dir>/<host>/`.
-  Default output-dir = `nsh`. Pick a disposable dir like
+  Default output-dir = `svsh`. Pick a disposable dir like
   `C:\test-mockserver\`.
 
 ### 2.5 Certificates and enrollment
@@ -189,18 +189,18 @@ Mockserver + agent use mTLS. For a fresh test setup you need:
    Expected: lines showing `agent connected device_id=...` and periodic
    `heartbeat sent`.
 
-### 3.2 Start the mockserver + NSH REPL
+### 3.2 Start the mockserver + SVSH REPL
 
 On the mockserver machine, from the launch directory:
 
 ```bat
 cd C:\test-mockserver
-mockserver.exe nsh
+mockserver.exe svsh
 ```
 
 **Expected first-line output** (within 1-5 seconds):
 ```
-nsh>
+svsh>
 ```
 
 Confirm the agent connected by checking the mock's log:
@@ -209,10 +209,10 @@ type logs\mockserver.log | findstr /i "connected"
 ```
 Expected: `agent connected device_id=<some-uuid> hostname=<vm-hostname>`.
 
-### 3.3 Verify basic connection from NSH
+### 3.3 Verify basic connection from SVSH
 
 ```
-nsh> hosts
+svsh> hosts
 ```
 
 Expected: a table with your VM's hostname, device_id, computer_id, and
@@ -223,29 +223,29 @@ check firewall / cert / enroll_token on the VM.
 
 ### 3.4 Prepare a scratch folder on the endpoint
 
-In NSH:
+In SVSH:
 ```
-nsh> cd \\<your-vm-hostname>
+svsh> cd \\<your-vm-hostname>
 <vm-hostname>> use powershell
-<vm-hostname>> mkdir C:\temp\nsh-test
+<vm-hostname>> mkdir C:\temp\svsh-test
 ```
 
 Expected: a OK footer `(exit=0, <ms>)`. Verify on the VM:
 ```powershell
-Test-Path C:\temp\nsh-test   # True
+Test-Path C:\temp\svsh-test   # True
 ```
 
 Setup complete. Move to §5 test matrix.
 
 ---
 
-## 4. How to read this guide — NSH prompt and command notation
+## 4. How to read this guide — SVSH prompt and command notation
 
-### 4.1 NSH prompts
+### 4.1 SVSH prompts
 
 | Prompt | Meaning |
 |---|---|
-| `nsh> ` | No target selected. Verbs like `hosts`, `search`, `cd`, `source` work; endpoint commands refused. |
+| `svsh> ` | No target selected. Verbs like `hosts`, `search`, `cd`, `source` work; endpoint commands refused. |
 | `<hostname>> ` | One target selected via `cd \\<hostname>`. Endpoint commands (hostname, dir, etc.) run on that host. |
 | `[N hosts]> ` | N > 1 targets selected (via `cd *`, `cd \\a,b`, group names). Single commands refused — use `fanout`. |
 | `...> ` | Inside an open block (foreach / for / if). Type the body, finish with `end`. |
@@ -260,14 +260,14 @@ Setup complete. Move to §5 test matrix.
 \\*\c\temp\                     # all currently online agents
 ```
 
-> **IMPORTANT:** these are **NSH managed-device paths** — they resolve
+> **IMPORTANT:** these are **SVSH managed-device paths** — they resolve
 > to enrolled agents known to the server. They are NOT SMB share
 > paths. `\\mockserver\c\...` means "endpoint named mockserver",
 > NOT the mockserver process local disk.
 
 ### 4.3 Verb → task-type mapping (for debugging)
 
-| NSH verb | Agent task type sent | Notes |
+| SVSH verb | Agent task type sent | Notes |
 |---|---|---|
 | `run` / `hostname` / `dir` / etc. | `run_command` | one-shot execution |
 | `exec <local.ps1>` | `run_command` (encoded script content) | server reads local file, substitutes vars, encodes |
@@ -306,11 +306,11 @@ new UC-18 / UC-19 scope is called out explicitly in §5.8.
 
 **STEPS:**
 ```
-nsh> hosts
-nsh> hosts --status online --limit 5
-nsh> hosts --status offline
-nsh> hosts host=win11
-nsh> hosts --page 2
+svsh> hosts
+svsh> hosts --status online --limit 5
+svsh> hosts --status offline
+svsh> hosts host=win11
+svsh> hosts --page 2
 ```
 
 **EXPECTED:**
@@ -330,7 +330,7 @@ printing an unbounded dump.
 
 **STEPS:**
 ```
-nsh> cd \\<your-vm-hostname>
+svsh> cd \\<your-vm-hostname>
 <vm-hostname>> hostname
 ```
 
@@ -347,14 +347,14 @@ use `fanout`.
 
 **STEPS:**
 ```
-nsh> cd *
+svsh> cd *
 [N hosts]> hostname
 ```
 
 **EXPECTED:**
 - Prompt: `[N hosts]> ` (N = count of online agents)
 - `hostname` is REFUSED with
-  `nsh: N targets selected; use fanout <cmd> for multi-target`
+  `svsh: N targets selected; use fanout <cmd> for multi-target`
 
 **PASS:** Single-command refusal happens cleanly.
 
@@ -375,10 +375,10 @@ FIRST LINE.
 
 **STEPS:**
 ```
-nsh> cd \\does-not-exist
+svsh> cd \\does-not-exist
 ```
 
-**EXPECTED:** `nsh: unknown device: does-not-exist`.
+**EXPECTED:** `svsh: unknown device: does-not-exist`.
 Prior selection (if any) is preserved.
 
 **PASS:** Clean error, no stack trace, no silent accept.
@@ -387,7 +387,7 @@ Prior selection (if any) is preserved.
 
 **STEPS:**
 ```
-nsh> cd \\<vm-hostname>
+svsh> cd \\<vm-hostname>
 <vm-hostname>> use powershell
 <vm-hostname>> Get-Service wuauserv | Select-Object -ExpandProperty Status
 <vm-hostname>> use cmd
@@ -436,7 +436,7 @@ that survives commands and host switches.
 
 **STEPS** (requires `C:\temp` on the VM):
 ```
-nsh> cd \\<vm-hostname>
+svsh> cd \\<vm-hostname>
 <vm-hostname>> use powershell
 <vm-hostname>> cd C:\temp
 <vm-hostname>> pwd
@@ -460,7 +460,7 @@ If a 2nd VM is available:
 ```
 
 **EXPECTED:** CWD is **per-endpoint**, not per-session.
-`cd \\` returns to `nsh>` with no target.
+`cd \\` returns to `svsh>` with no target.
 
 **PASS:** CWD persistence works per endpoint, invalid-path safe,
 host switch preserves state.
@@ -472,16 +472,16 @@ fails immediately as offline (no fleet wait).
 
 **STEPS:**
 1. Stop the agent service on the VM: `sc stop AegisOneClient`.
-2. In NSH:
+2. In SVSH:
 ```
-nsh> cd \\<vm-hostname>
+svsh> cd \\<vm-hostname>
 <vm-hostname>> hostname
 ```
 
 **EXPECTED:**
 - `cd` succeeds even though device is OFFLINE.
 - `hostname` fails IMMEDIATELY with
-  `nsh: <vm-hostname> is OFFLINE; command not sent (no fleet/heartbeat wait)`.
+  `svsh: <vm-hostname> is OFFLINE; command not sent (no fleet/heartbeat wait)`.
 
 Restart agent (`sc start AegisOneClient`), wait 15-30s, retry `hostname`
 — must work without reselecting.
@@ -495,20 +495,20 @@ cleanly, auto-recovery on reconnect works.
 
 > **Mock upload layout:** files land at
 > `<mockserver-launch-dir>/uploads/<computer_id>/<output-dir>/<hostname>/<filename>`.
-> Default output-dir = `nsh`. Repeated filenames get suffixed to avoid
+> Default output-dir = `svsh`. Repeated filenames get suffixed to avoid
 > clobbering.
 
 #### B1 — `grab` saves stdout as a server-side file
 
 **STEPS:**
 ```
-nsh> cd \\<vm-hostname>
+svsh> cd \\<vm-hostname>
 <vm-hostname>> use cmd
 <vm-hostname>> grab \out\winini.txt type C:\Windows\win.ini
 ```
 
 **EXPECTED:** Footer line
-`---- saved to uploads/<cid>/nsh/<vm-hostname>/out/winini.txt`.
+`---- saved to uploads/<cid>/svsh/<vm-hostname>/out/winini.txt`.
 
 File exists at that path on the mockserver machine and contains the
 `win.ini` text.
@@ -525,7 +525,7 @@ File exists at that path on the mockserver machine and contains the
 ```
 
 **EXPECTED:**
-- `echo` footer: `saved to uploads/<cid>/nsh/<vm-hostname>/<ts>-echo_capture-check.out`.
+- `echo` footer: `saved to uploads/<cid>/svsh/<vm-hostname>/<ts>-echo_capture-check.out`.
 - `tasklist` similarly auto-saved with its own timestamped filename.
 
 **PASS:** Auto-capture creates one file per command.
@@ -540,14 +540,14 @@ Reset: `set capture off`.
 
 **STEPS:**
 ```
-nsh> cd *
-nsh> set capture on
+svsh> cd *
+svsh> set capture on
 [2 hosts]> fanout hostname
 ```
 
 **EXPECTED:** fanout table shows TWO rows. SAVED column shows different
-paths like `uploads/<cid-A>/nsh/<hostA>/...` and
-`uploads/<cid-B>/nsh/<hostB>/...`.
+paths like `uploads/<cid-A>/svsh/<hostA>/...` and
+`uploads/<cid-B>/svsh/<hostB>/...`.
 
 **PASS:** No file collision, each host has its own save path.
 
@@ -561,10 +561,10 @@ Reset: `set capture off`.
 ```
 
 **EXPECTED:** `hosts.txt` lands at
-`uploads/<cid>/nsh/<vm-hostname>/hosts.txt`.
+`uploads/<cid>/svsh/<vm-hostname>/hosts.txt`.
 Byte-for-byte match with the endpoint file:
 ```bat
-fc /b uploads\<cid>\nsh\<vm-hostname>\hosts.txt C:\Windows\System32\drivers\etc\hosts
+fc /b uploads\<cid>\svsh\<vm-hostname>\hosts.txt C:\Windows\System32\drivers\etc\hosts
 ```
 
 **Also try:** a binary file (e.g. a small .exe), a quoted path with spaces.
@@ -585,8 +585,8 @@ fc /b uploads\<cid>\nsh\<vm-hostname>\hosts.txt C:\Windows\System32\drivers\etc\
 
 **STEPS:**
 ```
-nsh> set output-dir reports\daily
-nsh> set capture on
+svsh> set output-dir reports\daily
+svsh> set capture on
 <vm-hostname>> hostname
 ```
 
@@ -595,7 +595,7 @@ nsh> set capture on
 
 **PASS:** New prefix honored.
 
-**Cleanup:** `set output-dir nsh` and `set capture off`.
+**Cleanup:** `set output-dir svsh` and `set capture off`.
 
 ---
 
@@ -603,13 +603,13 @@ nsh> set capture on
 
 #### C1 — `let` + `${VAR}` substitutes on the server BEFORE sending
 
-**GOAL:** NSH variables are resolved on the mockserver, not on the
+**GOAL:** SVSH variables are resolved on the mockserver, not on the
 endpoint. Agent sees the final text.
 
 **STEPS:**
 ```
-nsh> let TAG = prod-fleet
-nsh> cd \\<vm-hostname>
+svsh> let TAG = prod-fleet
+svsh> cd \\<vm-hostname>
 <vm-hostname>> echo tag is ${TAG}
 ```
 
@@ -623,8 +623,8 @@ Check the agent log — the command received was already
 
 **STEPS:**
 ```
-nsh> let USR = ${env:USERNAME}
-nsh> vars
+svsh> let USR = ${env:USERNAME}
+svsh> vars
 ```
 
 **EXPECTED:** `vars` lists `USR = <mockserver-machine-username>` (NOT
@@ -645,14 +645,14 @@ the endpoint username).
 
 **PASS:** All five last-result vars present.
 
-#### C4 — NSH vars become `AEGIS_PARAM_<NAME>` env vars on endpoint
+#### C4 — SVSH vars become `AEGIS_PARAM_<NAME>` env vars on endpoint
 
-**GOAL:** Pre-staged scripts on the endpoint can read NSH-authored
+**GOAL:** Pre-staged scripts on the endpoint can read SVSH-authored
 parameters without touching the command string.
 
 **STEPS:**
 ```
-nsh> let CUSTOMER = acme
+svsh> let CUSTOMER = acme
 <vm-hostname>> use powershell
 <vm-hostname>> Write-Host "customer env = $env:AEGIS_PARAM_CUSTOMER"
 ```
@@ -671,8 +671,8 @@ nsh> let CUSTOMER = acme
 
 **STEPS:**
 ```
-nsh> use powershell
-nsh> foreach host in *
+svsh> use powershell
+svsh> foreach host in *
 ...>   log "checking ${host}"
 ...>   grab status.txt Get-Service wuauserv
 ...> end
@@ -680,9 +680,9 @@ nsh> foreach host in *
 
 **EXPECTED:**
 - Two log lines (one per host).
-- Two `SAVED` paths at `uploads/<cid-X>/nsh/<hostX>/status.txt`.
+- Two `SAVED` paths at `uploads/<cid-X>/svsh/<hostX>/status.txt`.
 - No collision between host files.
-- Prompt returns to `nsh>` after `end`.
+- Prompt returns to `svsh>` after `end`.
 
 **PASS:** Loop iterates per host, independent files per host.
 
@@ -709,7 +709,7 @@ Repeat with `dir C:\` → `OK`.
 
 **STEPS:**
 ```
-nsh> for X in 1 2 3
+svsh> for X in 1 2 3
 ...>   foreach host in *
 ...>     log "X=${X} host=${host}"
 ...>   end
@@ -725,7 +725,7 @@ deterministic; across the fanout it may be concurrent.
 
 **STEPS:**
 ```
-nsh> for X in 1 2 3 4
+svsh> for X in 1 2 3 4
 ...>   if $X == 3
 ...>     log "break at 3"
 ...>     break
@@ -740,8 +740,8 @@ nsh> for X in 1 2 3 4
 
 #### D5 — `on-error continue` in script mode
 
-Save `C:\tests\on-error.nsh`:
-```nsh
+Save `C:\tests\on-error.svsh`:
+```svsh
 on-error continue
 cd \\<vm-hostname>
 dir Z:\nope
@@ -751,7 +751,7 @@ hostname
 
 Run:
 ```bat
-set AEGIS_NSH_SCRIPT=C:\tests\on-error.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\on-error.svsh
 mockserver.exe script
 ```
 
@@ -768,9 +768,9 @@ mockserver.exe script
 
 **STEPS:**
 ```
-nsh> use powershell
-nsh> alias def = Get-MpComputerStatus | Select-Object AMEngineVersion
-nsh> cd \\<vm-hostname>
+svsh> use powershell
+svsh> alias def = Get-MpComputerStatus | Select-Object AMEngineVersion
+svsh> cd \\<vm-hostname>
 <vm-hostname>> def
 ```
 
@@ -779,19 +779,19 @@ nsh> cd \\<vm-hostname>
 
 **PASS:** Alias expanded correctly.
 
-#### E2 — `source <file.nsh>` includes another script (vars/aliases survive)
+#### E2 — `source <file.svsh>` includes another script (vars/aliases survive)
 
-Save `C:\tests\vars.nsh`:
-```nsh
+Save `C:\tests\vars.svsh`:
+```svsh
 let REGION = us-east-1
 alias def = Get-MpComputerStatus
 ```
 
 Interactive:
 ```
-nsh> source C:\tests\vars.nsh
-nsh> vars
-nsh> echo region=${REGION}
+svsh> source C:\tests\vars.svsh
+svsh> vars
+svsh> echo region=${REGION}
 ```
 
 **EXPECTED:**
@@ -804,7 +804,7 @@ nsh> echo region=${REGION}
 
 **STEPS:**
 ```
-nsh> history
+svsh> history
 ```
 
 **EXPECTED:** Numbered list of recent commands.
@@ -815,12 +815,12 @@ nsh> history
 
 **STEPS:**
 ```
-nsh> set session-log C:\tests\nsh-session.log
-nsh> hostname
+svsh> set session-log C:\tests\svsh-session.log
+svsh> hostname
 ```
 
 **EXPECTED:**
-- `C:\tests\nsh-session.log` grows with each typed line.
+- `C:\tests\svsh-session.log` grows with each typed line.
 - Opens with a `=== session resumed ===` header.
 
 **PASS:** Session log captures lines with timestamps.
@@ -839,8 +839,8 @@ Get-Service wuauserv | Select-Object Status
 ```
 
 ```
-nsh> let TAG = daily-21oct
-nsh> cd \\<vm-hostname>
+svsh> let TAG = daily-21oct
+svsh> cd \\<vm-hostname>
 <vm-hostname>> exec C:\tests\check.ps1
 ```
 
@@ -890,10 +890,10 @@ print("py tag =", os.environ.get("AEGIS_PARAM_TAG"))
 
 **STEPS:**
 ```
-nsh> exec C:\does\not\exist.ps1
+svsh> exec C:\does\not\exist.ps1
 ```
 
-**EXPECTED:** `nsh: exec: read C:\does\not\exist.ps1: ...`.
+**EXPECTED:** `svsh: exec: read C:\does\not\exist.ps1: ...`.
 
 **PASS:** Clean file-not-found error.
 
@@ -909,8 +909,8 @@ the delimiter alone on its own line. **Do not re-type the opener.**
 
 **STEPS:**
 ```
-nsh> let REGION = us-west-1
-nsh> cd \\<vm-hostname>
+svsh> let REGION = us-west-1
+svsh> cd \\<vm-hostname>
 <vm-hostname>> script powershell until EOT
           Write-Host "REGION=${REGION}"
           Write-Host "HOST=$env:COMPUTERNAME"
@@ -928,8 +928,8 @@ nothing new under `C:\Windows\Temp\`).
 
 **Requires:** 2 agents.
 
-Save `C:\tests\fleet-herdoc.nsh`:
-```nsh
+Save `C:\tests\fleet-herdoc.svsh`:
+```svsh
 let REGION = ${env:REGION}
 use powershell
 on-error continue
@@ -946,13 +946,13 @@ end
 Run:
 ```bat
 set REGION=apac
-set AEGIS_NSH_SCRIPT=C:\tests\fleet-herdoc.nsh
+set AEGIS_SVSH_SCRIPT=C:\tests\fleet-herdoc.svsh
 mockserver.exe script
 ```
 
 **EXPECTED:**
 - Each host prints its name + `region=apac` + engine version.
-- Per-host files under `uploads/<cid>/nsh/<host>/*.out` with no collision.
+- Per-host files under `uploads/<cid>/svsh/<host>/*.out` with no collision.
 
 **PASS:** Fleet-wide HEREDOC + variable + capture all work.
 
@@ -991,7 +991,7 @@ No misleading OK after an unhandled PowerShell error.
 ```
 
 **EXPECTED:** PowerShell runs; output is `after blank`. The blank
-line and `#` comment are preserved WITHIN the heredoc body (NSH
+line and `#` comment are preserved WITHIN the heredoc body (SVSH
 doesn't strip them — PowerShell's own parser treats `#` as its
 comment char).
 
@@ -1001,7 +1001,7 @@ comment char).
 
 ### 5.8 — Section H: Inventory (UC-18, UC-19)
 
-**Context:** As of 2026-11-02, NSH gained two inventory verbs tied
+**Context:** As of 2026-11-02, SVSH gained two inventory verbs tied
 to the DeviceStateReport pipeline. UC-18 shipped third-party
 installed-apps inventory via `DeviceStateReport.installed_apps`.
 UC-19 added HKU per-user Uninstall hive enumeration + on-demand
@@ -1014,7 +1014,7 @@ for the selected target(s).
 
 **STEPS:**
 ```
-nsh> cd \\<vm-hostname>
+svsh> cd \\<vm-hostname>
 <vm-hostname>> inventory apps
 ```
 
@@ -1053,9 +1053,9 @@ resets the fingerprint and triggers an immediate DeviceStateReport.
 
 **EXPECTED (within 5s):**
 ```
-nsh: refresh dispatched to 1 target(s), waiting up to 5s (shared deadline)...
+svsh: refresh dispatched to 1 target(s), waiting up to 5s (shared deadline)...
 <vm-hostname>: fresh inventory (N apps, collected_at=<unix-ts>)
-nsh: refresh complete — 1/1 received, 0 timed out — run `inventory apps` to view
+svsh: refresh complete — 1/1 received, 0 timed out — run `inventory apps` to view
 ```
 
 **Verify on agent log** at `C:\Program Files\AegisOne\Client\SKVC\logs\agent.log`:
@@ -1082,14 +1082,14 @@ nsh: refresh complete — 1/1 received, 0 timed out — run `inventory apps` to 
 <vm-hostname>> inventory refresh --timeout abc
 ```
 
-**EXPECTED:** `nsh: inventory refresh: --timeout expects a positive integer (seconds)`.
+**EXPECTED:** `svsh: inventory refresh: --timeout expects a positive integer (seconds)`.
 
 **STEPS:**
 ```
 <vm-hostname>> inventory refresh --fast
 ```
 
-**EXPECTED:** `nsh: inventory refresh: unknown argument "--fast" (use --timeout <seconds>)`.
+**EXPECTED:** `svsh: inventory refresh: unknown argument "--fast" (use --timeout <seconds>)`.
 
 **PASS:** Both clean errors; no crash.
 
@@ -1097,7 +1097,7 @@ nsh: refresh complete — 1/1 received, 0 timed out — run `inventory apps` to 
 
 **STEPS:**
 1. Stop agent service: `sc stop AegisOneClient`.
-2. In NSH:
+2. In SVSH:
 ```
 <vm-hostname>> inventory refresh
 ```
@@ -1137,17 +1137,17 @@ Restart agent (`sc start AegisOneClient`), wait for reconnect, re-run — must w
 
 **STEPS:**
 ```
-nsh> inventory refresh
+svsh> inventory refresh
 ```
 (Without any prior `cd`.)
 
-**EXPECTED:** `nsh: inventory refresh requires a cd target (or -t <host>)`.
+**EXPECTED:** `svsh: inventory refresh requires a cd target (or -t <host>)`.
 
 **PASS:** Clear instruction, no crash.
 
 #### H9 — 100-target cap (code-reviewed; not VM-testable with 1 agent)
 
-**NOTE:** NSH refuses `inventory refresh` with >100 targets because NSH
+**NOTE:** SVSH refuses `inventory refresh` with >100 targets because SVSH
 is a dev/admin tool, not a fleet-ops surface. Fleet-wide refresh is a
 server-side scheduled operation (batched waves + rate limiting). The
 agent-side `report_device_state` handler is identical; only the
@@ -1157,8 +1157,8 @@ If your mock supports simulating 101+ targets:
 ```
 [101 hosts]> inventory refresh
 ```
-**EXPECTED:** `nsh: inventory refresh refuses more than 100 targets
-(you have 101). NSH is a dev/admin tool. Use the server-side scheduled
+**EXPECTED:** `svsh: inventory refresh refuses more than 100 targets
+(you have 101). SVSH is a dev/admin tool. Use the server-side scheduled
 fleet refresh instead ...`.
 
 If 101+ agents not simulatable → SKIP, verify by code review.
@@ -1171,7 +1171,7 @@ If 101+ agents not simulatable → SKIP, verify by code review.
 
 **STEPS:**
 ```
-nsh> inventory apps
+svsh> inventory apps
 ```
 (With no `cd` — mock prints fleet summary.)
 
@@ -1183,21 +1183,21 @@ that has reported.
 
 ---
 
-### 5.9 — Section I: File operations (nsh-file-operations)
+### 5.9 — Section I: File operations (svsh-file-operations)
 
-> All file tests use `C:\temp\nsh-test-<date>` — a disposable
+> All file tests use `C:\temp\svsh-test-<date>` — a disposable
 > folder. DO NOT substitute production directories.
 
 #### I1 — Prepare source data
 
 **STEPS:**
 ```
-nsh> set capture off
-nsh> cd \\<vm-hostname>
+svsh> set capture off
+svsh> cd \\<vm-hostname>
 <vm-hostname>> use powershell
-<vm-hostname>> mkdir C:\temp\nsh-test-20261102
-<vm-hostname>> Set-Content -LiteralPath C:\temp\nsh-test-20261102\loop.txt -Value 'NSH transfer check'
-<vm-hostname>> mkdir \\<vm-hostname>,<other-vm>\c\temp\nsh-test-20261102\out
+<vm-hostname>> mkdir C:\temp\svsh-test-20261102
+<vm-hostname>> Set-Content -LiteralPath C:\temp\svsh-test-20261102\loop.txt -Value 'SVSH transfer check'
+<vm-hostname>> mkdir \\<vm-hostname>,<other-vm>\c\temp\svsh-test-20261102\out
 ```
 
 **EXPECTED:** Both VMs have the `out` subfolder; source VM has
@@ -1209,13 +1209,13 @@ nsh> cd \\<vm-hostname>
 
 **STEPS:**
 ```
-<vm-hostname>> copy \\<vm-hostname>\c\temp\nsh-test-20261102\loop.txt \\<vm-hostname>\c\temp\nsh-test-20261102\out\
+<vm-hostname>> copy \\<vm-hostname>\c\temp\svsh-test-20261102\loop.txt \\<vm-hostname>\c\temp\svsh-test-20261102\out\
 ```
 
 **EXPECTED:** `loop.txt` appears under `out/`. Compare SHA-256:
 ```powershell
-Get-FileHash C:\temp\nsh-test-20261102\loop.txt
-Get-FileHash C:\temp\nsh-test-20261102\out\loop.txt
+Get-FileHash C:\temp\svsh-test-20261102\loop.txt
+Get-FileHash C:\temp\svsh-test-20261102\out\loop.txt
 # Hashes must match
 ```
 
@@ -1225,7 +1225,7 @@ Get-FileHash C:\temp\nsh-test-20261102\out\loop.txt
 
 **STEPS:**
 ```
-<vm-hostname>> copy \\<vm-hostname>\c\temp\nsh-test-20261102\loop.txt \\<vm-hostname>\c\temp\nsh-test-20261102\out\
+<vm-hostname>> copy \\<vm-hostname>\c\temp\svsh-test-20261102\loop.txt \\<vm-hostname>\c\temp\svsh-test-20261102\out\
 ```
 (Same command as I2.)
 
@@ -1237,7 +1237,7 @@ Get-FileHash C:\temp\nsh-test-20261102\out\loop.txt
 
 **STEPS:**
 ```
-<vm-hostname>> copy --overwrite \\<vm-hostname>\c\temp\nsh-test-20261102\loop.txt \\<vm-hostname>\c\temp\nsh-test-20261102\out\
+<vm-hostname>> copy --overwrite \\<vm-hostname>\c\temp\svsh-test-20261102\loop.txt \\<vm-hostname>\c\temp\svsh-test-20261102\out\
 ```
 
 **EXPECTED:** OK, bytes identical.
@@ -1248,7 +1248,7 @@ Get-FileHash C:\temp\nsh-test-20261102\out\loop.txt
 
 **STEPS:**
 ```
-<vm-hostname>> copy \\<vm-hostname>\c\temp\nsh-test-20261102\loop.txt \\<other-vm>\c\temp\nsh-test-20261102\out\
+<vm-hostname>> copy \\<vm-hostname>\c\temp\svsh-test-20261102\loop.txt \\<other-vm>\c\temp\svsh-test-20261102\out\
 ```
 
 **EXPECTED:** File lands on the second VM. Verify SHA-256 matches
@@ -1260,7 +1260,7 @@ source.
 
 **STEPS:**
 ```
-<vm-hostname>> copy \\<vm-hostname>\c\temp\nsh-test-20261102\loop.txt \\<vm-hostname>,<other-vm>\c\temp\nsh-test-20261102\out2\
+<vm-hostname>> copy \\<vm-hostname>\c\temp\svsh-test-20261102\loop.txt \\<vm-hostname>,<other-vm>\c\temp\svsh-test-20261102\out2\
 ```
 
 **EXPECTED:** Both hosts receive the file. Source exported once,
@@ -1272,10 +1272,10 @@ delivered to both. Source retained.
 
 **STEPS:**
 ```
-<vm-hostname>> mkdir C:\temp\nsh-test-20261102\reports
-<vm-hostname>> Set-Content C:\temp\nsh-test-20261102\reports\a.txt "A"
-<vm-hostname>> Set-Content C:\temp\nsh-test-20261102\reports\b.txt "B"
-<vm-hostname>> copy -r \\<vm-hostname>\c\temp\nsh-test-20261102\reports \\<other-vm>\c\temp\nsh-test-20261102\
+<vm-hostname>> mkdir C:\temp\svsh-test-20261102\reports
+<vm-hostname>> Set-Content C:\temp\svsh-test-20261102\reports\a.txt "A"
+<vm-hostname>> Set-Content C:\temp\svsh-test-20261102\reports\b.txt "B"
+<vm-hostname>> copy -r \\<vm-hostname>\c\temp\svsh-test-20261102\reports \\<other-vm>\c\temp\svsh-test-20261102\
 ```
 
 **EXPECTED:** `reports/` dir with `a.txt` and `b.txt` on destination.
@@ -1286,7 +1286,7 @@ delivered to both. Source retained.
 
 **STEPS:**
 ```
-<vm-hostname>> copy \\<vm-hostname>\c\temp\nsh-test-20261102\reports\*.txt \\<other-vm>\c\temp\nsh-test-20261102\globbed\
+<vm-hostname>> copy \\<vm-hostname>\c\temp\svsh-test-20261102\reports\*.txt \\<other-vm>\c\temp\svsh-test-20261102\globbed\
 ```
 
 **EXPECTED:** Only `.txt` files copied.
@@ -1297,8 +1297,8 @@ delivered to both. Source retained.
 
 Create a disposable `move-me.txt`:
 ```
-<vm-hostname>> Set-Content C:\temp\nsh-test-20261102\move-me.txt "move this"
-<vm-hostname>> move \\<vm-hostname>\c\temp\nsh-test-20261102\move-me.txt \\<other-vm>\c\temp\nsh-test-20261102\moved\
+<vm-hostname>> Set-Content C:\temp\svsh-test-20261102\move-me.txt "move this"
+<vm-hostname>> move \\<vm-hostname>\c\temp\svsh-test-20261102\move-me.txt \\<other-vm>\c\temp\svsh-test-20261102\moved\
 ```
 
 **EXPECTED:**
@@ -1312,7 +1312,7 @@ Create a disposable `move-me.txt`:
 
 **STEPS:**
 ```
-<vm-hostname>> mkdir \\<vm-hostname>,<other-vm>\c\temp\nsh-test-20261102\deep\nested\dir
+<vm-hostname>> mkdir \\<vm-hostname>,<other-vm>\c\temp\svsh-test-20261102\deep\nested\dir
 ```
 
 **EXPECTED:** Full chain created on both hosts.
@@ -1323,8 +1323,8 @@ Create a disposable `move-me.txt`:
 
 **STEPS:**
 ```
-<vm-hostname>> touch \\<vm-hostname>,<other-vm>\c\temp\nsh-test-20261102\empty.txt
-<vm-hostname>> touch \\<vm-hostname>\c\temp\nsh-test-20261102\empty.txt
+<vm-hostname>> touch \\<vm-hostname>,<other-vm>\c\temp\svsh-test-20261102\empty.txt
+<vm-hostname>> touch \\<vm-hostname>\c\temp\svsh-test-20261102\empty.txt
 ```
 
 **EXPECTED:**
@@ -1337,10 +1337,10 @@ Create a disposable `move-me.txt`:
 
 **STEPS:**
 ```
-<vm-hostname>> delete \\<vm-hostname>,<other-vm>\c\temp\nsh-test-20261102\empty.txt
-<vm-hostname>> delete \\<vm-hostname>\c\temp\nsh-test-20261102\reports\*.txt
-<vm-hostname>> delete -r \\<vm-hostname>\c\temp\nsh-test-20261102\reports
-<vm-hostname>> delete \\<vm-hostname>\c\temp\nsh-test-20261102\reports   # must fail without -r
+<vm-hostname>> delete \\<vm-hostname>,<other-vm>\c\temp\svsh-test-20261102\empty.txt
+<vm-hostname>> delete \\<vm-hostname>\c\temp\svsh-test-20261102\reports\*.txt
+<vm-hostname>> delete -r \\<vm-hostname>\c\temp\svsh-test-20261102\reports
+<vm-hostname>> delete \\<vm-hostname>\c\temp\svsh-test-20261102\reports   # must fail without -r
 ```
 
 **EXPECTED:**
@@ -1354,9 +1354,9 @@ Create a disposable `move-me.txt`:
 
 **STEPS:**
 ```
-nsh> set file-workers 2
-nsh> set file-max-bytes 10485760   # 10 MiB
-nsh> set file-max-files 100
+svsh> set file-workers 2
+svsh> set file-max-bytes 10485760   # 10 MiB
+svsh> set file-max-files 100
 ```
 
 **EXPECTED:** Settings accepted. Try a copy exceeding one of the caps
@@ -1403,10 +1403,10 @@ per direction.
 
 ### 5.11 — Section K: Fleet operations
 
-> **Fleet-scale WARNING:** NSH is not a 50k-endpoint ops tool. The
+> **Fleet-scale WARNING:** SVSH is not a 50k-endpoint ops tool. The
 > 100-target cap on `inventory refresh` is intentional. Fleet ops
 > like scheduled refresh, mass deploy, etc. are server-side scheduled
-> operations outside NSH's scope.
+> operations outside SVSH's scope.
 
 #### K1 — `fanout <cmd>` serializes stdout per host
 
@@ -1414,7 +1414,7 @@ per direction.
 
 **STEPS:**
 ```
-nsh> cd *
+svsh> cd *
 [2 hosts]> fanout hostname
 ```
 
@@ -1422,10 +1422,10 @@ nsh> cd *
 
 **PASS:**.
 
-#### K2 — `job run <file.nsh>` runs a script against selected targets
+#### K2 — `job run <file.svsh>` runs a script against selected targets
 
-Save `C:\tests\job-check.nsh`:
-```nsh
+Save `C:\tests\job-check.svsh`:
+```svsh
 use powershell
 on-error continue
 foreach host in *
@@ -1438,14 +1438,14 @@ end
 ```
 
 ```
-nsh> cd \\<vm-hostname>
-<vm-hostname>> job run C:\tests\job-check.nsh --param TAG=script-test
+svsh> cd \\<vm-hostname>
+<vm-hostname>> job run C:\tests\job-check.svsh --param TAG=script-test
 ```
 
 **EXPECTED:**
 - Script runs for the selected target(s).
 - Terminal reports `JOB SUCCESS/FAILED/CANCELLED` footer.
-- Result file at `logs/nsh-jobs/<job-id>.json` on the mockserver.
+- Result file at `logs/svsh-jobs/<job-id>.json` on the mockserver.
 - Capture OFF by default (unless `--capture` or `set capture on`).
 
 **PASS:** Job completed with structured result.
@@ -1453,9 +1453,9 @@ nsh> cd \\<vm-hostname>
 #### K3 — `job run --kind software_distribution`
 
 Same script, different kind label (used in production for
-SoftDist NSH script actions):
+SoftDist SVSH script actions):
 ```
-<vm-hostname>> job run C:\tests\job-check.nsh --kind software_distribution --param TAG=softdist-test
+<vm-hostname>> job run C:\tests\job-check.svsh --kind software_distribution --param TAG=softdist-test
 ```
 
 **EXPECTED:** Same behavior, result labels `kind=software_distribution`.
@@ -1466,7 +1466,7 @@ SoftDist NSH script actions):
 
 **STEPS:**
 ```
-<vm-hostname>> job run C:\tests\job-check.nsh --param TAG=t --timeout 120
+<vm-hostname>> job run C:\tests\job-check.svsh --param TAG=t --timeout 120
 ```
 
 **EXPECTED:** Job honors 120s deadline (default is 1800s).
@@ -1477,8 +1477,8 @@ SoftDist NSH script actions):
 
 Requires 2 agents.
 ```
-nsh> cd \\<vm-hostname>,<other-vm>
-[2 hosts]> job run C:\tests\job-check.nsh --param TAG=fleet-test
+svsh> cd \\<vm-hostname>,<other-vm>
+[2 hosts]> job run C:\tests\job-check.svsh --param TAG=fleet-test
 ```
 
 **EXPECTED:** Each selected target has a terminal result. No unselected
@@ -1490,9 +1490,9 @@ not affected by the job.
 #### K6 — Non-interactive script mode
 
 ```bat
-set AEGIS_NSH_SCRIPT=C:\tests\job-check.nsh
-set AEGIS_NSH_JOB_PARAMS=TAG=env-test
-set AEGIS_NSH_TARGETS=<vm-hostname>
+set AEGIS_SVSH_SCRIPT=C:\tests\job-check.svsh
+set AEGIS_SVSH_JOB_PARAMS=TAG=env-test
+set AEGIS_SVSH_TARGETS=<vm-hostname>
 mockserver.exe script
 ```
 
@@ -1509,7 +1509,7 @@ after script completion (does not exit as CLI).
 
 **STEPS:**
 ```
-nsh> set max-output 1024
+svsh> set max-output 1024
 <vm-hostname>> type C:\Windows\win.ini
 ```
 
@@ -1523,7 +1523,7 @@ With `grab` or `set capture on`, full stdout still saved to server.
 
 **STEPS:**
 ```
-nsh> set timeout 2
+svsh> set timeout 2
 <vm-hostname>> ping -n 10 localhost
 ```
 
@@ -1539,8 +1539,8 @@ nonzero exit.
 2. During it, stop the agent service on the VM:
    `sc stop AegisOneClient`.
 
-**EXPECTED:** NSH reports
-`nsh: timed out waiting for <action_id>` eventually; mock does NOT
+**EXPECTED:** SVSH reports
+`svsh: timed out waiting for <action_id>` eventually; mock does NOT
 hang. Restart agent to continue.
 
 **PASS:** No hang.
@@ -1549,7 +1549,7 @@ hang. Restart agent to continue.
 
 **STEPS (on VM):**
 ```powershell
-Get-ChildItem "C:\Program Files\AegisOne\Client\SKVC\logs\nsh\" -File | Measure-Object
+Get-ChildItem "C:\Program Files\AegisOne\Client\SKVC\logs\svsh\" -File | Measure-Object
 ```
 
 **EXPECTED:** One `.transcript` file per `run_command` executed.
@@ -1589,7 +1589,7 @@ completion (that's a terminal feature).
 
 **STEPS (interactive only):**
 ```
-nsh> inv<Tab>
+svsh> inv<Tab>
 ```
 
 **EXPECTED:** Completes to `inventory` (single candidate).
@@ -1600,7 +1600,7 @@ nsh> inv<Tab>
 
 **STEPS:**
 ```
-nsh> h<Tab>
+svsh> h<Tab>
 ```
 
 **EXPECTED:** Prints candidate list: `help  history  hosts` (liner
@@ -1612,10 +1612,10 @@ prints candidates when there's no unique completion).
 
 **STEPS:**
 ```
-nsh> inventory <Tab>
+svsh> inventory <Tab>
 ```
 
-**EXPECTED:** No completion (space after verb → NSH does not try to
+**EXPECTED:** No completion (space after verb → SVSH does not try to
 complete sub-verbs like `apps` / `refresh`). Terminal just prints
 nothing new.
 
@@ -1636,7 +1636,7 @@ nothing new.
 
 **STEPS:**
 ```
-nsh> history
+svsh> history
 ```
 
 **EXPECTED:** Numbered list of recent typed commands.
@@ -1676,7 +1676,7 @@ clear message pointing to a future `file_operation.write_bytes` op.
 
 Create `C:\tmp\src.txt` on the mockserver host (your dev laptop).
 ```
-nsh> cat C:\tmp\src.txt > C:\tmp\dst.txt
+svsh> cat C:\tmp\src.txt > C:\tmp\dst.txt
 ```
 **Expected:**
 ```
@@ -1689,7 +1689,7 @@ nsh> cat C:\tmp\src.txt > C:\tmp\dst.txt
 
 Put a small file on an agent's VM: `C:\tmp\vj.txt`.
 ```
-nsh> cat \\<hostname>\C\tmp\vj.txt > C:\tmp\pulled.txt
+svsh> cat \\<hostname>\C\tmp\vj.txt > C:\tmp\pulled.txt
 ```
 **Expected:** mock dispatches `collect_file`, bytes land in mock temp,
 then are written to `C:\tmp\pulled.txt` on the dev laptop. One-line
@@ -1701,7 +1701,7 @@ VM's file.
 ### UC-22C — Local → remote (overwrite)
 
 ```
-nsh> cat C:\tmp\hello.txt > \\<hostname>\C\tmp\hello.txt
+svsh> cat C:\tmp\hello.txt > \\<hostname>\C\tmp\hello.txt
 ```
 **Expected:** mock dispatches `run_command` with a PowerShell writer
 (base64-encoded content embedded). Writer reconstructs bytes and calls
@@ -1712,7 +1712,7 @@ nsh> cat C:\tmp\hello.txt > \\<hostname>\C\tmp\hello.txt
 ### UC-22D — Local → remote (append)
 
 ```
-nsh> cat C:\tmp\line2.txt >> \\<hostname>\C\tmp\log.txt
+svsh> cat C:\tmp\line2.txt >> \\<hostname>\C\tmp\log.txt
 ```
 **Expected:** writer uses `[IO.File]::Open(..., FileMode::Append)` and
 writes bytes after existing content.
@@ -1723,7 +1723,7 @@ writes bytes after existing content.
 
 Needs 2 agents online.
 ```
-nsh> cat \\<host1>\C\tmp\x.txt > \\<host2>\C\tmp\y.txt
+svsh> cat \\<host1>\C\tmp\x.txt > \\<host2>\C\tmp\y.txt
 ```
 **Expected:** mock does collect_file to host1, then run_command to host2.
 
@@ -1736,11 +1736,11 @@ Generate a 600 KB file (> 500 KB cap):
 fsutil file createnew C:\tmp\big.bin 614400
 ```
 ```
-nsh> cat C:\tmp\big.bin > \\<hostname>\C\tmp\big.bin
+svsh> cat C:\tmp\big.bin > \\<hostname>\C\tmp\big.bin
 ```
 **Expected:**
 ```
-nsh: cat refuses 614400 bytes (max 512000 for the embedded-base64 writer; file_operation.write_bytes op is the Phase-1b path for bigger files)
+svsh: cat refuses 614400 bytes (max 512000 for the embedded-base64 writer; file_operation.write_bytes op is the Phase-1b path for bigger files)
 ```
 
 **PASS:** Deploy refused BEFORE any dispatch. No partial write on target.
@@ -1748,11 +1748,11 @@ nsh: cat refuses 614400 bytes (max 512000 for the embedded-base64 writer; file_o
 ### UC-22G — Unknown host
 
 ```
-nsh> cat C:\tmp\x.txt > \\no-such-host\C\tmp\x.txt
+svsh> cat C:\tmp\x.txt > \\no-such-host\C\tmp\x.txt
 ```
 **Expected:**
 ```
-nsh: cat write dst failed: unknown host "no-such-host" (no connected agent with that hostname)
+svsh: cat write dst failed: unknown host "no-such-host" (no connected agent with that hostname)
 ```
 
 **PASS:** Clear error, no retry loop.
@@ -1760,10 +1760,10 @@ nsh: cat write dst failed: unknown host "no-such-host" (no connected agent with 
 ### UC-22H — Bad syntax
 
 ```
-nsh> cat
-nsh> cat C:\x
-nsh> cat > C:\y
-nsh> cat C:\x >
+svsh> cat
+svsh> cat C:\x
+svsh> cat > C:\y
+svsh> cat C:\x >
 ```
 **Expected:** each prints a usage line without crashing.
 
@@ -1826,9 +1826,9 @@ signed Command envelope and appear on every `command received`,
 `run_command: accepted`, and `file_operation accepted` log line.
 
 ### Steps
-1. From NSH REPL (as the signed-in operator), run any command:
+1. From SVSH REPL (as the signed-in operator), run any command:
    ```
-   nsh> cd \\<hostname>
+   svsh> cd \\<hostname>
    <hostname>> run dir /shell cmd
    ```
 2. On the VM, inspect the agent log:
@@ -1839,13 +1839,13 @@ signed Command envelope and appear on every `command received`,
 
 ### Expected
 ```
-command received command_id=nsh-… type=run_command actor=nsh:<os-user>@<host> source=mockserver.nsh issued_at=1762173...
-run_command: accepted command_id=nsh-… shell=cmd command=dir actor=nsh:<os-user>@<host> source=mockserver.nsh issued_at=1762173...
+command received command_id=svsh-… type=run_command actor=svsh:<os-user>@<host> source=mockserver.svsh issued_at=1762173...
+run_command: accepted command_id=svsh-… shell=cmd command=dir actor=svsh:<os-user>@<host> source=mockserver.svsh issued_at=1762173...
 ```
 
 ### PASS CRITERIA
-- `actor=nsh:<os-user>@<host>` present on both lines ✅
-- `source=mockserver.nsh` ✅
+- `actor=svsh:<os-user>@<host>` present on both lines ✅
+- `source=mockserver.svsh` ✅
 - `issued_at=<unix seconds>` non-zero ✅
 - Older dispatchers (that don't populate attribution) show
   `actor=<unknown>` instead of a crash — backward compatible.
@@ -1946,7 +1946,7 @@ log excerpts attached.
 
 ## 7. End notes
 
-- **Scope:** this guide covers NSH as of commit `fa694fb` (UC-19 HKU
+- **Scope:** this guide covers SVSH as of commit `fa694fb` (UC-19 HKU
   parity + on-demand `inventory refresh` + 100-target cap).
   Future UC-20 (script content audit) and FR1 proto fields
   (`schema_version` / `agent_capabilities` / `device_type`) are NOT in

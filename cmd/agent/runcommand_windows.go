@@ -28,7 +28,7 @@ func runOneCommand(ctx context.Context, text, shell, cwd string, params map[stri
 
 	// Full-stdout temp (always created; the worker uses it only when upload_as
 	// was set, else it is removed with the temp dir cleanup).
-	tmp, terr := os.CreateTemp("", "aegis-nsh-stdout-*.out")
+	tmp, terr := os.CreateTemp("", "aegis-svsh-stdout-*.out")
 	if terr != nil {
 		return runCommandOutput{ShellUsed: picked, Reason: "create stdout temp: " + terr.Error()}
 	}

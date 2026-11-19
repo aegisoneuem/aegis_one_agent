@@ -133,7 +133,7 @@ func (d *dispatcher) runFileOperation(ctx context.Context, client pb.AgentContro
 			result.Entries = nil
 			return result, fmt.Errorf("file manifest exceeds 2 MiB; copy in smaller batches")
 		}
-		// NSH grab honors the admin-wide upload cap (no per-task throttle
+		// SVSH grab honors the admin-wide upload cap (no per-task throttle
 		// field in file_operation/v1).
 		_, result.StoredPath, err = uploadFile(ctx, client, id, "bundle.zip", archive, 0, 0, d.cfg.UploadBytesPerSecond)
 		return result, err
@@ -141,11 +141,11 @@ func (d *dispatcher) runFileOperation(ctx context.Context, client pb.AgentContro
 	if spec.ContentID == "" || len(spec.SHA256) != 64 {
 		return fileops.Result{}, fmt.Errorf("file transfer requires content_id and SHA-256")
 	}
-	// NSH file transfers honor the admin-wide fetch cap (no per-task throttle
-	// field in file_operation/v1; interactive NSH operators can live with the
+	// SVSH file transfers honor the admin-wide fetch cap (no per-task throttle
+	// field in file_operation/v1; interactive SVSH operators can live with the
 	// endpoint policy and don't want surprise throttling of unlimited-rate
 	// transfers either way).
-	if err = fetchContent(ctx, client, &pb.ContentRequest{Kind: "nsh-file", Id: spec.ContentID, Sha256: spec.SHA256}, archive, d.cfg.FetchBytesPerSecond); err != nil {
+	if err = fetchContent(ctx, client, &pb.ContentRequest{Kind: "svsh-file", Id: spec.ContentID, Sha256: spec.SHA256}, archive, d.cfg.FetchBytesPerSecond); err != nil {
 		return fileops.Result{}, err
 	}
 	return fileops.Unpack(ctx, spec, archive)

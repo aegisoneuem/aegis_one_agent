@@ -36,7 +36,7 @@ var supported = []string{
 	"reboot",
 	"cancel_reboot",
 	"report_device_state",
-	// NSH / operator
+	// SVSH / operator
 	"run_command",
 	"open_shell",
 	"collect_file",
@@ -52,7 +52,7 @@ var supported = []string{
 	"hw_detailed_scan",
 	// Phase 1b — native remote file write (no PowerShell dependency)
 	"file_operation_write_bytes",
-	// Phase 1b — directory listing for NSH path tab-completion
+	// Phase 1b — directory listing for SVSH path tab-completion
 	"file_operation_list_directory",
 	// Phase 1b — command attribution (actor + source + issued_at)
 	"command_attribution",

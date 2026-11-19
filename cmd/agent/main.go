@@ -703,7 +703,7 @@ func runProcess(parentCtx context.Context) {
 	scanTrigger := make(chan struct{}, 1)
 	// deviceStateTrigger fires a Layer-1 DeviceStateReport on demand (resetting
 	// the change-detection fingerprint so the next report is sent even when
-	// nothing changed). Used by the signed "report_device_state" command (NSH
+	// nothing changed). Used by the signed "report_device_state" command (SVSH
 	// "inventory refresh"). Coalescing.
 	deviceStateTrigger := make(chan struct{}, 1)
 	// Cab version handler (server reports version; agent fetches if stale, then

@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-func TestNSHBackgroundEventsUseDedicatedLog(t *testing.T) {
-	for _, mode := range []string{"AEGIS_NSH", "AEGIS_NSH_SCRIPT"} {
+func TestSVSHBackgroundEventsUseDedicatedLog(t *testing.T) {
+	for _, mode := range []string{"AEGIS_SVSH", "AEGIS_SVSH_SCRIPT"} {
 		t.Run(mode, func(t *testing.T) {
-			t.Setenv("AEGIS_NSH", "")
-			t.Setenv("AEGIS_NSH_SCRIPT", "")
+			t.Setenv("AEGIS_SVSH", "")
+			t.Setenv("AEGIS_SVSH_SCRIPT", "")
 			t.Setenv(mode, "1")
 			path := filepath.Join(t.TempDir(), "logs", "server.log")
 			t.Setenv("AEGIS_MOCK_LOG_FILE", path)

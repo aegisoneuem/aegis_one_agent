@@ -36,14 +36,14 @@ func TestHostSearchIsBoundedForFiftyThousandDevices(t *testing.T) {
 		}
 	}
 }
-func TestNSHDevicePathsAndQuotedArguments(t *testing.T) {
+func TestSVSHDevicePathsAndQuotedArguments(t *testing.T) {
 	srv := &server{byID: map[string]*deviceRecord{"a": {Hostname: "srv1"}, "b": {Hostname: "vm2"}}, liveAgents: map[string]*liveAgent{"a": {}, "b": {}}}
-	s := &nshSession{srv: srv}
+	s := &svshSession{srv: srv}
 	paths, err := s.endpointPaths(`\\srv1,vm2\c\temp\`)
 	if err != nil || len(paths) != 2 || paths[0].path != `c:\temp\` || !paths[0].directory {
 		t.Fatalf("%+v %v", paths, err)
 	}
-	args, err := splitNSHArgs(`"\\srv1\c\temp\with spaces.bin" "\\vm2\d$\new folder\"`)
+	args, err := splitSVSHArgs(`"\\srv1\c\temp\with spaces.bin" "\\vm2\d$\new folder\"`)
 	if err != nil || len(args) != 2 || args[1] != `\\vm2\d$\new folder\` {
 		t.Fatalf("%q %v", args, err)
 	}

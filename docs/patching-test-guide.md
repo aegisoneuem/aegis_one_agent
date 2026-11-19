@@ -475,7 +475,7 @@ Evaluation, device_id b3dea9f7-5df8-4765-ad8b-621307ef5f41):
   153.6.0, Microsoft Edge 156.0, 7-Zip 26.04, Notepad++ 8.9.8.1, VMware
   Tools 13.0.10.0, Visual C++ runtimes (x86 and x64), AegisOne Client,
   Mozilla Maintenance Service.
-- UC-18B NSH filter: `inventory apps microsoft`, `inventory apps mozilla`,
+- UC-18B SVSH filter: `inventory apps microsoft`, `inventory apps mozilla`,
   `inventory apps google` all narrowed the table correctly;
   `inventory apps 7-zip` showed exactly 1 row before uninstall, 0 rows after.
 - UC-18C change detection with real 7-Zip MSI: after `msiexec /x` the agent
@@ -507,7 +507,7 @@ weekly reconciliation scan.
 
 **MOCKSERVER:**
 ```cmd
-set AEGIS_NSH=1
+set AEGIS_SVSH=1
 mockserver.exe
 ```
 
@@ -515,9 +515,9 @@ Wait for the first `Received patch state report` line (within one
 `AEGIS_DEVICE_STATE_INTERVAL` after the agent connects). Note the
 `installed_apps` count.
 
-**NSH REPL:**
+**SVSH REPL:**
 ```
-nsh> cd \\<hostname>
+svsh> cd \\<hostname>
 <hostname>> inventory apps
 <hostname>> inventory apps chrome
 <hostname>> inventory apps mozilla
@@ -590,7 +590,7 @@ next on-change send.
 1. Note the current app count from `inventory apps` after an `inventory refresh`.
 2. Install an app that registers per-user (Chrome / Teams / Spotify, or
    `MSIEXEC /i file.msi ALLUSERS=""`).
-3. Wait one `AEGIS_DEVICE_STATE_INTERVAL` cycle. Then from NSH:
+3. Wait one `AEGIS_DEVICE_STATE_INTERVAL` cycle. Then from SVSH:
    `inventory refresh` followed by `inventory apps <name>`.
 4. **Expected:** the new entry appears with `HIVE = HKU\S-1-5-21-...`
    (or `HKU\S-1-5-21-...\WOW6432Node` for a 32-bit per-user installer).
@@ -598,7 +598,7 @@ next on-change send.
 ### UC-19B — On-demand refresh without any change
 
 1. Make no change on the device.
-2. From NSH: `cd <hostname>` → `inventory refresh`
+2. From SVSH: `cd <hostname>` → `inventory refresh`
 3. **Expected (within 5s):** `fresh inventory (N apps, collected_at=...)` and
    `refresh complete — 1/1 received, 0 timed out`. Agent log shows
    `on-demand refresh requested — resetting fingerprint` and
@@ -607,7 +607,7 @@ next on-change send.
 ### UC-19C — Offline target handled
 
 1. Stop the agent service on the target: `sc stop AegisOneClient`.
-2. From NSH: `inventory refresh`
+2. From SVSH: `inventory refresh`
 3. **Expected (immediate, no wait):** `OFFLINE (no live stream) — refresh skipped`.
 
 ### UC-19D — `--timeout` flag
@@ -617,7 +617,7 @@ next on-change send.
    `--timeout expects a positive integer (seconds)` and exits cleanly.
 3. `inventory refresh --fast` prints `unknown argument "--fast"` and exits.
 
-### UC-19E — 100-target cap (NSH is a dev / admin tool)
+### UC-19E — 100-target cap (SVSH is a dev / admin tool)
 
 1. If the mock supports simulating >100 fleet targets, `cd` into them and run
    `inventory refresh`.

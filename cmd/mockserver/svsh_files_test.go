@@ -100,7 +100,7 @@ func TestFileCopyOneToManyAndBulkBasics(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(roots["source"], "data.bin"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	sess := &nshSession{srv: srv, targets: []string{"source"}, timeout: 20}
+	sess := &svshSession{srv: srv, targets: []string{"source"}, timeout: 20}
 	sess.engine = newScriptEngine(sess)
 	sess.engine.execLine(`copy data.bin \\dest-a,dest-b\received\`)
 	if sess.engine.vars["exit"] != "0" {
@@ -165,7 +165,7 @@ func TestFileRelayIsBoundToDestinationAndDigest(t *testing.T) {
 		cert := &x509.Certificate{Subject: pkix.Name{CommonName: tc.id}}
 		ctx := peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}}})
 		stream := &contentTestStream{ctx: ctx}
-		err := srv.FetchContent(&pb.ContentRequest{Kind: "nsh-file", Id: "token", Sha256: tc.digest}, stream)
+		err := srv.FetchContent(&pb.ContentRequest{Kind: "svsh-file", Id: "token", Sha256: tc.digest}, stream)
 		if tc.ok {
 			if err != nil || string(stream.data) != "bytes" {
 				t.Fatalf("authorized fetch: %s %v", stream.data, err)

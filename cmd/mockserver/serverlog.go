@@ -10,7 +10,7 @@ import (
 )
 
 // Set once at startup, before any RPC or terminal goroutine starts. Server
-// events never share NSH's stdout/stderr; operator command output still does.
+// events never share SVSH's stdout/stderr; operator command output still does.
 var mockOutput io.Writer = os.Stdout
 
 func mockPrintf(format string, args ...any) { fmt.Fprintf(mockOutput, format, args...) }
@@ -25,12 +25,12 @@ func mockFatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
-// configureMockLogging sets up the server log file. In NSH mode the file is the
-// sole sink (NSH owns the terminal). In normal server mode it TEES: everything
+// configureMockLogging sets up the server log file. In SVSH mode the file is the
+// sole sink (SVSH owns the terminal). In normal server mode it TEES: everything
 // still prints to the console AND is saved to a dated file under logs/ (or
 // AEGIS_MOCK_LOG_FILE), so a tester can review what happened after the fact — and
 // so a crash/reboot of the box does not lose the scrollback.
-func configureMockLogging(nshMode bool) (*os.File, error) {
+func configureMockLogging(svshMode bool) (*os.File, error) {
 	path := getenv("AEGIS_MOCK_LOG_FILE", filepath.Join("logs", fmt.Sprintf("mockserver-%s.log", time.Now().Format("2006-01-02"))))
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
@@ -39,7 +39,7 @@ func configureMockLogging(nshMode bool) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if nshMode {
+	if svshMode {
 		mockOutput = f
 		log.SetOutput(f)
 	} else {

@@ -201,7 +201,7 @@ func WriteScriptAuditTranscript(skvcLogsDir, actionID string, rec *ScriptAuditRe
 }
 
 // sanitizeTranscriptName strips characters that would be unsafe in a Windows
-// filename. action IDs are expected to be short IDs ("nsh-<hex>", GUIDs,
+// filename. action IDs are expected to be short IDs ("svsh-<hex>", GUIDs,
 // numeric strings) so this is defensive, not a general-purpose sanitizer.
 func sanitizeTranscriptName(actionID string) string {
 	var b strings.Builder

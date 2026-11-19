@@ -1,4 +1,4 @@
-package nsh
+package svsh
 
 import (
 	"context"
@@ -17,8 +17,8 @@ var base64StdEncoding = base64.StdEncoding
 
 // ===== Script engine =====
 //
-// The NSH REPL and script runner share one engine so interactive input and
-// non-interactive .nsh files behave identically. It carries variables, aliases,
+// The SVSH REPL and script runner share one engine so interactive input and
+// non-interactive .svsh files behave identically. It carries variables, aliases,
 // error policy, last-result bindings and the block stack (for/foreach/if). All
 // variable substitution happens AT EXECUTE TIME, so a loop body sees the
 // current ${VAR} / $host on every iteration.
@@ -523,7 +523,7 @@ func (e *Engine) verbScript(rest string) {
 // `exec [shell] <local-file>` — read a script file from the CONSOLE side,
 // apply ${VAR} / ${env:NAME} substitution to its WHOLE CONTENT, then send it
 // to the current target(s) as a single run_command. BigFix "action script with
-// embedded relevance" equivalent: admin writes a .ps1 / .py / .bat with NSH
+// embedded relevance" equivalent: admin writes a .ps1 / .py / .bat with SVSH
 // vars inside, console resolves and ships the final script text.
 //
 // Shells supported today: cmd / powershell / pwsh (Windows). bash/sh/zsh will

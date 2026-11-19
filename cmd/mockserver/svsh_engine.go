@@ -9,23 +9,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/svsh"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 )
 
-// Grammar lives only in pkg/nsh; this adapter binds the existing mock transport.
+// Grammar lives only in pkg/svsh; this adapter binds the existing mock transport.
 type scriptEngine struct {
-	core *nsh.Engine
+	core *svsh.Engine
 	vars map[string]string
 }
 
-func newScriptEngine(s *nshSession) *scriptEngine {
-	core := nsh.New(&mockNSHBackend{s: s}, nsh.Options{Output: sessionWriter{s: s}, LoadFile: localNSHFile, LookupEnv: os.Getenv, OpenSessionLog: func(path string) (io.WriteCloser, error) {
+func newScriptEngine(s *svshSession) *scriptEngine {
+	core := svsh.New(&mockSVSHBackend{s: s}, svsh.Options{Output: sessionWriter{s: s}, LoadFile: localSVSHFile, LookupEnv: os.Getenv, OpenSessionLog: func(path string) (io.WriteCloser, error) {
 		return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	}})
 	return &scriptEngine{core: core, vars: core.Variables()}
 }
-func localNSHFile(ctx context.Context, path string) ([]byte, error) {
+func localSVSHFile(ctx context.Context, path string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -34,8 +34,8 @@ func localNSHFile(ctx context.Context, path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, nsh.DefaultMaxSourceBytes+1))
-	if err == nil && len(data) > nsh.DefaultMaxSourceBytes {
+	data, err := io.ReadAll(io.LimitReader(f, svsh.DefaultMaxSourceBytes+1))
+	if err == nil && len(data) > svsh.DefaultMaxSourceBytes {
 		return nil, fmt.Errorf("script exceeds source byte limit")
 	}
 	return data, err
@@ -54,11 +54,11 @@ func (e *scriptEngine) execLine(line string) bool {
 func (e *scriptEngine) expand(text string) string    { e.syncVariables(); return e.core.Expand(text) }
 func (e *scriptEngine) variables() map[string]string { return e.core.Variables() }
 func (e *scriptEngine) recordLastResult(host, stdout, stderr, reason string, exit int, duration int64) {
-	e.core.RecordResult(nsh.ActionResult{Host: host, Stdout: stdout, Stderr: stderr, Reason: reason, ExitCode: exit, DurationMs: duration})
+	e.core.RecordResult(svsh.ActionResult{Host: host, Stdout: stdout, Stderr: stderr, Reason: reason, ExitCode: exit, DurationMs: duration})
 	e.vars = e.core.Variables()
 }
 func buildShellCommand(shell, content string) (string, string) {
-	return nsh.BuildShellCommand(shell, content)
+	return svsh.BuildShellCommand(shell, content)
 }
 func splitCSV(text string) []string {
 	var out []string
@@ -71,12 +71,12 @@ func splitCSV(text string) []string {
 }
 
 type sessionWriter struct {
-	s      *nshSession
+	s      *svshSession
 	stderr bool
 }
 
 func (w sessionWriter) Write(p []byte) (int, error) { return w.s.writer(w.stderr).Write(p) }
-func (s *nshSession) writer(stderr bool) io.Writer {
+func (s *svshSession) writer(stderr bool) io.Writer {
 	if stderr && s.errorOutput != nil {
 		return s.errorOutput
 	}
@@ -88,12 +88,12 @@ func (s *nshSession) writer(stderr bool) io.Writer {
 	}
 	return os.Stdout
 }
-func (s *nshSession) printf(format string, args ...any) {
+func (s *svshSession) printf(format string, args ...any) {
 	fmt.Fprintf(s.writer(false), format, args...)
 }
-func (s *nshSession) println(args ...any) { fmt.Fprintln(s.writer(false), args...) }
-func (s *nshSession) print(args ...any)   { fmt.Fprint(s.writer(false), args...) }
-func (s *nshSession) recordAction(r nsh.ActionResult) {
+func (s *svshSession) println(args ...any) { fmt.Fprintln(s.writer(false), args...) }
+func (s *svshSession) print(args ...any)   { fmt.Fprint(s.writer(false), args...) }
+func (s *svshSession) recordAction(r svsh.ActionResult) {
 	if s.emit != nil {
 		s.emit(r)
 	} else if s.engine != nil {
@@ -101,7 +101,7 @@ func (s *nshSession) recordAction(r nsh.ActionResult) {
 		s.engine.vars = s.engine.core.Variables()
 	}
 }
-func (s *nshSession) recordStatus(id string, st *pb.ActionStatus) {
+func (s *svshSession) recordStatus(id string, st *pb.ActionStatus) {
 	exit := int(st.ExitCode)
 	if st.Phase == pb.ActionPhase_ACTION_PHASE_FAILED && exit == 0 {
 		exit = 1
@@ -109,13 +109,13 @@ func (s *nshSession) recordStatus(id string, st *pb.ActionStatus) {
 	if s.jobMode && st.Phase == pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE && exit == 0 {
 		exit = 1
 	}
-	s.recordAction(nsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), ActionID: st.ActionId, Type: st.ActionType, ExitCode: exit, Stdout: parseStdout(st.Detail), Stderr: parseStderr(st.Detail), Reason: st.Reason, DurationMs: parseDuration(st.Detail), UploadedPath: parseUploaded(st.Detail)})
+	s.recordAction(svsh.ActionResult{TargetID: id, Host: s.srv.hostnameOf(id), ActionID: st.ActionId, Type: st.ActionType, ExitCode: exit, Stdout: parseStdout(st.Detail), Stderr: parseStderr(st.Detail), Reason: st.Reason, DurationMs: parseDuration(st.Detail), UploadedPath: parseUploaded(st.Detail)})
 }
 
-type mockNSHBackend struct{ s *nshSession }
+type mockSVSHBackend struct{ s *svshSession }
 
-func (b *mockNSHBackend) SelectedTargets() []string { return append([]string(nil), b.s.targets...) }
-func (b *mockNSHBackend) SelectTargets(_ context.Context, ids []string) error {
+func (b *mockSVSHBackend) SelectedTargets() []string { return append([]string(nil), b.s.targets...) }
+func (b *mockSVSHBackend) SelectTargets(_ context.Context, ids []string) error {
 	for _, id := range ids {
 		if b.s.allowedTargets != nil && !b.s.allowedTargets[id] {
 			return fmt.Errorf("target %s is outside job scope", id)
@@ -124,7 +124,7 @@ func (b *mockNSHBackend) SelectTargets(_ context.Context, ids []string) error {
 	b.s.targets = append([]string(nil), ids...)
 	return nil
 }
-func (b *mockNSHBackend) WildcardTargets(ctx context.Context) ([]nsh.Target, error) {
+func (b *mockSVSHBackend) WildcardTargets(ctx context.Context) ([]svsh.Target, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -142,32 +142,32 @@ func (b *mockNSHBackend) WildcardTargets(ctx context.Context) ([]nsh.Target, err
 			ids = append(ids, id)
 		}
 	}
-	var out []nsh.Target
+	var out []svsh.Target
 	for _, id := range ids {
-		out = append(out, nsh.Target{ID: id, Name: b.s.srv.hostnameOf(id)})
+		out = append(out, svsh.Target{ID: id, Name: b.s.srv.hostnameOf(id)})
 	}
 	return out, nil
 }
-func (b *mockNSHBackend) ResolveTarget(ctx context.Context, token string) (nsh.Target, error) {
+func (b *mockSVSHBackend) ResolveTarget(ctx context.Context, token string) (svsh.Target, error) {
 	if err := ctx.Err(); err != nil {
-		return nsh.Target{}, err
+		return svsh.Target{}, err
 	}
 	id, err := b.s.srv.resolveKnownTarget(token)
 	if err != nil {
-		return nsh.Target{}, err
+		return svsh.Target{}, err
 	}
 	if b.s.allowedTargets != nil && !b.s.allowedTargets[id] {
-		return nsh.Target{}, fmt.Errorf("target outside job scope: %s", token)
+		return svsh.Target{}, fmt.Errorf("target outside job scope: %s", token)
 	}
 	if !b.s.srv.isOnline(id) {
-		return nsh.Target{}, fmt.Errorf("target is offline: %s", token)
+		return svsh.Target{}, fmt.Errorf("target is offline: %s", token)
 	}
-	return nsh.Target{ID: id, Name: b.s.srv.hostnameOf(id)}, nil
+	return svsh.Target{ID: id, Name: b.s.srv.hostnameOf(id)}, nil
 }
-func (b *mockNSHBackend) Shell() string     { return b.s.shell }
-func (b *mockNSHBackend) Capture() bool     { return b.s.capture }
-func (b *mockNSHBackend) SetCapture(v bool) { b.s.capture = v }
-func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(nsh.ActionResult)) error {
+func (b *mockSVSHBackend) Shell() string     { return b.s.shell }
+func (b *mockSVSHBackend) Capture() bool     { return b.s.capture }
+func (b *mockSVSHBackend) SetCapture(v bool) { b.s.capture = v }
+func (b *mockSVSHBackend) Execute(ctx context.Context, c svsh.Command, emit func(svsh.ActionResult)) error {
 	s := b.s
 	if err := ctx.Err(); err != nil {
 		return err
@@ -176,7 +176,7 @@ func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(n
 	s.ctx, s.parameters = ctx, c.Parameters
 	var mu sync.Mutex
 	count := 0
-	s.emit = func(r nsh.ActionResult) { mu.Lock(); count++; mu.Unlock(); emit(r) }
+	s.emit = func(r svsh.ActionResult) { mu.Lock(); count++; mu.Unlock(); emit(r) }
 	defer func() { s.ctx, s.parameters, s.emit = savedCtx, savedParams, savedEmit }()
 	savedShell := s.shell
 	if c.Shell != "" {
@@ -250,7 +250,7 @@ func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(n
 			return fmt.Errorf("unsupported shell: %s", choice)
 		}
 	case "set":
-		if err := s.setNSHOption(c.Text); err != nil {
+		if err := s.setSVSHOption(c.Text); err != nil {
 			return err
 		}
 	case "hosts", "search":
@@ -281,7 +281,7 @@ func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(n
 		}
 		return s.verbJob(c.Text)
 	default:
-		return fmt.Errorf("unsupported NSH command %s", c.Verb)
+		return fmt.Errorf("unsupported SVSH command %s", c.Verb)
 	}
 	mu.Lock()
 	none := count == 0
@@ -291,7 +291,7 @@ func (b *mockNSHBackend) Execute(ctx context.Context, c nsh.Command, emit func(n
 	}
 	return nil
 }
-func (s *nshSession) setNSHOption(rest string) error {
+func (s *svshSession) setSVSHOption(rest string) error {
 	key, value := splitFirst(rest)
 	key = strings.ToLower(key)
 	switch key {
@@ -313,7 +313,7 @@ func (s *nshSession) setNSHOption(rest string) error {
 			return fmt.Errorf("capture must be on/off")
 		}
 	case "output-dir":
-		if _, err := safeNSHUploadPath(value + "/probe.out"); err != nil {
+		if _, err := safeSVSHUploadPath(value + "/probe.out"); err != nil {
 			return err
 		}
 	default:

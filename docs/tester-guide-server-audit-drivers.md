@@ -15,7 +15,7 @@ Shipped in: agent commits `abef85f` (audit L2 + Option C) + `18e6873` (driver in
 
 ## 1. Setup (shared)
 
-Use the standard bring-up from **`docs/tester-guide-patching.md` §3** (certs, mockserver, agent install, enroll, NSH). You need:
+Use the standard bring-up from **`docs/tester-guide-patching.md` §3** (certs, mockserver, agent install, enroll, SVSH). You need:
 
 - One Windows VM with the agent enrolled and connected (`/status` → `connected:true`).
 - `mockserver.exe` running on your dev machine, console visible.
@@ -268,9 +268,9 @@ pretty-printed rows: `<ts>  <event_type>  <decision>  <command_id>  <actor>  <re
   after the cutoff.
 - **rotated** (`AEGIS_AUDIT_ROTATED=1`) — `scanned M` grows to include rotated files.
 
-### 5A.2 NSH verb (interactive console)
+### 5A.2 SVSH verb (interactive console)
 
-Target a host with `cd \\<host>` (NSH `use` selects the SHELL type, not the
+Target a host with `cd \\<host>` (SVSH `use` selects the SHELL type, not the
 target), then:
 
 ```
@@ -280,7 +280,7 @@ audit since 1794200000000 rotated
 ```
 
 Each prints the matched events for the selected host(s). `audit tail 10 > file`
-redirection works too (reuses the NSH `>` support).
+redirection works too (reuses the SVSH `>` support).
 
 ### 5A.3 Server-team contract
 
@@ -447,7 +447,7 @@ module state (`crypto/fips140.Enabled()`), never a marketing flag.
 | SA-4 | no chain fields | CONTRACT (proto e1d3d6b parse) | | |
 | SA-5 | driver inventory | Tier-3 snapshot | | |
 | SA-6 | BIOS + model fields | Tier-3 snapshot | | |
-| SA-7 | audit_query tail/search/since | AEGIS_AUDIT_QUERY / NSH `audit` | VM-PASS 2026-11-09 | L3 remote audit query |
+| SA-7 | audit_query tail/search/since | AEGIS_AUDIT_QUERY / SVSH `audit` | VM-PASS 2026-11-09 | L3 remote audit query |
 | SA-8 | audit flood control (coalesce + rate cap + exempt) | AEGIS_AUDIT_RATE low + burst | | L5 — security events never dropped |
 | SA-9 | enrollment / cert_renew audit | re-enroll on test VM | | L5 — local pre-connection trace |
 | SA-10 | security posture callout + attestation | agent startup log + `audit search security_posture` | VM-PASS 2026-11-09 | Signed Agent Policy step 1 |

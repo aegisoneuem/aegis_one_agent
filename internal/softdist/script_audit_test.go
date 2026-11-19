@@ -168,7 +168,7 @@ func TestWriteScriptAuditTranscript_ModeAndContent(t *testing.T) {
 
 func TestSanitizeTranscriptName(t *testing.T) {
 	cases := map[string]string{
-		"nsh-abc123":  "nsh-abc123",
+		"svsh-abc123":  "svsh-abc123",
 		"abc/def":     "abc_def",
 		"a..\\b":      "a.._b",
 		"OK_name.1":   "OK_name.1",

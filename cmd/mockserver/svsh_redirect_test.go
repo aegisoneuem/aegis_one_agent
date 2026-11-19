@@ -4,9 +4,9 @@ import (
 	"testing"
 )
 
-// B.1 unit tests — happy path for NSH redirect pre-parser.
+// B.1 unit tests — happy path for SVSH redirect pre-parser.
 
-func TestParseNSHRedirect_HappyPath(t *testing.T) {
+func TestParseSVSHRedirect_HappyPath(t *testing.T) {
 	cases := []struct {
 		in             string
 		wantRedirect   bool
@@ -23,9 +23,9 @@ func TestParseNSHRedirect_HappyPath(t *testing.T) {
 		{`run echo hi >> \\WIN-VM\c\logs\log.txt`, true, "run echo hi", "WIN-VM", `C:\logs\log.txt`, true},
 	}
 	for _, c := range cases {
-		got, err := parseNSHRedirect(c.in)
+		got, err := parseSVSHRedirect(c.in)
 		if err != nil {
-			t.Errorf("parseNSHRedirect(%q) error: %v", c.in, err)
+			t.Errorf("parseSVSHRedirect(%q) error: %v", c.in, err)
 			continue
 		}
 		if got.Redirect != c.wantRedirect {
@@ -47,7 +47,7 @@ func TestParseNSHRedirect_HappyPath(t *testing.T) {
 }
 
 // No redirect → StrippedLine == original, Redirect == false, no error.
-func TestParseNSHRedirect_NoRedirect(t *testing.T) {
+func TestParseSVSHRedirect_NoRedirect(t *testing.T) {
 	cases := []string{
 		`hosts`,
 		`run dir C:\`,
@@ -57,7 +57,7 @@ func TestParseNSHRedirect_NoRedirect(t *testing.T) {
 		`   `,
 	}
 	for _, in := range cases {
-		got, err := parseNSHRedirect(in)
+		got, err := parseSVSHRedirect(in)
 		if err != nil {
 			t.Errorf("%q: unexpected error %v", in, err)
 		}
@@ -69,7 +69,7 @@ func TestParseNSHRedirect_NoRedirect(t *testing.T) {
 
 // `cat` verb is EXEMPT — it has its own redirect semantics (source →
 // dest copy). The pre-parser must leave it alone.
-func TestParseNSHRedirect_CatVerbExempt(t *testing.T) {
+func TestParseSVSHRedirect_CatVerbExempt(t *testing.T) {
 	cases := []string{
 		`cat C:\src.txt > C:\dst.txt`,
 		`cat \\h1\C\a > \\h2\C\b`,
@@ -77,7 +77,7 @@ func TestParseNSHRedirect_CatVerbExempt(t *testing.T) {
 		`CAT src > dst`,  // case-insensitive
 	}
 	for _, in := range cases {
-		got, err := parseNSHRedirect(in)
+		got, err := parseSVSHRedirect(in)
 		if err != nil {
 			t.Errorf("%q: unexpected error %v", in, err)
 		}
@@ -92,14 +92,14 @@ func TestParseNSHRedirect_CatVerbExempt(t *testing.T) {
 
 // BREAK 1: `>` or `>>` without destination path → usage error, not
 // silent drop.
-func TestParseNSHRedirect_Break_EmptyDestination(t *testing.T) {
+func TestParseSVSHRedirect_Break_EmptyDestination(t *testing.T) {
 	cases := []string{
 		`run hostname >`,
 		`run hostname >>`,
 		`hosts >   `,
 	}
 	for _, in := range cases {
-		_, err := parseNSHRedirect(in)
+		_, err := parseSVSHRedirect(in)
 		if err == nil {
 			t.Errorf("%q: expected usage error on empty destination", in)
 		}
@@ -108,13 +108,13 @@ func TestParseNSHRedirect_Break_EmptyDestination(t *testing.T) {
 
 // BREAK 2: redirect without a verb — `> file.txt` or `>> file.txt`.
 // Must error so caller surfaces a clear line.
-func TestParseNSHRedirect_Break_EmptyVerb(t *testing.T) {
+func TestParseSVSHRedirect_Break_EmptyVerb(t *testing.T) {
 	cases := []string{
 		`> dst.txt`,
 		`>> dst.txt`,
 	}
 	for _, in := range cases {
-		_, err := parseNSHRedirect(in)
+		_, err := parseSVSHRedirect(in)
 		if err == nil {
 			t.Errorf("%q: expected usage error on empty verb side", in)
 		}
@@ -123,8 +123,8 @@ func TestParseNSHRedirect_Break_EmptyVerb(t *testing.T) {
 
 // BREAK 3: multiple redirect tokens — `a > b > c`. Last wins so
 // `a > b` is the stripped line and `c` is the destination.
-func TestParseNSHRedirect_Break_MultipleTokensLastWins(t *testing.T) {
-	got, err := parseNSHRedirect(`echo hi > file1 > file2`)
+func TestParseSVSHRedirect_Break_MultipleTokensLastWins(t *testing.T) {
+	got, err := parseSVSHRedirect(`echo hi > file1 > file2`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,8 +140,8 @@ func TestParseNSHRedirect_Break_MultipleTokensLastWins(t *testing.T) {
 }
 
 // BREAK 4: `>>` must be preferred over inner `>` in `a > b >> c`.
-func TestParseNSHRedirect_Break_AppendBeatsSingleArrow(t *testing.T) {
-	got, _ := parseNSHRedirect(`run echo hi > middle >> final.txt`)
+func TestParseSVSHRedirect_Break_AppendBeatsSingleArrow(t *testing.T) {
+	got, _ := parseSVSHRedirect(`run echo hi > middle >> final.txt`)
 	if !got.Redirect {
 		t.Fatal("expected redirect")
 	}
@@ -155,14 +155,14 @@ func TestParseNSHRedirect_Break_AppendBeatsSingleArrow(t *testing.T) {
 
 // BREAK 5: mid-string `>` inside a command argument must NOT be
 // parsed as a redirect — the token must be whitespace-bounded.
-func TestParseNSHRedirect_Break_MidStringAngleIgnored(t *testing.T) {
+func TestParseSVSHRedirect_Break_MidStringAngleIgnored(t *testing.T) {
 	cases := []string{
 		`run powershell "Get-Item 'file>name.txt'"`,
 		`run echo 1>&2`,  // cmd.exe stderr redirect NOT whitespace-bounded
 		`run echo a>b`,
 	}
 	for _, in := range cases {
-		got, err := parseNSHRedirect(in)
+		got, err := parseSVSHRedirect(in)
 		if err != nil {
 			t.Errorf("%q: unexpected error %v", in, err)
 		}
@@ -173,8 +173,8 @@ func TestParseNSHRedirect_Break_MidStringAngleIgnored(t *testing.T) {
 }
 
 // BREAK 6: empty input returns no redirect, no error.
-func TestParseNSHRedirect_Break_EmptyInput(t *testing.T) {
-	got, err := parseNSHRedirect(``)
+func TestParseSVSHRedirect_Break_EmptyInput(t *testing.T) {
+	got, err := parseSVSHRedirect(``)
 	if err != nil {
 		t.Errorf("empty input error: %v", err)
 	}

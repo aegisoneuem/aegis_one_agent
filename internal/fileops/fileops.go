@@ -472,7 +472,7 @@ func DeleteManifest(ctx context.Context, entries []Entry) (Result, error) {
 
 // listDirectory implements the "list_directory" file-operation: return
 // up to MaxFiles entries for a target directory as the Result.Entries
-// field. Used by NSH path tab-completion to enumerate the current cd
+// field. Used by SVSH path tab-completion to enumerate the current cd
 // target's filesystem without SMB / WinRM. Pure Go: no shell, no COM.
 //
 // Spec contract:

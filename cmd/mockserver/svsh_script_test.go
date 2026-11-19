@@ -6,7 +6,7 @@ import (
 )
 
 func TestHeredocReaderPreservesCommentsAndBlankLines(t *testing.T) {
-	s := &nshSession{}
+	s := &svshSession{}
 	s.engine = newScriptEngine(s)
 	s.readLoop(strings.NewReader("script powershell until EOT\n# script comment\n\nWrite-Output hi\n"), false)
 	if !s.engine.core.State().InHeredoc || s.prompt() != "... [EOT]> " {
@@ -15,7 +15,7 @@ func TestHeredocReaderPreservesCommentsAndBlankLines(t *testing.T) {
 }
 
 func TestNestedHeredocPreservesCommentsAndBlankLines(t *testing.T) {
-	s := &nshSession{}
+	s := &svshSession{}
 	s.engine = newScriptEngine(s)
 	s.readLoop(strings.NewReader("for X in 1\nscript powershell until EOT\n# script comment\n\nWrite-Output hi\nEOT\n"), false)
 	if s.engine.core.State().BlockDepth != 1 {

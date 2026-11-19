@@ -6,7 +6,7 @@ Use **CMD**, not PowerShell, for every command below. Run one test at a time.
 
 1. **Endpoint VM:** replace the stopped agent's EXE with latest `dist/AegisOneClient.exe`; restart its service. The matching `dist/AegisOneClient.msi` is an alternative installer. Developers can use the matching `build` EXE.
 2. **Mockserver machine:** stop old mockserver with Ctrl+C; replace it with latest `dist/mockserver.exe` (or matching developer `build` EXE). Keep existing certs and device registry.
-3. Copy the complete [test-pack folder](fixtures/softdist) to **`C:\temp\AegisSoftDistTests` on BOTH machines**. Do not copy only the .reg file. Keep `server`, `endpoint`, payload scripts and .nsh files together.
+3. Copy the complete [test-pack folder](fixtures/softdist) to **`C:\temp\AegisSoftDistTests` on BOTH machines**. Do not copy only the .reg file. Keep `server`, `endpoint`, payload scripts and .svsh files together.
 4. Keep an **Administrator CMD on the endpoint VM** and a **CMD in `C:\temp\mock` on the mockserver machine** (use your actual mockserver folder if different).
 5. These fixtures are dummy registry products. They validate routing/detection and scripts; they do not replace real MSI/EXE vendor acceptance.
 
@@ -14,7 +14,7 @@ Use **CMD**, not PowerShell, for every command below. Run one test at a time.
 
 1. Stop mockserver with **Ctrl+C**. If CMD asks `Terminate batch job (Y/N)?`, enter **Y**.
 2. On the **ENDPOINT**, run `endpoint-setup.cmd NN`. It resets ONLY the named Aegis test registrations and marker files, so cases 01-32 do not depend on earlier cases.
-3. On the **MOCKSERVER**, run `server-test.cmd NN`. It clears stale SoftDist/NSH and unrelated startup-action test settings and starts normal server mode. Keep your existing TLS/enrollment settings.
+3. On the **MOCKSERVER**, run `server-test.cmd NN`. It clears stale SoftDist/SVSH and unrelated startup-action test settings and starts normal server mode. Keep your existing TLS/enrollment settings.
 4. Wait for the intended endpoint to connect and for terminal SUCCESS/FAILED/NOT_APPLICABLE. QUEUED or RUNNING is not a final result. If it does not reconnect, restart that test agent service.
 5. On the **ENDPOINT**, run `endpoint-check.cmd NN`. PASS requires BOTH the expected server status and the endpoint checks.
 
@@ -56,8 +56,8 @@ Use **CMD**, not PowerShell, for every command below. Run one test at a time.
 | [30](#test-30) | Required publisher signature rejects unsigned script | FAILED; publisher signature check failed |
 | [31](#test-31) | CMD payload path contains spaces | SUCCESS; verified removed |
 | [32](#test-32) | Installed but requested version cannot be verified | FAILED; installed version is unknown (target 1.0) |
-| [33](#test-33) | NSH Software Distribution job, parameters and fleet loop | JOB SUCCESS; per-target package/tag/hostname output |
-| [34](#test-34) | NSH job propagates native script failure | JOB FAILED; native command exit_code=7 |
+| [33](#test-33) | SVSH Software Distribution job, parameters and fleet loop | JOB SUCCESS; per-target package/tag/hostname output |
+| [34](#test-34) | SVSH job propagates native script failure | JOB FAILED; native command exit_code=7 |
 
 ## Test 01
 
@@ -973,7 +973,7 @@ call C:\temp\AegisSoftDistTests\endpoint-check.cmd 32
 
 ## Test 33
 
-**Check:** NSH Software Distribution job, parameters and fleet loop.
+**Check:** SVSH Software Distribution job, parameters and fleet loop.
 
 **ENDPOINT - Administrator CMD:**
 
@@ -987,11 +987,11 @@ call C:\temp\AegisSoftDistTests\endpoint-setup.cmd 33
 call C:\temp\AegisSoftDistTests\server-test.cmd 33
 ```
 
-**In the NSH prompt** (replace the hostname with the endpoint where you ran setup):
+**In the SVSH prompt** (replace the hostname with the endpoint where you ran setup):
 
 ```text
 cd \\mockserver
-job run C:\temp\AegisSoftDistTests\software-workflow.nsh --kind software_distribution --param PACKAGE=fixture --param TAG=daily-run
+job run C:\temp\AegisSoftDistTests\software-workflow.svsh --kind software_distribution --param PACKAGE=fixture --param TAG=daily-run
 ```
 
 For two prepared endpoints select `cd \\WIN-TUES4V46T7I,mockserver` before the job.
@@ -1004,15 +1004,15 @@ For two prepared endpoints select `cd \\WIN-TUES4V46T7I,mockserver` before the j
 call C:\temp\AegisSoftDistTests\endpoint-check.cmd 33
 ```
 
-**Expected endpoint state:** `results\nsh.txt`: exists (read its content).
+**Expected endpoint state:** `results\svsh.txt`: exists (read its content).
 
-This is the shared NSH Runner Software Distribution caller mode. It is not an agent installer_type=nsh or proof that the production console is already wired.
+This is the shared SVSH Runner Software Distribution caller mode. It is not an agent installer_type=svsh or proof that the production console is already wired.
 
 **If it fails:** save the intended host's complete ActionStatus (phase, exit_code, reason, detail) plus endpoint-check output. Mark PASS/FAIL in the checklist.
 
 ## Test 34
 
-**Check:** NSH job propagates native script failure.
+**Check:** SVSH job propagates native script failure.
 
 **ENDPOINT - Administrator CMD:**
 
@@ -1026,11 +1026,11 @@ call C:\temp\AegisSoftDistTests\endpoint-setup.cmd 34
 call C:\temp\AegisSoftDistTests\server-test.cmd 34
 ```
 
-**In the NSH prompt** (replace the hostname with the endpoint where you ran setup):
+**In the SVSH prompt** (replace the hostname with the endpoint where you ran setup):
 
 ```text
 cd \\mockserver
-job run C:\temp\AegisSoftDistTests\software-workflow-fail.nsh --kind software_distribution --param PACKAGE=fixture --param TAG=daily-run
+job run C:\temp\AegisSoftDistTests\software-workflow-fail.svsh --kind software_distribution --param PACKAGE=fixture --param TAG=daily-run
 ```
 
 For two prepared endpoints select `cd \\WIN-TUES4V46T7I,mockserver` before the job.
@@ -1043,7 +1043,7 @@ For two prepared endpoints select `cd \\WIN-TUES4V46T7I,mockserver` before the j
 call C:\temp\AegisSoftDistTests\endpoint-check.cmd 34
 ```
 
-This is the shared NSH Runner Software Distribution caller mode. It is not an agent installer_type=nsh or proof that the production console is already wired.
+This is the shared SVSH Runner Software Distribution caller mode. It is not an agent installer_type=svsh or proof that the production console is already wired.
 
 **If it fails:** save the intended host's complete ActionStatus (phase, exit_code, reason, detail) plus endpoint-check output. Mark PASS/FAIL in the checklist.
 
@@ -1131,4 +1131,4 @@ PASS: SUCCESS and verified removed. If the product has no QuietUninstallString, 
 
 Copy the [results checklist](softdist-results.md), record the agent/mock build, endpoint hostname, case number, terminal phase/reason and endpoint-check result. New cases are PENDING until someone runs them; automated helper checks are not VM/vendor acceptance.
 
-Run-As/HKCU execution is not implemented yet (test 17 expects refusal). Production console wiring of NSH is a server-team acceptance item. If removal needs reboot and registration remains, current strict verification fails with the reboot flag retained; durable post-reboot verification is a remaining SoftDist item.
+Run-As/HKCU execution is not implemented yet (test 17 expects refusal). Production console wiring of SVSH is a server-team acceptance item. If removal needs reboot and registration remains, current strict verification fails with the reboot flag retained; durable post-reboot verification is a remaining SoftDist item.

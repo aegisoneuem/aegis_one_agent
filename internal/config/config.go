@@ -94,7 +94,7 @@ type Config struct {
 	// Bandwidth throttle caps for file transfers (BigFix-aligned). 0 = no cap.
 	// FetchBytesPerSecond caps server-to-agent downloads (FetchContent streams:
 	// software bundles, patch content, cab). UploadBytesPerSecond caps
-	// agent-to-server uploads (UploadContent streams: collect_file, NSH grab
+	// agent-to-server uploads (UploadContent streams: collect_file, SVSH grab
 	// outputs). Signed per-task rate can only go LOWER than this cap, never
 	// higher — admin's endpoint policy is non-negotiable.
 	FetchBytesPerSecond  int64

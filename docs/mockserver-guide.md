@@ -1,9 +1,9 @@
 # Mockserver — Deploy & Test Guide (Server Team)
 
 Normal startup is `mockserver.exe` or `mockserver.exe server`; server logs stay
-in the current window. Inherited AEGIS_NSH/AEGIS_NSH_SCRIPT no longer enable NSH.
-Use `mockserver.exe nsh` explicitly for the interactive terminal, or
-`mockserver.exe script C:\tests\job.nsh` for a script. In NSH modes only,
+in the current window. Inherited AEGIS_SVSH/AEGIS_SVSH_SCRIPT no longer enable SVSH.
+Use `mockserver.exe svsh` explicitly for the interactive terminal, or
+`mockserver.exe script C:\tests\job.svsh` for a script. In SVSH modes only,
 background events go to logs/mockserver.log (AEGIS_MOCK_LOG_FILE overrides).
 
 **Audience:** Aegis One server team.

@@ -18,7 +18,7 @@ By the end of this walkthrough you will have:
    VM, enrolled with a dev certificate, and connected back to your
    mockserver.
 3. Three **smoke tests** passing end-to-end — proof that the pipe works.
-4. A pointer to the three test guides (patching, softdist, nsh) you will
+4. A pointer to the three test guides (patching, softdist, svsh) you will
    execute as your actual QA work.
 
 If any step fails, Section 10 (Troubleshooting) covers the known traps.
@@ -37,7 +37,7 @@ guess.
 |   mockserver.exe          | <===== mTLS =====>  |   AegisOneClient service  |
 |   (dist/, port :50051)    |      (gRPC)         |   (installed from MSI)    |
 |                           |                     |                           |
-|   NSH REPL (optional)     |                     |   agent.log / SKVC/       |
+|   SVSH REPL (optional)     |                     |   agent.log / SKVC/       |
 +---------------------------+                     +---------------------------+
          |                                                      |
          +------------------- certs/ca.crt --------------------+
@@ -71,7 +71,7 @@ sees it come back up.
 |---|---|
 | `AegisOneClient.exe` | Agent binary (Windows service exe) |
 | `AegisOneClient.msi` | Installer for the agent — this is what runs on the VM |
-| `mockserver.exe` | The fake server + NSH REPL — runs on your dev laptop |
+| `mockserver.exe` | The fake server + SVSH REPL — runs on your dev laptop |
 | `certgen.exe` | Dev-only CA + server + client cert generator |
 | `softdist-handoff.json` | SHA256s + manifest for the above — proves which binaries you have |
 | `README.md` | One-line pointer to this guide |
@@ -238,19 +238,19 @@ If NOT connected:
 - Any other process on `:50051`? `netstat -ano | findstr :50051` should
   show only the mockserver's PID.
 
-### Step B.4 — The `nsh` SUBCOMMAND (use this for NSH tests only)
+### Step B.4 — The `svsh` SUBCOMMAND (use this for SVSH tests only)
 
 > **🚨 CORRECTION:** If anyone (including earlier docs or chat history)
-> told you to use `AEGIS_NSH=1` as an env var — that is **wrong**. The
+> told you to use `AEGIS_SVSH=1` as an env var — that is **wrong**. The
 > correct invocation is a positional subcommand:
 >
 > ```cmd
-> ..\dist\mockserver.exe nsh
+> ..\dist\mockserver.exe svsh
 > ```
 >
 > This starts the normal server AND opens an interactive REPL in the same
 > window with Tab completion. You still get agent connection logs; they
-> are interleaved with the prompt. Use this ONLY while running the NSH
+> are interleaved with the prompt. Use this ONLY while running the SVSH
 > test guide. For patching and softdist tests, use plain `mockserver.exe`
 > so the window shows clean server logs.
 
@@ -259,8 +259,8 @@ Full subcommand list (for reference):
 ```
 mockserver.exe                     Normal server
 mockserver.exe server              Same as above
-mockserver.exe nsh                 Server + interactive NSH REPL
-mockserver.exe script <file.nsh>   Server + one non-interactive NSH job
+mockserver.exe svsh                 Server + interactive SVSH REPL
+mockserver.exe script <file.svsh>   Server + one non-interactive SVSH job
 mockserver.exe pack <src> <zip>    Build a signed bundle ZIP
 mockserver.exe secrets <file>      Enter encrypted test credentials
 mockserver.exe help                Print usage
@@ -369,18 +369,18 @@ Received Heartbeat from device_id=<guid> hostname=<vm-name> os=windows agent_ver
 agent connected device_id=<guid>
 ```
 
-### Step D.2 — NSH `hosts`
+### Step D.2 — SVSH `hosts`
 
-Stop the plain mockserver (Ctrl+C) and restart in NSH mode:
+Stop the plain mockserver (Ctrl+C) and restart in SVSH mode:
 
 ```cmd
-..\dist\mockserver.exe nsh
+..\dist\mockserver.exe svsh
 ```
 
-At the `nsh>` prompt:
+At the `svsh>` prompt:
 
 ```
-nsh> hosts
+svsh> hosts
 HOSTNAME               DEVICE_ID               STATUS
 <vm-hostname>          <guid>                  live
 ```
@@ -399,7 +399,7 @@ Vijay.
 ### Smoke-1 — `hosts` lists the VM
 
 ```
-nsh> hosts
+svsh> hosts
 ```
 
 **Pass:** VM hostname + `live` status. **Fail:** VM missing — agent did
@@ -408,11 +408,11 @@ not connect. Section 10.
 ### Smoke-2 — Run a command on the VM
 
 ```
-nsh> cd <vm-hostname>
+svsh> cd <vm-hostname>
 <vm-hostname>> run hostname /shell cmd
 ```
 
-**Pass:** VM's hostname echoes back in NSH, exit=0.
+**Pass:** VM's hostname echoes back in SVSH, exit=0.
 **Fail:** `OFFLINE` or hang → agent reconnected but command channel broken.
 
 ### Smoke-3 — On-demand inventory refresh (also exercises UC-19)
@@ -424,7 +424,7 @@ nsh> cd <vm-hostname>
 **Pass (within 5s):**
 ```
 <vm-hostname>: fresh inventory (N apps, collected_at=...)
-nsh: refresh complete — 1/1 received, 0 timed out — run `inventory apps` to view
+svsh: refresh complete — 1/1 received, 0 timed out — run `inventory apps` to view
 ```
 
 Then:
@@ -449,12 +449,12 @@ If all three pass → you are **ready for the test guides**.
 | agent log: `tls: unknown authority` or `x509: certificate signed by unknown authority` | `ca.crt` on VM ≠ the one mockserver uses | re-copy `ca.crt` from `certs/` on dev laptop to the VM path in `CACERTFILE` |
 | agent log: `connection refused` | mockserver not running or wrong IP | restart mockserver, verify `telnet <ip> 50051` from the VM |
 | mock: `no cert verified` | mockserver `certs/` folder empty or wrong | run `certgen.exe` again in the mockserver's working directory |
-| NSH `inventory apps` → `no DeviceStateReport received yet` | agent hasn't sent one yet | run `inventory refresh` first (UC-19); or wait one `AEGIS_DEVICE_STATE_INTERVAL` cycle |
+| SVSH `inventory apps` → `no DeviceStateReport received yet` | agent hasn't sent one yet | run `inventory refresh` first (UC-19); or wait one `AEGIS_DEVICE_STATE_INTERVAL` cycle |
 | `AEGIS_DEVICE_STATE_INTERVAL` ignored, cycle stays at 5 min | value was `30s` not `30` | fix: `setx AEGIS_DEVICE_STATE_INTERVAL 30 /M` and restart service |
 | patch scan tests silently skip, log says `patch compliance scan disabled` | `AEGIS_WSUS_SCAN_CAB` unset | download wsusscn2.cab, `setx AEGIS_WSUS_SCAN_CAB C:\patches\wsusscn2.cab /M`, restart service |
 | mTLS handshake fails with `bad certificate` and system clock looks weird | clock skew > ~5 min | `w32tm /resync` on VM, redo enroll (`sc stop AegisOneClient` + `sc start AegisOneClient`) |
-| NSH prompt looks like `[1 host]>` when you only intended one target | you ran `cd` with a wildcard | plain `cd <hostname>` for single target |
-| Trying to run NSH commands and getting `OFFLINE` from the device | plain `mockserver.exe` restarted, lost in-memory `liveAgents` map | agent will reconnect in <30s; retry |
+| SVSH prompt looks like `[1 host]>` when you only intended one target | you ran `cd` with a wildcard | plain `cd <hostname>` for single target |
+| Trying to run SVSH commands and getting `OFFLINE` from the device | plain `mockserver.exe` restarted, lost in-memory `liveAgents` map | agent will reconnect in <30s; retry |
 
 ### A few sc / registry quick refs
 
@@ -473,7 +473,7 @@ C:\ProgramData\SKVC\logs\agent.log         primary agent log
 C:\ProgramData\SKVC\logs\softdist\         softdist action transcripts
 C:\ProgramData\SKVC\logs\run\              run_command transcripts
 C:\ProgramData\SKVC\logs\shell\            open_shell session transcripts
-C:\ProgramData\SKVC\logs\nsh\              NSH-driven captures
+C:\ProgramData\SKVC\logs\svsh\              SVSH-driven captures
 C:\ProgramData\SKVC\cache\                 encrypted content cache
 ```
 
@@ -487,7 +487,7 @@ Three guides, in this order:
 |---|---|---|
 | `docs/tester-guide-patching.md` | Windows patch install/uninstall, local scan, device state report, third-party installed-apps inventory (UC-18), HKU per-user parity + on-demand refresh (UC-19) | Day 1-2 — core compliance pipeline |
 | `docs/tester-guide-softdist.md` | Software distribution A-K blocks: multi-file packages, pre/post commands, dependencies, detection rules, 7-Zip + Firefox real-vendor flows, rollback, crash recovery, descendant kill, reboot handling, bandwidth throttling | Day 2-5 — biggest surface |
-| `docs/tester-guide-nsh.md` | NSH REPL: ad-hoc commands, file operations, scripting (heredoc / variables / if / for), live shell, fleet fan-out, inventory | Day 3+ — operator-facing surface |
+| `docs/tester-guide-svsh.md` | SVSH REPL: ad-hoc commands, file operations, scripting (heredoc / variables / if / for), live shell, fleet fan-out, inventory | Day 3+ — operator-facing surface |
 
 ### When to loop back to Vijay vs keep going
 
@@ -497,7 +497,7 @@ Three guides, in this order:
 | A test case FAILS with a clean error that matches a known troubleshooting row | Fix locally, retry once, if still fails → record and move on, flag to Vijay in the end-of-day summary |
 | An **UNEXPECTED** error / crash / hang / destroyed state | STOP. Capture logs (`C:\ProgramData\SKVC\logs\agent.log`, mockserver window, `install.log`). Message Vijay with the symptom + logs — don't guess, don't delete, don't retry |
 | MSI install itself refuses | STOP. Share `silent-install.log` with Vijay |
-| Mockserver crashes | STOP. Share the full mockserver window log + what the last NSH command was |
+| Mockserver crashes | STOP. Share the full mockserver window log + what the last SVSH command was |
 
 **Golden rule:** if you are not sure whether something is a known limitation
 or a real bug, assume it's a bug and flag it. False positives are cheap;
@@ -512,7 +512,7 @@ missed regressions aren't.
 cd C:\aegis-test
 ..\dist\certgen.exe                              :: once
 set AEGIS_ENROLL_TOKEN=tenant-dev-01
-..\dist\mockserver.exe                           :: or `mockserver.exe nsh` for NSH tests
+..\dist\mockserver.exe                           :: or `mockserver.exe svsh` for SVSH tests
 
 :: ==== TARGET VM (admin cmd) ====
 setx AEGIS_DEVICE_STATE_INTERVAL 30 /M           :: GOTCHA — INTEGER seconds, not "30s"
@@ -522,10 +522,10 @@ notepad aegisone.cfg                             :: set SERVERADDRESS / ENROLLTO
 silent-install.cmd
 sc query AegisOneClient                          :: expect STATE = 4 RUNNING
 
-:: ==== BACK ON DEV LAPTOP (NSH) ====
-..\dist\mockserver.exe nsh
-nsh> hosts                                       :: VM should appear
-nsh> cd <vm-hostname>
+:: ==== BACK ON DEV LAPTOP (SVSH) ====
+..\dist\mockserver.exe svsh
+svsh> hosts                                       :: VM should appear
+svsh> cd <vm-hostname>
 <vm-hostname>> inventory refresh
 <vm-hostname>> inventory apps                    :: non-empty table = PASS
 ```

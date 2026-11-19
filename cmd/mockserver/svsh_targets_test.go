@@ -8,7 +8,7 @@ import (
 
 func TestKnownOfflineDeviceSelectableWithoutHostsOrHeartbeat(t *testing.T) {
 	srv := &server{byID: map[string]*deviceRecord{"dev-1": {DeviceID: "dev-1", Hostname: "offline-vm", ComputerID: "1234567890"}}, liveAgents: make(map[string]*liveAgent), pending: make(map[string]chan *pb.ActionStatus)}
-	s := &nshSession{srv: srv}
+	s := &svshSession{srv: srv}
 	s.verbCD(`\\offline-vm`)
 	if len(s.targets) != 1 || s.targets[0] != "dev-1" {
 		t.Fatalf("offline selection=%v", s.targets)
@@ -24,7 +24,7 @@ func TestKnownOfflineDeviceSelectableWithoutHostsOrHeartbeat(t *testing.T) {
 
 func TestAmbiguousHostnameDoesNotChangeSelection(t *testing.T) {
 	srv := &server{byID: map[string]*deviceRecord{"device-a": {DeviceID: "device-a", Hostname: "duplicate"}, "device-b": {DeviceID: "device-b", Hostname: "duplicate"}}}
-	s := &nshSession{srv: srv, targets: []string{"device-a"}}
+	s := &svshSession{srv: srv, targets: []string{"device-a"}}
 	s.verbCD(`\\duplicate`)
 	if len(s.targets) != 1 || s.targets[0] != "device-a" {
 		t.Fatal("ambiguous name changed target")

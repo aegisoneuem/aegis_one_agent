@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aegisoneuem/aegis_one_agent/pkg/nsh"
+	"github.com/aegisoneuem/aegis_one_agent/pkg/svsh"
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -56,7 +56,7 @@ func jobTestServer() (*server, map[string]*jobTestStream) {
 func TestSharedMockRunnerSupportsBothJobKindsAndScope(t *testing.T) {
 	srv, streams := jobTestServer()
 	for _, kind := range []string{"script_job", "software_distribution"} {
-		result := newMockNSHRunner(srv).Run(context.Background(), nsh.Job{ID: kind, Kind: kind, Targets: []string{"a"}, Parameters: map[string]string{"TAG": kind}, Script: "foreach host in *\necho ${TAG}\nend\n"})
+		result := newMockSVSHRunner(srv).Run(context.Background(), svsh.Job{ID: kind, Kind: kind, Targets: []string{"a"}, Parameters: map[string]string{"TAG": kind}, Script: "foreach host in *\necho ${TAG}\nend\n"})
 		if result.Status != "success" || result.TotalActions != 1 || len(result.Actions) != 1 || result.Actions[0].TargetID != "a" || !strings.Contains(result.Output, kind) {
 			t.Fatalf("job: %+v", result)
 		}
@@ -64,11 +64,11 @@ func TestSharedMockRunnerSupportsBothJobKindsAndScope(t *testing.T) {
 	if streams["b"].calls != 0 {
 		t.Fatal("job wildcard escaped authorized targets")
 	}
-	result := newMockNSHRunner(srv).Run(context.Background(), nsh.Job{Targets: []string{"a"}, Script: "cd \\\\host-b\nhostname\n"})
+	result := newMockSVSHRunner(srv).Run(context.Background(), svsh.Job{Targets: []string{"a"}, Script: "cd \\\\host-b\nhostname\n"})
 	if result.Status != "failed" || streams["b"].calls != 0 {
 		t.Fatal("explicit cd escaped job scope")
 	}
-	result = newMockNSHRunner(srv).Run(context.Background(), nsh.Job{Targets: []string{"a"}, Script: "hosts\n"})
+	result = newMockSVSHRunner(srv).Run(context.Background(), svsh.Job{Targets: []string{"a"}, Script: "hosts\n"})
 	if strings.Contains(result.Output, "host-b") {
 		t.Fatal("inventory leaked outside job scope")
 	}
@@ -78,7 +78,7 @@ func TestMockJobCancellationClearsPendingWait(t *testing.T) {
 	streams["a"].noReply = true
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	result := newMockNSHRunner(srv).Run(ctx, nsh.Job{Targets: []string{"a"}, Script: "hostname"})
+	result := newMockSVSHRunner(srv).Run(ctx, svsh.Job{Targets: []string{"a"}, Script: "hostname"})
 	if result.Status != "cancelled" {
 		t.Fatalf("%+v", result)
 	}
@@ -93,7 +93,7 @@ func TestMockJobCancellationClearsPendingWait(t *testing.T) {
 func TestJobWildcardReportsScopedOfflineTargetAsFailure(t *testing.T) {
 	srv, _ := jobTestServer()
 	delete(srv.liveAgents, "a")
-	result := newMockNSHRunner(srv).Run(context.Background(), nsh.Job{Targets: []string{"a"}, Script: "foreach host in *\nhostname\nend\n"})
+	result := newMockSVSHRunner(srv).Run(context.Background(), svsh.Job{Targets: []string{"a"}, Script: "foreach host in *\nhostname\nend\n"})
 	if result.Status != "failed" || !strings.Contains(result.Output, "offline") {
 		t.Fatalf("offline target silently skipped: %+v", result)
 	}
@@ -101,15 +101,15 @@ func TestJobWildcardReportsScopedOfflineTargetAsFailure(t *testing.T) {
 func TestJobRunCommandPersistsStructuredResultWithoutChangingSession(t *testing.T) {
 	srv, _ := jobTestServer()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "job.nsh")
+	path := filepath.Join(dir, "job.svsh")
 	os.WriteFile(path, []byte("echo ${TAG}"), 0600)
 	resultPath := filepath.Join(dir, "result.json")
-	t.Setenv("AEGIS_NSH_JOB_RESULT", resultPath)
-	s := &nshSession{srv: srv, targets: []string{"a"}, shell: "powershell", timeout: 40, capture: true}
+	t.Setenv("AEGIS_SVSH_JOB_RESULT", resultPath)
+	s := &svshSession{srv: srv, targets: []string{"a"}, shell: "powershell", timeout: 40, capture: true}
 	if err := s.verbJob(`run "` + path + `" --param TAG=job-tag --kind software_distribution`); err != nil {
 		t.Fatal(err)
 	}
-	var result nsh.Result
+	var result svsh.Result
 	data, err := os.ReadFile(resultPath)
 	if err != nil {
 		t.Fatal(err)

@@ -1,4 +1,4 @@
-package nsh
+package svsh
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Job is the same NSH script execution request for Script Job and Software
+// Job is the same SVSH script execution request for Script Job and Software
 // Distribution script steps. Kind identifies the caller; it does not change the
 // language or automatically execute an installer. The caller supplies identity,
 // authorizes Targets, schedules jobs and persists results.
@@ -70,7 +70,7 @@ func (r Runner) Run(ctx context.Context, job Job) Result {
 		return fail(fmt.Errorf("supply exactly one of script or script_file"))
 	}
 	if r.NewBackend == nil {
-		return fail(fmt.Errorf("NSH backend factory is required"))
+		return fail(fmt.Errorf("SVSH backend factory is required"))
 	}
 	if len(job.Script) > DefaultMaxSourceBytes {
 		return fail(fmt.Errorf("script exceeds source byte limit"))
@@ -85,7 +85,7 @@ func (r Runner) Run(ctx context.Context, job Job) Result {
 		return fail(err)
 	}
 	if backend == nil {
-		return fail(fmt.Errorf("NSH backend factory returned nil"))
+		return fail(fmt.Errorf("SVSH backend factory returned nil"))
 	}
 	if err = backend.SelectTargets(ctx, append([]string(nil), job.Targets...)); err != nil {
 		return fail(err)
