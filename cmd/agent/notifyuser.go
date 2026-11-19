@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ type pendingUIAction struct {
 	msg         uimsg.Message // the message to re-show on snooze
 	onAccept    string        // "reboot" etc.
 	acceptLabel string        // the primary (accept) button label
+	secureDir   string        // for the post-reboot marker
 }
 
 var (
@@ -97,7 +99,8 @@ func (d *dispatcher) handleNotifyUserCmd(ctx context.Context, _ pb.AgentControlP
 		pendingMu.Lock()
 		pendingActions[cmd.CommandId] = &pendingUIAction{
 			commandID: cmd.CommandId, deviceID: d.cfg.DeviceID, outbox: d.outbox,
-			actor: cmd.Actor, source: cmd.Source, msg: msg, onAccept: strings.ToLower(p.OnAccept), acceptLabel: accept,
+			actor: cmd.Actor, source: cmd.Source, msg: msg, onAccept: strings.ToLower(p.OnAccept),
+			acceptLabel: accept, secureDir: d.cfg.SecureDir,
 		}
 		pendingMu.Unlock()
 	}
@@ -164,6 +167,56 @@ func reportUserResponse(id, action string, snoozeSecs int64) {
 	// Run the local action bound to the accept button (user said yes).
 	if pa.onAccept == "reboot" && action == pa.acceptLabel {
 		slog.Warn("notify_user: user accepted — scheduling reboot", "command_id", pa.commandID)
+		writeRebootNotice(pa.secureDir, pa.msg.Detail) // show a post-reboot message next boot
 		go handleReboot(&pb.RebootSpec{DelaySeconds: 60, Message: "AegisOne: restart requested by administrator"})
+	}
+}
+
+// promptPatchReboot shows the logged-on user the reboot action prompt after a patch
+// install that needs a restart (agent-initiated, config-gated). The user's choice
+// flows through the normal response path (accept → reboot + post-reboot notice).
+func promptPatchReboot(outbox chan<- *pb.AgentMessage, deviceID, secureDir, detail string) {
+	id := "patch-reboot-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	msg := uimsg.Message{
+		Kind: uimsg.KindAction, ID: id,
+		Title:       "Restart Required",
+		Text:        "Updates have been installed. A restart is required to finish.",
+		Detail:      detail,
+		Buttons:     []string{"Restart now", "Later"},
+		AllowSnooze: true,
+		ConfirmText: "This will restart your computer now. Save your work before continuing.",
+	}
+	pendingMu.Lock()
+	pendingActions[id] = &pendingUIAction{
+		commandID: id, deviceID: deviceID, outbox: outbox, msg: msg,
+		onAccept: "reboot", acceptLabel: "Restart now", secureDir: secureDir,
+	}
+	pendingMu.Unlock()
+	if deliverUIMessage(msg) == 0 {
+		pendingMu.Lock()
+		delete(pendingActions, id)
+		pendingMu.Unlock()
+	}
+}
+
+// showPostRebootNoticeIfAny shows a one-time "updates applied" message after a reboot
+// the agent scheduled. Retries until a user session is available (the user may log in
+// after boot). Runs as a startup goroutine.
+func showPostRebootNoticeIfAny(secureDir string) {
+	detail, ok := consumeRebootNotice(secureDir)
+	if !ok {
+		return
+	}
+	msg := uimsg.Message{
+		Kind:  uimsg.KindMessage,
+		Title: "Updates Applied",
+		Text:  "Your computer was restarted to finish installing updates.",
+		Detail: detail,
+	}
+	for i := 0; i < 60; i++ { // retry ~10 min for a user to log in
+		if deliverUIMessage(msg) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Second)
 	}
 }

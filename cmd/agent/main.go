@@ -669,6 +669,7 @@ func runProcess(parentCtx context.Context) {
 		installedSet: installedSet,
 		timeout:      cfg.InstallTimeout,
 		maxAttempts:  cfg.InstallMaxAttempts, retryBackoff: cfg.InstallRetryBackoff,
+		notifyOnPatch: cfg.NotifyOnPatch, secureDir: cfg.SecureDir,
 	}
 	go inst.patchWorker(installJobs)
 
@@ -751,7 +752,8 @@ func runProcess(parentCtx context.Context) {
 	// No-op off-service (dev/console). Platform-split; stubbed on non-Windows.
 	startServiceAliveBeacon() // helper ties its lifetime to this beacon
 	go runSessionHelperSupervisor(ctx)
-	go runUINotifyServer(ctx) // pipe the tray UIs connect to for notifications
+	go runUINotifyServer(ctx)              // pipe the tray UIs connect to for notifications
+	go showPostRebootNoticeIfAny(cfg.SecureDir) // "updates applied" after an agent-scheduled reboot
 
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key

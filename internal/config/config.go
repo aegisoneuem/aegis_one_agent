@@ -169,6 +169,12 @@ type Config struct {
 	// work; production/hardened deployments set AEGIS_TAMPER_PROTECT=1.
 	TamperProtect bool
 
+	// NotifyOnPatch, when set (AEGIS_NOTIFY_ON_PATCH=1), makes the agent show the
+	// logged-on user a notification around a patch install (installing / installed)
+	// and, when a reboot is required, an action prompt. OFF by default — a UEM agent
+	// is silent unless the operator turns this on.
+	NotifyOnPatch bool
+
 	ServerAddress         string
 	LogLevel              string
 	LogFile               string
@@ -366,6 +372,7 @@ func Load() Config {
 		DexPingTarget:                  getenv("AEGIS_DEX_PING_TARGET", ""),
 		BinaryIntegrity:                int64FromEnv("AEGIS_BINARY_INTEGRITY", 0) == 1,
 		TamperProtect:                  int64FromEnv("AEGIS_TAMPER_PROTECT", 0) == 1,
+		NotifyOnPatch:                  int64FromEnv("AEGIS_NOTIFY_ON_PATCH", 0) == 1,
 		UploadBytesPerSecond:   int64FromEnv("AEGIS_UPLOAD_MAX_BYTES_PER_SECOND", 0),
 		SoftdistVerifyInterval: durationFromEnv("AEGIS_SOFTDIST_VERIFY_INTERVAL", 5*time.Second),
 		ServerAddress:          getenv("AEGIS_SERVER_ADDRESS", "localhost:50051"),

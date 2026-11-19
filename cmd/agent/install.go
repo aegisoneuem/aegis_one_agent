@@ -68,6 +68,8 @@ type patchInstaller struct {
 	timeout      time.Duration
 	maxAttempts  int
 	retryBackoff time.Duration
+	notifyOnPatch bool   // show the user install/reboot notifications (AEGIS_NOTIFY_ON_PATCH)
+	secureDir     string // for the post-reboot marker
 }
 
 // isInstalled reports whether the KB is already present, using the AUTHORITATIVE
@@ -197,6 +199,10 @@ func (p *patchInstaller) runInstall(job installJob) {
 		slog.Info("install_patch: using delivered file (just-in-time, not cached)", "command_id", cmdID, "file", installPath)
 	}
 
+	if p.notifyOnPatch {
+		showUserNotification("AegisOne — Updates", "Installing update "+kb+"…")
+	}
+
 	slog.Info("install_patch: running", "command_id", cmdID, "kb", kb, "from_cache", fromCache)
 	stopPings := p.startProgressPings(cmdID, actionPatchInstall, kb, started)
 	st := handleInstallPatch(job.spec, installPath, p.timeout, p.maxAttempts, p.retryBackoff, emit)
@@ -231,6 +237,16 @@ func (p *patchInstaller) runInstall(job installJob) {
 	// which patches are waiting (cleared once the OS pending-reboot flag is gone).
 	if st.Phase == pb.ActionPhase_ACTION_PHASE_SUCCESS && st.RebootRequired && p.rebootStore != nil {
 		p.rebootStore.add(kb)
+	}
+
+	// User notification (config-gated): a plain "installed" message, or — when the
+	// patch needs a restart — the reboot action prompt (snooze/deadline/confirm).
+	if p.notifyOnPatch && st.Phase == pb.ActionPhase_ACTION_PHASE_SUCCESS {
+		if st.RebootRequired {
+			promptPatchReboot(p.outbox, p.deviceID, p.secureDir, "This restart applies update "+kb+".")
+		} else {
+			showUserNotification("AegisOne — Updates", "Update "+kb+" installed.")
+		}
 	}
 
 	sendStatus(p.outbox, st)
