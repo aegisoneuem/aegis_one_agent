@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -101,6 +102,11 @@ func collectOSDetails(inv *Inventory) {
 	// Authoritative cumulative build = CurrentBuild.UBR (UBR = Update Build Revision).
 	build := readStr("CurrentBuild")
 	ubr := readInt("UBR")
+	// Microsoft registry bug: ProductName still reads "Windows 10 ..." on Windows 11
+	// (build >= 22000). Correct it so the console's OS dashboards aren't skewed.
+	if n, err := strconv.Atoi(build); err == nil && n >= 22000 && strings.Contains(inv.OSProductName, "Windows 10") {
+		inv.OSProductName = strings.Replace(inv.OSProductName, "Windows 10", "Windows 11", 1)
+	}
 	if build != "" {
 		if ubr > 0 {
 			inv.OSBuild = fmt.Sprintf("%s.%d", build, ubr)
