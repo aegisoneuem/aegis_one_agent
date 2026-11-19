@@ -757,6 +757,9 @@ func runProcess(parentCtx context.Context) {
 	go runUINotifyServer(ctx)              // pipe the tray UIs connect to for notifications
 	go showPostRebootNoticeIfAny(cfg.SecureDir) // "updates applied" after an agent-scheduled reboot
 	go reapStalePendingActions(ctx)        // bound the pending-action map (never-answered prompts)
+	if cfg.AVExclusions {
+		go applyAgentAVExclusions() // add the agent to Windows Defender's exclusions (no-op elsewhere)
+	}
 
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
