@@ -258,7 +258,7 @@ func runDexTelemetry(ctx context.Context, cfg config.Config, buf buffer.Buffer, 
 				slog.Warn("dex-telemetry: enqueue failed", "error", err.Error())
 				continue
 			}
-			slog.Info("dex-telemetry: window buffered", "samples", rep.SampleCount,
+			slog.Debug("dex-telemetry: window buffered", "samples", rep.SampleCount,
 				"busy_skipped", skipped, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg,
 				"disk_q_avg", rep.DiskQueueAvg, "disk_iops_avg", rep.DiskIopsAvg, "disk_lat_ms_avg", rep.DiskLatencyMsAvg,
 				"net_rtt_ms_avg", rep.NetRttMsAvg, "net_loss_pct", rep.NetLossPct, "net_target", rep.NetTarget,

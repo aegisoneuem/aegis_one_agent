@@ -222,7 +222,7 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 		case age >= cfg.FullInventorySafetyNetInterval:
 			reason = "safety-net"
 		}
-		slog.Info("TIER-3 full-inventory: snapshot buffered",
+		slog.Debug("TIER-3 full-inventory: snapshot buffered",
 			"trigger", trigger,
 			"reason", reason,
 			"apps", len(rep.InstalledApps),

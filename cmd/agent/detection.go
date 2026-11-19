@@ -83,7 +83,7 @@ func drainReports(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) 
 			if err := stream.Send(msg); err != nil {
 				return err
 			}
-			slog.Info("sent full-inventory report to server",
+			slog.Debug("sent full-inventory report to server",
 				"trigger", rep.Trigger, "apps", len(rep.InstalledApps),
 				"disks", len(rep.GetHardware().GetDisks()),
 				"nics", len(rep.GetHardware().GetNics()))
@@ -99,7 +99,7 @@ func drainReports(stream pb.AgentControlPlane_ConnectClient, buf buffer.Buffer) 
 			if err := stream.Send(msg); err != nil {
 				return err
 			}
-			slog.Info("sent dex-telemetry to server", "samples", rep.SampleCount, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg)
+			slog.Debug("sent dex-telemetry to server", "samples", rep.SampleCount, "cpu_avg", rep.CpuAvg, "mem_used_avg", rep.MemUsedAvg)
 			return nil
 
 		default:
