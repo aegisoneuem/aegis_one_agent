@@ -204,31 +204,40 @@ func runDialog(m uimsg.Message) (string, int64) {
 	}
 
 	const (
-		width  = 540
-		margin = 24
-		textX  = 84 // right of the icon
+		width  = 560
+		margin = 26
+		textX  = 88 // right of the icon
 		textW  = width - textX - margin
-		bh     = 32
-		bw     = 120
+		bh     = 30
+		bw     = 118
 		gap    = 10
-		bodyH  = 54
+		bodyH  = 50
 	)
 
 	// Top-down layout cursor → also yields the client height so nothing is clipped.
-	titleY := 22
-	bodyY := titleY + 34
-	cur := bodyY + bodyH + 6
+	// BigFix-style: generous spacing, action buttons on their own row, and the snooze
+	// control (label + dropdown + Snooze button) on a separate row below.
+	titleY := 24
+	bodyY := titleY + 32
+	cur := bodyY + bodyH + 8
 	detailY, deadlineY := 0, 0
 	if m.Detail != "" {
 		detailY = cur
-		cur += 44
+		cur += 42
 	}
 	if m.DeadlineUnix > 0 {
 		deadlineY = cur
 		cur += 24
 	}
-	rowY := cur + 8
-	clientH := rowY + bh + 16
+	actionRowY := cur + 16
+	snoozeLabelY, snoozeRowY := 0, 0
+	bottom := actionRowY + bh
+	if hasSnooze {
+		snoozeLabelY = actionRowY + bh + 18
+		snoozeRowY = snoozeLabelY + 20
+		bottom = snoozeRowY + bh
+	}
+	clientH := bottom + 20
 
 	// Convert the desired CLIENT size into the full WINDOW size (so the title bar +
 	// borders don't eat the buttons).
@@ -286,7 +295,7 @@ func runDialog(m uimsg.Message) (string, int64) {
 	// Icon on the left, aligned with the title.
 	iconCtrl, _, _ := procCreateWindowEx.Call(0,
 		uintptr(unsafe.Pointer(mustUTF16("STATIC"))), uintptr(unsafe.Pointer(mustUTF16(""))),
-		wsChild|wsVisible|ssIcon, margin, uintptr(titleY+2), 32, 32, hwnd, 0, hInst, 0)
+		wsChild|wsVisible|ssIcon, margin, uintptr(titleY), 40, 40, hwnd, 0, hInst, 0)
 	if iconCtrl != 0 && icon != 0 {
 		procSendMessage.Call(iconCtrl, stmSetIcon, icon, 0)
 	}
@@ -302,7 +311,7 @@ func runDialog(m uimsg.Message) (string, int64) {
 		newControl(hwnd, hInst, bodyFont, "STATIC", dl, wsChild|wsVisible|ssLeft, textX, deadlineY, textW, 20, 0)
 	}
 
-	// Bottom row: action buttons on the right.
+	// Action buttons: their own row, right-aligned (the primary/first is the default).
 	bx := width - margin - bw
 	for i := len(labels) - 1; i >= 0; i-- {
 		id := uintptr(100 + i)
@@ -311,15 +320,18 @@ func runDialog(m uimsg.Message) (string, int64) {
 			bstyle |= bsDefPushBtn
 		}
 		st.buttons[id] = btnInfo{action: labels[i]}
-		newControl(hwnd, hInst, bodyFont, "BUTTON", labels[i], bstyle, bx, rowY, bw, bh, id)
+		newControl(hwnd, hInst, bodyFont, "BUTTON", labels[i], bstyle, bx, actionRowY, bw, bh, id)
 		bx -= bw + gap
 	}
-	// Snooze dropdown + button on the left (BigFix "remind me again" style).
+	// Snooze row (BigFix "Click Snooze to be reminded again:"): a caption, a duration
+	// dropdown on the left and the Snooze button on the right.
 	if hasSnooze {
+		newControl(hwnd, hInst, bodyFont, "STATIC", "Click Snooze to be reminded again:",
+			wsChild|wsVisible|ssLeft, margin, snoozeLabelY, 320, 18, 0)
 		combo, _, _ := procCreateWindowEx.Call(0,
 			uintptr(unsafe.Pointer(mustUTF16("COMBOBOX"))), uintptr(unsafe.Pointer(mustUTF16(""))),
 			wsChild|wsVisible|wsTabStop|cbsDropDownList|wsVScroll,
-			margin, uintptr(rowY+2), 150, 220, hwnd, 0, hInst, 0)
+			margin, uintptr(snoozeRowY+1), 170, 240, hwnd, 0, hInst, 0)
 		procSendMessage.Call(combo, wmSetFont, bodyFont, 1)
 		for _, s := range snoozeOpts {
 			procSendMessage.Call(combo, cbAddString, 0, uintptr(unsafe.Pointer(mustUTF16(humanizeSnooze(s)))))
@@ -327,7 +339,8 @@ func runDialog(m uimsg.Message) (string, int64) {
 		procSendMessage.Call(combo, cbSetCurSel, 0, 0)
 		st.comboHwnd = combo
 		st.buttons[snoozeButtonID] = btnInfo{action: "snoozed", snooze: snoozeOpts[0]}
-		newControl(hwnd, hInst, bodyFont, "BUTTON", "Snooze", wsChild|wsVisible|wsTabStop, margin+158, rowY, 92, bh, snoozeButtonID)
+		newControl(hwnd, hInst, bodyFont, "BUTTON", "Snooze", wsChild|wsVisible|wsTabStop,
+			width-margin-bw, snoozeRowY, bw, bh, snoozeButtonID)
 	}
 
 	procSetForeground.Call(hwnd)
