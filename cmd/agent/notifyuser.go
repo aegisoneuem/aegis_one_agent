@@ -47,12 +47,61 @@ type pendingUIAction struct {
 	onAccept    string        // "reboot" etc.
 	acceptLabel string        // the primary (accept) button label
 	secureDir   string        // for the post-reboot marker
+	createdAt   time.Time     // for TTL eviction (never-answered actions)
 }
+
+const (
+	maxPendingActions   = 256            // hard cap (evict oldest beyond this)
+	pendingActionMaxAge = 24 * time.Hour // reap entries no user ever answered
+)
 
 var (
 	pendingMu      sync.Mutex
 	pendingActions = map[string]*pendingUIAction{}
 )
+
+// registerPendingAction stores an outstanding action, bounding the map: it stamps the
+// entry and evicts the oldest if the cap is reached, so a user who never answers a
+// prompt (or a reconnect that re-pushes one) can't grow memory without limit.
+func registerPendingAction(id string, pa *pendingUIAction) {
+	pa.createdAt = time.Now()
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	if _, exists := pendingActions[id]; !exists && len(pendingActions) >= maxPendingActions {
+		var oldestID string
+		var oldest time.Time
+		for k, v := range pendingActions {
+			if oldestID == "" || v.createdAt.Before(oldest) {
+				oldestID, oldest = k, v.createdAt
+			}
+		}
+		delete(pendingActions, oldestID)
+	}
+	pendingActions[id] = pa
+}
+
+// reapStalePendingActions periodically removes actions no user ever answered, so the
+// map stays bounded over a long-running session. Started once from runProcess.
+func reapStalePendingActions(ctx context.Context) {
+	defer recoverLog("pending-action-reaper")
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cutoff := time.Now().Add(-pendingActionMaxAge)
+			pendingMu.Lock()
+			for k, v := range pendingActions {
+				if v.createdAt.Before(cutoff) {
+					delete(pendingActions, k)
+				}
+			}
+			pendingMu.Unlock()
+		}
+	}
+}
 
 // showUserNotification is a convenience for an info balloon (used by patch-flow hooks).
 func showUserNotification(title, text string) int {
@@ -96,13 +145,11 @@ func (d *dispatcher) handleNotifyUserCmd(ctx context.Context, _ pb.AgentControlP
 		if len(p.Buttons) > 0 {
 			accept = p.Buttons[0]
 		}
-		pendingMu.Lock()
-		pendingActions[cmd.CommandId] = &pendingUIAction{
+		registerPendingAction(cmd.CommandId, &pendingUIAction{
 			commandID: cmd.CommandId, deviceID: d.cfg.DeviceID, outbox: d.outbox,
 			actor: cmd.Actor, source: cmd.Source, msg: msg, onAccept: strings.ToLower(p.OnAccept),
 			acceptLabel: accept, secureDir: d.cfg.SecureDir,
-		}
-		pendingMu.Unlock()
+		})
 	}
 
 	n := deliverUIMessage(msg)
@@ -186,12 +233,10 @@ func promptPatchReboot(outbox chan<- *pb.AgentMessage, deviceID, secureDir, deta
 		AllowSnooze: true,
 		ConfirmText: "This will restart your computer now. Save your work before continuing.",
 	}
-	pendingMu.Lock()
-	pendingActions[id] = &pendingUIAction{
+	registerPendingAction(id, &pendingUIAction{
 		commandID: id, deviceID: deviceID, outbox: outbox, msg: msg,
 		onAccept: "reboot", acceptLabel: "Restart now", secureDir: secureDir,
-	}
-	pendingMu.Unlock()
+	})
 	if deliverUIMessage(msg) == 0 {
 		pendingMu.Lock()
 		delete(pendingActions, id)

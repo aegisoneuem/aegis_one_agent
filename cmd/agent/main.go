@@ -756,6 +756,7 @@ func runProcess(parentCtx context.Context) {
 	go runSessionHelperSupervisor(ctx)
 	go runUINotifyServer(ctx)              // pipe the tray UIs connect to for notifications
 	go showPostRebootNoticeIfAny(cfg.SecureDir) // "updates applied" after an agent-scheduled reboot
+	go reapStalePendingActions(ctx)        // bound the pending-action map (never-answered prompts)
 
 	// Load + RE-VERIFY the persisted signed policy with tamper detection against
 	// the sealed anti-rollback floor. Runs after the audit logger + outbox + key
