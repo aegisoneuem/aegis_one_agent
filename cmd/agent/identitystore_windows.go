@@ -3,12 +3,15 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/aegisoneuem/aegis_one_agent/internal/secure"
 )
 
 // The durable identity store lives in the HKLM registry, NOT under the install
@@ -22,8 +25,16 @@ const (
 	identityRegValue = "identity"
 )
 
-// readDurableIdentity reads the identity record from the durable machine store.
-// ok=false when none is stored or it cannot be read/parsed.
+// readDurableIdentity reads the identity record from the durable machine store. The
+// value is DPAPI-machine-sealed (opaque in regedit; a casual edit won't unseal and is
+// ignored → the agent falls back to signal-matching rather than trusting a tampered
+// id). A plaintext legacy value from an older agent is still accepted for continuity,
+// then re-sealed on the next write. ok=false when none is stored or it cannot be read.
+//
+// NOTE: DPAPI machine scope is not admin-PROOF (an admin can seal their own blob) — it
+// makes the value opaque + resists casual tampering. The admin-proof anchor is a
+// TPM-NV-sealed identity (planned, not built). Identity is never a trust anchor anyway:
+// command authorization is the Ed25519 cert/signature, not the device id.
 func readDurableIdentity() (identity, bool) {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, identityRegPath, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	if err != nil {
@@ -34,20 +45,34 @@ func readDurableIdentity() (identity, bool) {
 	if err != nil {
 		return identity{}, false
 	}
-	var id identity
-	if json.Unmarshal([]byte(s), &id) != nil || id.DeviceID == "" {
-		return identity{}, false
+	// Preferred: base64 → DPAPI unseal → JSON.
+	if blob, berr := base64.StdEncoding.DecodeString(s); berr == nil {
+		if plain, derr := secure.OpenMachine(blob); derr == nil {
+			var id identity
+			if json.Unmarshal(plain, &id) == nil && id.DeviceID != "" {
+				return id, true
+			}
+		}
 	}
-	return id, true
+	// Legacy / back-compat: a plaintext JSON value from an older agent.
+	var id identity
+	if json.Unmarshal([]byte(s), &id) == nil && id.DeviceID != "" {
+		return id, true
+	}
+	return identity{}, false
 }
 
-// writeDurableIdentity mirrors the identity record to the durable machine store.
-// Best-effort: a non-elevated dev run cannot write HKLM (logged at debug) — the
-// LocalSystem service can.
+// writeDurableIdentity mirrors the identity record to the durable machine store,
+// DPAPI-machine-sealed + base64. Best-effort: a non-elevated dev run cannot write HKLM
+// (logged at debug) — the LocalSystem service can.
 func writeDurableIdentity(id identity) {
 	data, err := json.Marshal(id)
 	if err != nil {
 		return
+	}
+	sealed, err := secure.SealMachine(data)
+	if err != nil {
+		return // don't fall back to plaintext — a sealed mirror or none
 	}
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, identityRegPath, registry.SET_VALUE|registry.WOW64_64KEY)
 	if err != nil {
@@ -55,7 +80,7 @@ func writeDurableIdentity(id identity) {
 		return
 	}
 	defer k.Close()
-	if err := k.SetStringValue(identityRegValue, string(data)); err != nil {
+	if err := k.SetStringValue(identityRegValue, base64.StdEncoding.EncodeToString(sealed)); err != nil {
 		slog.Debug("identity: could not write durable store", "error", err.Error())
 	}
 }
