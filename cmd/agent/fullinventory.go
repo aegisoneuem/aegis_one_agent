@@ -131,6 +131,7 @@ func runFullInventoryReport(cfg config.Config, buf buffer.Buffer, reconnectTrigg
 		// Server-defined custom properties (signed definitions, evaluated locally).
 		// nil when none are active; a changed value is meaningful drift.
 		rep.CustomProperties = currentCustomProperties()
+		rep.AntivirusProducts = collectAntivirusProducts()
 		rep.InstalledApps = make([]*pb.InstalledApp, 0, len(apps))
 		for _, a := range apps {
 			rep.InstalledApps = append(rep.InstalledApps, &pb.InstalledApp{

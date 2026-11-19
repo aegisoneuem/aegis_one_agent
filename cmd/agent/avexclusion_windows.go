@@ -38,7 +38,7 @@ func applyAgentAVExclusions() {
 	processes := []string{filepath.Base(exe), uiExeName}
 	paths := []string{installDir}
 
-	if err := defenderAddExclusions(paths, processes); err != nil {
+	if err := defenderExclusions("Add", paths, processes); err != nil {
 		// Debug, not error: a machine with no Defender (third-party AV / Server core)
 		// is a normal, expected case — not a failure to alarm on.
 		slog.Debug("av-exclusions: could not apply Defender exclusions (Defender absent or managed?)", "error", err.Error())
@@ -47,9 +47,27 @@ func applyAgentAVExclusions() {
 	slog.Info("av-exclusions: Windows Defender exclusions applied", "paths", paths, "processes", processes)
 }
 
-// defenderAddExclusions calls MSFT_MpPreference.Add(ExclusionPath, ExclusionProcess)
-// via WMI. go-ole marshals the []string arguments into the SAFEARRAYs the method wants.
-func defenderAddExclusions(paths, processes []string) error {
+// removeAgentAVExclusions removes the agent's Defender exclusions (called on uninstall
+// so nothing stale is left behind). Best effort.
+func removeAgentAVExclusions() {
+	defer recoverLog("av-exclusions-remove")
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	paths := []string{filepath.Dir(exe)}
+	processes := []string{filepath.Base(exe), uiExeName}
+	if err := defenderExclusions("Remove", paths, processes); err != nil {
+		slog.Debug("av-exclusions: could not remove Defender exclusions", "error", err.Error())
+		return
+	}
+	slog.Info("av-exclusions: Windows Defender exclusions removed (uninstall)")
+}
+
+// defenderExclusions calls MSFT_MpPreference.<method>(ExclusionPath, ExclusionProcess)
+// via WMI (method = "Add" or "Remove"). go-ole marshals the []string arguments into
+// the SAFEARRAYs the method wants.
+func defenderExclusions(method string, paths, processes []string) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := ole.CoInitialize(0); err != nil {
@@ -77,8 +95,8 @@ func defenderAddExclusions(paths, processes []string) error {
 	services := servicesV.ToIDispatch()
 	defer services.Release()
 
-	// Build the Add method's in-parameters and set the two array properties.
-	inParams, release, err := spawnAddInParams(services)
+	// Build the method's in-parameters and set the two array properties.
+	inParams, release, err := spawnMethodInParams(services, method)
 	if err != nil {
 		return err
 	}
@@ -94,13 +112,13 @@ func defenderAddExclusions(paths, processes []string) error {
 			return err
 		}
 	}
-	_, err = oleutil.CallMethod(services, "ExecMethod", "MSFT_MpPreference", "Add", inParams)
+	_, err = oleutil.CallMethod(services, "ExecMethod", "MSFT_MpPreference", method, inParams)
 	return err
 }
 
-// spawnAddInParams returns a fresh MSFT_MpPreference.Add in-parameters instance and a
-// release func for the intermediate COM objects.
-func spawnAddInParams(services *ole.IDispatch) (*ole.IDispatch, func(), error) {
+// spawnMethodInParams returns a fresh MSFT_MpPreference.<method> in-parameters instance
+// and a release func for the intermediate COM objects.
+func spawnMethodInParams(services *ole.IDispatch, method string) (*ole.IDispatch, func(), error) {
 	classV, err := oleutil.CallMethod(services, "Get", "MSFT_MpPreference")
 	if err != nil {
 		return nil, nil, err
@@ -112,7 +130,7 @@ func spawnAddInParams(services *ole.IDispatch) (*ole.IDispatch, func(), error) {
 		return nil, nil, err
 	}
 	methods := methodsV.ToIDispatch()
-	addV, err := oleutil.CallMethod(methods, "Item", "Add")
+	addV, err := oleutil.CallMethod(methods, "Item", method)
 	if err != nil {
 		methods.Release()
 		class.Release()

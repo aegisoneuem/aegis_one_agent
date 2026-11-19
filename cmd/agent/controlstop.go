@@ -150,6 +150,7 @@ func uninstallCheck(args []string) error {
 		return fmt.Errorf("uninstall is protected — valid passcode required. Use: msiexec /x AegisOneClient.msi UNINSTALLPASSCODE=<code>")
 	}
 	uninstallDebugf("authorized -> stopping agent + allowing uninstall")
+	removeAgentAVExclusions() // clean up our Windows Defender exclusions on uninstall
 	// Authorized: STOP the running agent first. A self-protected service does NOT
 	// accept the SCM stop, so the MSI's own StopServices would fail (1052) and leave
 	// the process/service/files behind. We stop it via the local control endpoint

@@ -1821,6 +1821,11 @@ func (s *server) Connect(stream pb.AgentControlPlane_ConnectServer) error {
 					mockPrintf("    fault: %-32s crashes=%d hangs=%d%s\n", f.GetName(), f.GetCrashes(), f.GetHangs(), det)
 				}
 			}
+			if av := fi.GetAntivirusProducts(); len(av) > 0 {
+				for _, a := range av {
+					mockPrintf("  antivirus: %-28s enabled=%v up_to_date=%v (state=0x%x)\n", a.GetName(), a.GetEnabled(), a.GetUpToDate(), a.GetProductState())
+				}
+			}
 			if cp := fi.GetCustomProperties(); len(cp) > 0 {
 				keys := make([]string, 0, len(cp))
 				for k := range cp {
