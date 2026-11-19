@@ -11,3 +11,6 @@ type batterySample struct {
 }
 
 func readBattery() batterySample { return batterySample{} }
+
+// readBatteryWear is Windows-only (SetupAPI + IOCTL_BATTERY); no-op elsewhere.
+func readBatteryWear() (float64, int, bool) { return 0, 0, false }

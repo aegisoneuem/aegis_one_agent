@@ -160,6 +160,13 @@ func (a *dexAgg) report(deviceID string, windowSec int) *pb.DexTelemetry {
 		if a.batteryCharge.n > 0 {
 			r.BatteryChargePctAvg, r.BatteryChargePctMin, r.BatteryChargePctMax = a.batteryCharge.avg(), a.batteryCharge.min, a.batteryCharge.max
 		}
+		// Wear/health is static over the window — read it once here.
+		if a.batteryPresent {
+			if health, cycles, ok := readBatteryWear(); ok {
+				r.BatteryHealthPct = health
+				r.BatteryCycleCount = int32(cycles)
+			}
+		}
 	}
 	if a.wifiSeen {
 		r.WifiPresent = a.wifiPresent

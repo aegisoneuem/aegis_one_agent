@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	pb "github.com/aegisoneuem/aegis_one_proto/grpc"
@@ -71,6 +72,28 @@ const (
 	dexMaxFaultApps   = 25   // report at most the top-N unstable apps
 )
 
+// faultEvent is one parsed Application Error/Hang event.
+type faultEvent struct {
+	app       string
+	module    string // faulting module (crashes only)
+	exception string // exception code (crashes only)
+	unix      int64  // event time (unix seconds), 0 = unknown
+}
+
+// eventTimeRe pulls the event time from the rendered XML (<TimeCreated SystemTime=…>).
+var eventTimeRe = regexp.MustCompile(`SystemTime=['"]([^'"]+)['"]`)
+
+func parseEventUnix(xml string) int64 {
+	m := eventTimeRe.FindStringSubmatch(xml)
+	if len(m) < 2 {
+		return 0
+	}
+	if t, err := time.Parse(time.RFC3339Nano, m[1]); err == nil {
+		return t.Unix()
+	}
+	return 0
+}
+
 // appDataRe extracts the first <Data> value of an Application Error/Hang event —
 // the faulting application name (e.g. "chrome.exe") sits in the first unnamed
 // Data element for events 1000 and 1002.
@@ -88,8 +111,14 @@ func collectAppFaults(windowMs int64) []*pb.AppFault {
 		}
 		return f
 	}
-	forEachFaultEvent("Application", "Application Error", 1000, windowMs, func(app string) { get(app).Crashes++ })
-	forEachFaultEvent("Application", "Application Hang", 1002, windowMs, func(app string) { get(app).Hangs++ })
+	forEachFaultEvent("Application", "Application Error", 1000, windowMs, func(fe faultEvent) {
+		f := get(fe.app)
+		f.Crashes++
+		if f.Crashes == 1 { // first = newest (events are read reverse-chronological)
+			f.LastModule, f.LastException, f.LastCrashUnix = fe.module, fe.exception, fe.unix
+		}
+	})
+	forEachFaultEvent("Application", "Application Hang", 1002, windowMs, func(fe faultEvent) { get(fe.app).Hangs++ })
 
 	out := make([]*pb.AppFault, 0, len(agg))
 	for _, f := range agg {
@@ -108,9 +137,9 @@ func collectAppFaults(windowMs int64) []*pb.AppFault {
 	return out
 }
 
-// forEachFaultEvent renders each matching event and calls fn with the faulting
-// application name (first Data). Bounded by dexMaxFaultEvents.
-func forEachFaultEvent(channel, provider string, eventID int, windowMs int64, fn func(app string)) {
+// forEachFaultEvent renders each matching event and calls fn with the parsed fault
+// (app + crash module/exception/time). Bounded by dexMaxFaultEvents.
+func forEachFaultEvent(channel, provider string, eventID int, windowMs int64, fn func(faultEvent)) {
 	query := eventXPath(provider, eventID, windowMs)
 	chPtr, err := syscall.UTF16PtrFromString(channel)
 	if err != nil {
@@ -137,9 +166,17 @@ func forEachFaultEvent(channel, provider string, eventID int, windowMs int64, fn
 		}
 		for i := uint32(0); i < returned; i++ {
 			if xml := renderEventXML(events[i]); xml != "" {
-				if m := appDataRe.FindStringSubmatch(xml); len(m) >= 2 {
-					if app := strings.TrimSpace(m[1]); app != "" {
-						fn(app)
+				data := appDataRe.FindAllStringSubmatch(xml, -1)
+				if len(data) >= 1 {
+					if app := strings.TrimSpace(data[0][1]); app != "" {
+						fe := faultEvent{app: app, unix: parseEventUnix(xml)}
+						// Application Error (1000) Data order: 0=app,1=ver,2=ts,3=module,
+						// 4=modver,5=modts,6=exception code. Hangs (1002) have no module.
+						if len(data) >= 7 {
+							fe.module = strings.TrimSpace(data[3][1])
+							fe.exception = strings.TrimSpace(data[6][1])
+						}
+						fn(fe)
 					}
 				}
 			}
