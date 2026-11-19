@@ -186,8 +186,10 @@ func runDialog(m uimsg.Message) (string, int64) {
 
 	hInst, _, _ := procGetModuleHandle.Call(0)
 	ensureDlgClass(hInst)
-	titleFont := makeFont(-21, fwBold)  // ~15.5pt bold heading
-	bodyFont := makeFont(-16, fwNormal) // ~12pt body / buttons
+	// Native-feeling sizes (Windows dialogs use Segoe UI ~9pt): a 12pt bold heading
+	// and 9pt body/buttons. Matches the clean, professional BigFix look.
+	titleFont := makeFont(-16, fwBold)  // ~12pt bold heading
+	bodyFont := makeFont(-12, fwNormal) // ~9pt body / buttons
 	icon := loadIcon(hInst)             // the 'A' mark
 
 	// Buttons: an action's own choices, else a single Close (a plain message).
