@@ -1,0 +1,33 @@
+# nfpm config — builds the Aegis One agent .deb (Debian/Ubuntu) and .rpm (RHEL/Rocky/
+# Alma/SUSE) from the Linux binary. Build:
+#   GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/aegisone-linux-amd64 ./cmd/agent
+#   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/
+#   nfpm package -f packaging/linux/nfpm.yaml -p rpm -t dist/
+name: aegisone
+arch: amd64
+platform: linux
+version: 1.0.0
+section: admin
+priority: optional
+maintainer: AegisOne <noreply@aegisoneuem>
+description: |
+  Aegis One Endpoint Management Agent — patching, inventory, software deployment,
+  DEX telemetry and secure management for Linux endpoints.
+vendor: AegisOne
+homepage: https://github.com/aegisoneuem
+license: Proprietary
+
+contents:
+  - src: build/aegisone-linux-amd64
+    dst: /opt/aegisone/aegisone
+    file_info:
+      mode: 0755
+  - src: packaging/linux/aegisone.service
+    dst: /etc/systemd/system/aegisone.service
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/linux/postinstall.sh
+  preremove: packaging/linux/preremove.sh
+  postremove: packaging/linux/postremove.sh
