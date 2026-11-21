@@ -1,9 +1,9 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package main
 
-// hardwareFingerprint is Windows-specific (TPM/SMBIOS/registry). On other
-// platforms it returns "" — clone detection is skipped and a persisted id is
+// hardwareFingerprint is Windows/Linux-specific. On other platforms (macOS/BSD —
+// added later) it returns "" — clone detection is skipped and a persisted id is
 // reused as-is.
 func hardwareFingerprint() string { return "" }
 

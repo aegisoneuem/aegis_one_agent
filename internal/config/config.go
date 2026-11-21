@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -244,24 +245,20 @@ type Config struct {
 // Durations/sizes are in seconds/bytes. installDir, when non-empty, roots the
 // per-install paths (secure dir, certs, download, cab) under it.
 func defaultConfigMap(installDir string) map[string]string {
-	if strings.TrimSpace(installDir) == "" {
-		installDir = `C:\Program Files\AegisOne\Client`
-	}
-	installDir = strings.TrimRight(installDir, `\/`)
-	skvc := installDir + `\SKVC`
+	data := defaultDataDir(installDir) // platform-aware (Windows ...\SKVC, Linux /var/opt/aegisone)
 	return map[string]string{
 		"AEGIS_SERVER_ADDRESS":        "127.0.0.1:50051",
 		"AEGIS_LOG_LEVEL":             "info",
 		"AEGIS_LOG_MAX_AGE_DAYS":      "10",
 		"AEGIS_DEVICE_ID":             "",
-		"AEGIS_WSUS_SCAN_CAB":         skvc + `\wsusscn2.cab`,
+		"AEGIS_WSUS_SCAN_CAB":         filepath.Join(data, "wsusscn2.cab"),
 		"AEGIS_DEVICE_STATE_INTERVAL": "300",
 		"AEGIS_RECON_SCAN_INTERVAL":   "604800",
-		"AEGIS_SECURE_DIR":            skvc,
-		"AEGIS_DOWNLOAD_DIR":          skvc + `\download`,
-		"AEGIS_TLS_CA":                skvc + `\certs\ca.crt`,
-		"AEGIS_TLS_CERT":              skvc + `\certs\client.crt`,
-		"AEGIS_TLS_KEY":               skvc + `\certs\client.key`,
+		"AEGIS_SECURE_DIR":            data,
+		"AEGIS_DOWNLOAD_DIR":          filepath.Join(data, "download"),
+		"AEGIS_TLS_CA":                filepath.Join(data, "certs", "ca.crt"),
+		"AEGIS_TLS_CERT":              filepath.Join(data, "certs", "client.crt"),
+		"AEGIS_TLS_KEY":               filepath.Join(data, "certs", "client.key"),
 		"AEGIS_TLS_SERVER_NAME":       "aegis-server",
 		"AEGIS_ENROLL_TOKEN":          "",
 		"AEGIS_HEARTBEAT_INTERVAL":    "300",
@@ -365,6 +362,8 @@ func Load() Config {
 		allowed[i] = strings.TrimSpace(strings.ToLower(allowed[i]))
 	}
 
+	defDataDir := defaultDataDir("") // platform data root for path defaults below
+
 	cfg := Config{
 		SoftdistBundleMaxBytes: int64FromEnv("AEGIS_SOFTDIST_BUNDLE_MAX_BYTES", 4<<30),
 		SoftdistBundleMaxFiles: int(int64FromEnv("AEGIS_SOFTDIST_BUNDLE_MAX_FILES", 10000)),
@@ -404,11 +403,11 @@ func Load() Config {
 		WsusScanCab:            getenv("AEGIS_WSUS_SCAN_CAB", ""),
 		DeviceStateInterval:    durationFromEnv("AEGIS_DEVICE_STATE_INTERVAL", 5*time.Minute),
 		ReconScanInterval:      durationFromEnv("AEGIS_RECON_SCAN_INTERVAL", 7*24*time.Hour),
-		SecureDir:              getenv("AEGIS_SECURE_DIR", `C:\Program Files\AegisOne\Client\SKVC`),
-		DownloadDir:            getenv("AEGIS_DOWNLOAD_DIR", `C:\Program Files\AegisOne\Client\SKVC\download`),
-		TLSCAFile:              getenv("AEGIS_TLS_CA", `C:\Program Files\AegisOne\Client\SKVC\certs\ca.crt`),
-		TLSCertFile:            getenv("AEGIS_TLS_CERT", `C:\Program Files\AegisOne\Client\SKVC\certs\client.crt`),
-		TLSKeyFile:             getenv("AEGIS_TLS_KEY", `C:\Program Files\AegisOne\Client\SKVC\certs\client.key`),
+		SecureDir:              getenv("AEGIS_SECURE_DIR", defDataDir),
+		DownloadDir:            getenv("AEGIS_DOWNLOAD_DIR", filepath.Join(defDataDir, "download")),
+		TLSCAFile:              getenv("AEGIS_TLS_CA", filepath.Join(defDataDir, "certs", "ca.crt")),
+		TLSCertFile:            getenv("AEGIS_TLS_CERT", filepath.Join(defDataDir, "certs", "client.crt")),
+		TLSKeyFile:             getenv("AEGIS_TLS_KEY", filepath.Join(defDataDir, "certs", "client.key")),
 		TLSServerName:          getenv("AEGIS_TLS_SERVER_NAME", "localhost"),
 		CmdVerifyKey:           getenv("AEGIS_CMD_VERIFY_KEY", ""),
 		CmdVerifyKeyFile:       getenv("AEGIS_CMD_VERIFY_KEY_FILE", ""),
