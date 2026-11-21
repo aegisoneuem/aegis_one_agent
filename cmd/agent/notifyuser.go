@@ -109,6 +109,13 @@ func showUserNotification(title, text string) int {
 }
 
 func (d *dispatcher) handleNotifyUserCmd(ctx context.Context, _ pb.AgentControlPlaneClient, cmd *pb.Command) {
+	// No interactive tray UI on this OS (e.g. a Linux server) — report NOT_APPLICABLE,
+	// not FAILED. Desktop notifications for Linux/macOS are a future enhancement.
+	if !uiNotificationsSupported {
+		sendStatus(d.outbox, simpleActionStatus(cmd.CommandId, actionNotifyUser, d.cfg.DeviceID, "",
+			pb.ActionPhase_ACTION_PHASE_NOT_APPLICABLE, "user notifications require a desktop UI — not applicable on this OS"))
+		return
+	}
 	var p notifyUserPayload
 	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
 		parts := strings.SplitN(strings.TrimSpace(string(cmd.Payload)), "|", 2)

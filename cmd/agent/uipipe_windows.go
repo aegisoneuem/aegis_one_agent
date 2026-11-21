@@ -100,3 +100,7 @@ func readUIResponses(_ context.Context, c net.Conn) {
 		}
 	}
 }
+
+// uiNotificationsSupported: the interactive tray-UI notification subsystem exists on
+// this OS (Windows). Elsewhere (Linux servers) notify_user is reported NOT_APPLICABLE.
+const uiNotificationsSupported = true

@@ -12,3 +12,6 @@ import (
 func runUINotifyServer(_ context.Context) {}
 
 func deliverUIMessage(_ uimsg.Message) int { return 0 }
+
+// uiNotificationsSupported is false off-Windows (no tray UI; Linux-desktop support later).
+const uiNotificationsSupported = false
