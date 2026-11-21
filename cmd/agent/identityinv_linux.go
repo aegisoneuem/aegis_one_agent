@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"strconv"
 	"strings"
 
@@ -43,19 +44,43 @@ func uptimeSeconds() int64 {
 	return int64(s)
 }
 
-// firstLoggedOnUser returns the first user with an active session (`who`), or "" when
-// no one is logged in.
+// firstLoggedOnUser returns the NAME of the first user with an active session. Prefers
+// systemd loginctl (UID column → resolve to name, column-order-safe); falls back to
+// `who`. Some minimal images' `who` prints a UID, so any numeric value is resolved to
+// the username. Empty when no one is logged in (normal on a headless server).
 func firstLoggedOnUser() string {
-	out, err := exec.Command("who").Output()
-	if err != nil {
-		return ""
+	// loginctl list-sessions: SESSION UID USER SEAT TTY — UID (f[1]) is always numeric.
+	if out, err := exec.Command("loginctl", "list-sessions", "--no-legend").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(line); len(f) >= 2 {
+				if name := resolveUserName(f[1]); name != "" {
+					return name
+				}
+			}
+		}
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if f := strings.Fields(line); len(f) > 0 {
-			return f[0]
+	if out, err := exec.Command("who").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(line); len(f) > 0 {
+				return resolveUserName(f[0])
+			}
 		}
 	}
 	return ""
+}
+
+// resolveUserName turns a numeric UID into its username; passes a name through unchanged.
+func resolveUserName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(s); err == nil { // numeric → a UID
+		if u, e := user.LookupId(s); e == nil && u.Username != "" {
+			return u.Username
+		}
+	}
+	return s
 }
 
 func linuxDomain() string {
