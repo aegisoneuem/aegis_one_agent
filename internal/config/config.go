@@ -22,8 +22,9 @@ func FilePath() string {
 	if v := strings.TrimSpace(os.Getenv("AEGIS_CONFIG_FILE")); v != "" {
 		return v
 	}
-	// Everything the agent owns lives under SKVC, so the config file does too.
-	return `C:\Program Files\AegisOne\Client\SKVC\config.json`
+	// Everything the agent owns lives under the data dir, so the config file does too
+	// (Windows ...\SKVC\config.json; Linux /var/opt/aegisone/config.json).
+	return filepath.Join(defaultDataDir(""), "config.json")
 }
 
 var (
