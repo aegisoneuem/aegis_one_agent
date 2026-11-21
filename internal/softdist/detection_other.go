@@ -23,8 +23,3 @@ func ResolveInstalledApp(AppSelector) (*InstalledApp, error) {
 // FindInstalledApp is Windows-only (registry Uninstall hive). Elsewhere it reports
 // no match.
 func FindInstalledApp(string, string) *InstalledApp { return nil }
-
-// EnumerateInstalledApps is Windows-only (registry Uninstall hive). Non-Windows
-// agents report an empty inventory rather than an error so DeviceStateReport
-// still goes out when the agent is cross-compiled for CI / vet.
-func EnumerateInstalledApps() ([]InstalledApp, error) { return nil, nil }
