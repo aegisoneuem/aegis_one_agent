@@ -64,8 +64,6 @@ Type=simple
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
-# Fast restart-on-failure undoes a kill quickly without a second guardian process.
-StartLimitIntervalSec=0
 User=root
 # Hardening (tightened further in the tamper phase):
 NoNewPrivileges=true
